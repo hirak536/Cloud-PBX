@@ -83,8 +83,8 @@ export default function Voicemails() {
         voicemail_greeting: form.voicemail_greeting,
         tts_greeting_text: form.tts_greeting_text,
         voicemail_mail_to: form.voicemail_mail_to,
-        voicemail_on_new_message: form.voicemail_on_new_message,
-        voicemail_file: form.voicemail_file,
+        voicemail_on_new_message: form.voicemail_mail_to ? 'both' : 'nothing',
+        voicemail_file: form.voicemail_mail_to ? 'attach' : 'none',
       }
       editId ? await voicemailsApi.update(editId, payload) : await voicemailsApi.create(payload)
       setDialogOpen(false); load()
@@ -173,7 +173,7 @@ export default function Voicemails() {
             {formError && <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{formError}</div>}
             <div className="space-y-3">
               <div className="space-y-1.5"><Label>Extension *</Label><Input placeholder="1001" value={form.extension} onChange={(e) => setForm(f => ({ ...f, extension: e.target.value }))} /></div>
-              <div className="space-y-1.5"><Label>PIN</Label><Input type="password" placeholder="4-digit PIN" value={form.password} onChange={(e) => setForm(f => ({ ...f, password: e.target.value }))} /></div>
+              <div className="space-y-1.5"><Label>PIN</Label><Input type="text" placeholder="4-digit PIN" value={form.password} onChange={(e) => setForm(f => ({ ...f, password: e.target.value }))} className="font-mono" /></div>
               <div className="space-y-1.5"><Label>Name / Description</Label><Input placeholder="John Doe" value={form.name} onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))} /></div>
 
               <div className="space-y-1.5">
@@ -239,25 +239,6 @@ export default function Voicemails() {
                   />
                   <p className="text-xs text-muted-foreground">Send new voicemail notifications to this address.</p>
                 </div>
-                {form.voicemail_mail_to && (
-                  <>
-                    <div className="space-y-1.5">
-                      <Label>Notify On New Message</Label>
-                      <Select value={form.voicemail_on_new_message} onChange={(e) => setForm(f => ({ ...f, voicemail_on_new_message: e.target.value }))}>
-                        <option value="nothing">Do nothing</option>
-                        <option value="email">Send email only</option>
-                        <option value="both">Send email and keep in mailbox</option>
-                      </Select>
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label>Audio Attachment</Label>
-                      <Select value={form.voicemail_file} onChange={(e) => setForm(f => ({ ...f, voicemail_file: e.target.value }))}>
-                        <option value="attach">Attach audio file to email</option>
-                        <option value="none">Notification only (no attachment)</option>
-                      </Select>
-                    </div>
-                  </>
-                )}
               </div>
             </div>
           </div>

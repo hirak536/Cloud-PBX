@@ -294,6 +294,10 @@ def auto_create_voicemail(sender, instance, created, **kwargs):
     mailbox_id = instance.voicemail_id or instance.extension
     # Generate a random 4-digit PIN for new voicemail boxes
     random_pin = str(random.randint(1000, 9999))
+    # Seed the box name from the extension's display name on first create.
+    # Manual edits on the Voicemail page won't be overwritten because we only
+    # set this in `defaults` (applied when the row is created).
+    seeded_name = instance.directory_full_name or instance.effective_caller_id_name or ''
     vm, created = Voicemail.objects.get_or_create(
         tenant=instance.tenant,
         voicemail_id=mailbox_id,
@@ -304,5 +308,6 @@ def auto_create_voicemail(sender, instance, created, **kwargs):
             'voicemail_file': instance.voicemail_file or 'attach',
             'voicemail_local_after_email': instance.voicemail_local_after_email,
             'voicemail_enabled': True,
+            'voicemail_description': seeded_name,
         },
     )
