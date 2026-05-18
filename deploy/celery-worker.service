@@ -1,0 +1,14 @@
+[Unit]
+Description=IHS PBX Celery Worker
+After=network.target redis.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ihspbx-django/backend
+ExecStart=/opt/ihspbx-django/venv/bin/celery -A config worker --loglevel=info
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/ihspbx-django/.env
+
+[Install]
+WantedBy=multi-user.target

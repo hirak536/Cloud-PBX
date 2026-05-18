@@ -1,0 +1,10 @@
+<configuration name="event_socket.conf" description="Event Socket">
+  <settings>
+    <param name="nat-map" value="false"/>
+    <param name="listen-ip" value="127.0.0.1"/>
+    <param name="listen-port" value="8021"/>
+    <!-- Change this password and set in .env as FREESWITCH_PASSWORD -->
+    <param name="password" value="ClueCon"/>
+    <param name="apply-inbound-acl" value="loopback.auto"/>
+  </settings>
+</configuration>

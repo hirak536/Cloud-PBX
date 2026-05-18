@@ -1,0 +1,60 @@
+# Python 3.13.12+
+# Core Django
+Django==6.0.3
+djangorestframework==3.17.1
+djangorestframework-simplejwt==5.5.1
+
+# Database
+psycopg2-binary==2.9.11
+
+# Redis & Channels (WebSocket)
+channels==4.3.2
+channels-redis==4.3.0
+redis==7.4.0
+django-redis==6.0.0
+
+# Celery (async tasks)
+celery==5.6.3
+django-celery-beat==2.9.0
+django-celery-results==2.6.0
+
+# FreeSWITCH ESL
+greenswitch==0.0.19
+
+# Auth & Security
+django-cors-headers==4.9.0
+django-otp==1.7.0
+qrcode==8.2
+
+# Filtering & Search
+django-filter==25.2
+drf-spectacular==0.28.0
+
+# Environment
+python-decouple==3.8
+
+# Email
+django-anymail==14.0
+
+# Files & Media
+Pillow==12.1.1
+
+# Transcription
+deepgram-sdk==4.0.0
+
+# Utilities
+python-dateutil==2.9.0.post0
+pytz==2026.1.post1
+lxml==6.0.2
+xmltodict==1.0.4
+psutil==7.2.2
+
+# Production
+gunicorn==25.3.0
+uvicorn[standard]==0.42.0
+whitenoise==6.12.0
+
+# Testing
+pytest==9.0.2
+pytest-django==4.12.0
+factory-boy==3.3.3

@@ -1,0 +1,13 @@
+<configuration name="xml_curl.conf" description="XML cURL">
+  <bindings>
+    <binding name="ihspbx_directory">
+      <param name="gateway-url" value="http://127.0.0.1:8000/xml-curl/" bindings="directory"/>
+    </binding>
+    <binding name="ihspbx_dialplan">
+      <param name="gateway-url" value="http://127.0.0.1:8000/xml-curl/" bindings="dialplan"/>
+    </binding>
+    <binding name="ihspbx_configuration">
+      <param name="gateway-url" value="http://127.0.0.1:8000/xml-curl/" bindings="configuration"/>
+    </binding>
+  </bindings>
+</configuration>

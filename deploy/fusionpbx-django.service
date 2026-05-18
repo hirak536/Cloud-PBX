@@ -1,0 +1,32 @@
+[Unit]
+Description=IHS PBX (Gunicorn/Uvicorn ASGI)
+After=network.target postgresql.service redis.service
+Requires=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=ihspbx
+Group=ihspbx
+WorkingDirectory=/opt/ihspbx-django/backend
+EnvironmentFile=/opt/ihspbx-django/.env
+Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
+ExecStart=/opt/ihspbx-django/venv/bin/gunicorn config.asgi:application \
+    --bind 0.0.0.0:8000 \
+    --workers 4 \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --timeout 300 \
+    --keep-alive 5 \
+    --max-requests 1000 \
+    --max-requests-jitter 100 \
+    --log-level info \
+    --access-logfile /var/log/ihspbx/access.log \
+    --error-logfile /var/log/ihspbx/error.log
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=mixed
+TimeoutStopSec=5
+PrivateTmp=true
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

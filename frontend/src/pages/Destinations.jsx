@@ -1,0 +1,1051 @@
+import { useDebounce } from '@/hooks/useDebounce'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { destinations as api } from '@/api'
+import { useDestinationData } from '@/hooks/useDestinationData'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+import { Select } from '@/components/ui/select'
+import { Card, CardContent } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/lib/utils'
+import { Plus, Pencil, Trash2, Search, Loader2, X, ChevronDown, PhoneForwarded, PhoneOff, Layers, AlertCircle, CheckCircle2 } from 'lucide-react'
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+
+const ALWAYS_RECORD_OPTIONS = [
+  { value: '',         label: 'No' },
+  { value: 'all',      label: 'All' },
+  { value: 'local',    label: 'Local' },
+  { value: 'outbound', label: 'Outbound' },
+  { value: 'inbound',  label: 'Inbound' },
+]
+
+const FAX_PROTOCOL_OPTIONS = [
+  { value: 't38_only',        label: 'T.38 Only' },
+  { value: 't38_preferred',   label: 'T.38 Preferred' },
+  { value: 'sdp_passthrough', label: 'SDP Passthrough' },
+  { value: 'none',            label: 'None' },
+]
+
+const TABS = [
+  { id: 'information', label: 'Information' },
+  { id: 'voice',       label: 'Voice' },
+  { id: 'fax',         label: 'Fax' },
+]
+
+const DEST_META = {
+  extension:     { label: 'Extension',     color: 'text-blue-500',   bg: 'bg-blue-500/10'   },
+  ivr_menu:      { label: 'IVR Menu',      color: 'text-amber-500',  bg: 'bg-amber-500/10'  },
+  ring_group:    { label: 'Ring Group',    color: 'text-green-600',  bg: 'bg-green-600/10'  },
+  voicemail:     { label: 'Voicemail',     color: 'text-purple-500', bg: 'bg-purple-500/10' },
+  conference:    { label: 'Conference',    color: 'text-sky-500',    bg: 'bg-sky-500/10'    },
+  working_hours: { label: 'Working Hours', color: 'text-teal-500',   bg: 'bg-teal-500/10'   },
+  external:      { label: 'External',      color: 'text-slate-500',  bg: 'bg-slate-500/10'  },
+  fax:           { label: 'Fax',           color: 'text-orange-500', bg: 'bg-orange-500/10' },
+  hangup:        { label: 'Hangup',        color: 'text-red-500',    bg: 'bg-red-500/10'    },
+}
+
+const EMPTY_ACTION = { type: '', target_uuid: '', external_number: '' }
+
+const EMPTY = {
+  destination_number: '+1',
+  destination_number_regex: '',
+  destination_name: '',
+  actions: [],
+  max_channels: '',
+  notify_over_limit: false,
+  use_cnam_service: false,
+  hide_callerid: false,
+  use_as_emergency_callerid: false,
+  inbound_call_rate: '',
+  destination_cid_number_prefix: '',
+  destination_cid_name_prefix: '',
+  destination_ringback: '',
+  destination_hold_music: '',
+  destination_accountcode: '',
+  destination_enabled: true,
+  destination_description: '',
+  unconditional_forward: false,
+  callback_to_last_caller: false,
+  always_record: '',
+  email_recording_to: '',
+  transcript_recorded: false,
+  summarize_recorded: false,
+  sentiment_analysis: false,
+  fax_id: '',
+  fax_receive: false,
+  fax_station_id: '',
+  fax_header: '',
+  fax_protocol: 't38_only',
+  fax_email_destinations: '',
+  fax_store: false,
+  fax_on_receive: '',
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function rowToForm(r) {
+  return {
+    destination_number:        r.destination_number || '',
+    destination_number_regex:  r.destination_number_regex || '',
+    destination_name:          r.destination_name || '',
+    actions: (r.actions || []).map(a => ({
+      type:           a.dest_type || '',
+      target_uuid:    a.dest_target_uuid || '',
+      external_number: a.dest_external_number || '',
+    })),
+    max_channels:              r.max_channels ?? '',
+    notify_over_limit:         !!r.notify_over_limit,
+    use_cnam_service:          !!r.use_cnam_service,
+    hide_callerid:             !!r.hide_callerid,
+    use_as_emergency_callerid: !!r.use_as_emergency_callerid,
+    inbound_call_rate:         r.inbound_call_rate || '',
+    destination_cid_number_prefix: r.destination_cid_number_prefix || '',
+    destination_cid_name_prefix:   r.destination_cid_name_prefix || '',
+    destination_ringback:      r.destination_ringback || '',
+    destination_hold_music:    r.destination_hold_music || '',
+    destination_accountcode:   r.destination_accountcode || '',
+    destination_enabled:       r.destination_enabled !== false,
+    destination_description:   r.destination_description || '',
+    unconditional_forward:     !!r.unconditional_forward,
+    callback_to_last_caller:   !!r.callback_to_last_caller,
+    always_record:             r.always_record || '',
+    email_recording_to:        r.email_recording_to || '',
+    transcript_recorded:       !!r.transcript_recorded,
+    summarize_recorded:        !!r.summarize_recorded,
+    sentiment_analysis:        !!r.sentiment_analysis,
+    fax_id:                    r.fax_id || '',
+    fax_receive:               !!r.fax_receive,
+    fax_station_id:            r.fax_station_id || '',
+    fax_header:                r.fax_header || '',
+    fax_protocol:              r.fax_protocol || 't38_only',
+    fax_email_destinations:    r.fax_email_destinations || '',
+    fax_store:                 !!r.fax_store,
+    fax_on_receive:            r.fax_on_receive || '',
+  }
+}
+
+// ── Destination Picker ─────────────────────────────────────────────────────────
+
+function actionLabel(type, targetUuid, extNumber, data) {
+  if (!type) return null
+  if (type === 'hangup')        return 'Hangup'
+  if (type === 'external')      return extNumber || 'External Number'
+  if (type === 'fax')           return 'Direct Fax Receive'
+  if (type === 'extension') {
+    const e = data.extensions.find(x => x.extension_uuid === targetUuid)
+    return e ? `${e.extension}${e.effective_caller_id_name ? ` — ${e.effective_caller_id_name}` : ''}` : (targetUuid ? `Ext ${targetUuid.slice(0, 8)}…` : null)
+  }
+  if (type === 'voicemail') {
+    const v = data.voicemails.find(x => (x.voicemail_uuid || x.id) === targetUuid)
+    return v ? `Voicemail ${v.voicemail_id}` : (targetUuid ? `VM ${targetUuid.slice(0, 8)}…` : null)
+  }
+  if (type === 'ivr_menu') {
+    const i = data.ivr_menus.find(x => x.ivr_menu_uuid === targetUuid)
+    return i ? i.ivr_menu_name : (targetUuid ? `IVR ${targetUuid.slice(0, 8)}…` : null)
+  }
+  if (type === 'ring_group') {
+    const r = data.ring_groups.find(x => x.ring_group_uuid === targetUuid)
+    return r ? r.ring_group_name : (targetUuid ? `RG ${targetUuid.slice(0, 8)}…` : null)
+  }
+  if (type === 'conference') {
+    const c = data.conferences.find(x => x.conference_uuid === targetUuid)
+    return c ? c.conference_name : (targetUuid ? `Conf ${targetUuid.slice(0, 8)}…` : null)
+  }
+  if (type === 'working_hours') {
+    const w = data.working_hours.find(x => x.working_hours_uuid === targetUuid)
+    return w ? w.working_hours_name : (targetUuid ? `WH ${targetUuid.slice(0, 8)}…` : null)
+  }
+  return null
+}
+
+function DestinationPicker({ action, onChange, data, loading }) {
+  const [open, setOpen]     = useState(false)
+  const [dropUp, setDropUp] = useState(false)
+  const [query, setQuery]   = useState('')
+  const containerRef        = useRef(null)
+  const inputRef            = useRef(null)
+
+  const toggleOpen = () => {
+    if (!open && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect()
+      setDropUp(rect.bottom + 320 > window.innerHeight)
+    }
+    setOpen(o => !o)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const h = (e) => { if (!containerRef.current?.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+
+  useEffect(() => {
+    if (open) requestAnimationFrame(() => inputRef.current?.focus())
+  }, [open])
+
+  const q      = query.toLowerCase().trim()
+  const filter = (items, fields) =>
+    !q ? items : items.filter(item => fields.some(f => String(item[f] || '').toLowerCase().includes(q)))
+
+  const exts  = filter(data.extensions,    ['extension', 'effective_caller_id_name', 'description'])
+  const vms   = filter(data.voicemails,    ['voicemail_id', 'description'])
+  const ivrs  = filter(data.ivr_menus,     ['ivr_menu_name', 'ivr_menu_extension'])
+  const rgs   = filter(data.ring_groups,   ['ring_group_name', 'ring_group_extension'])
+  const confs = filter(data.conferences,   ['conference_name', 'conference_extension'])
+  const whs   = filter(data.working_hours, ['working_hours_name'])
+  const showNumber = q.length >= 2 && /^[\d+\s().-]+$/.test(q)
+  const hasAny = exts.length || vms.length || ivrs.length || rgs.length || confs.length || whs.length || showNumber
+
+  const select = (type, target_uuid = '', external_number = '') => {
+    onChange({ type, target_uuid, external_number })
+    setOpen(false); setQuery('')
+  }
+
+  const label = actionLabel(action.type, action.target_uuid, action.external_number, data)
+  const meta  = action.type ? DEST_META[action.type] : null
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={toggleOpen}
+        className={cn(
+          'flex h-9 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-sm shadow-sm',
+          'hover:border-ring/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors',
+        )}
+      >
+        {loading ? (
+          <span className="flex items-center gap-2 text-muted-foreground text-xs">
+            <Loader2 className="h-3 w-3 animate-spin" /> Loading…
+          </span>
+        ) : label ? (
+          <span className="flex items-center gap-2 min-w-0">
+            <span className={cn('shrink-0 text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded', meta?.color, meta?.bg)}>
+              {meta?.label}
+            </span>
+            <span className="truncate text-sm">{label}</span>
+          </span>
+        ) : (
+          <span className="text-muted-foreground text-sm">Select destination…</span>
+        )}
+        <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+      </button>
+
+      {open && (
+        <div className={cn("absolute z-50 w-full min-w-[300px] rounded-xl border border-border/60 bg-card shadow-2xl shadow-black/10 animate-dropdown-in", dropUp ? "bottom-full mb-1" : "mt-1")}>
+          <div className="flex items-center gap-2 border-b px-3 py-1.5">
+            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search or type a number…"
+              className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
+            />
+            {query && <button type="button" onClick={() => setQuery('')}><X className="h-3 w-3 text-muted-foreground" /></button>}
+          </div>
+
+          <div className="max-h-60 overflow-y-auto py-1">
+            {loading ? (
+              <div className="flex items-center justify-center py-4 gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+              </div>
+            ) : (
+              <>
+                {exts.length > 0 && (
+                  <div>
+                    <p className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Extensions</p>
+                    {exts.map(e => (
+                      <button key={e.extension_uuid} type="button" onClick={() => select('extension', e.extension_uuid)}
+                        className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
+                        <span className="font-mono font-bold text-blue-500 w-10 shrink-0">{e.extension}</span>
+                        <span className="text-sm truncate text-muted-foreground">{e.effective_caller_id_name || e.description || ''}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {rgs.length > 0 && (
+                  <div>
+                    <p className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Ring Groups</p>
+                    {rgs.map(r => (
+                      <button key={r.ring_group_uuid} type="button" onClick={() => select('ring_group', r.ring_group_uuid)}
+                        className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
+                        <span className="font-mono font-bold text-green-600 w-10 shrink-0">{r.ring_group_extension || '—'}</span>
+                        <span className="text-sm truncate">{r.ring_group_name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {ivrs.length > 0 && (
+                  <div>
+                    <p className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">IVR Menus</p>
+                    {ivrs.map(i => (
+                      <button key={i.ivr_menu_uuid} type="button" onClick={() => select('ivr_menu', i.ivr_menu_uuid)}
+                        className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
+                        <span className="font-mono font-bold text-amber-500 w-10 shrink-0">{i.ivr_menu_extension || '—'}</span>
+                        <span className="text-sm truncate">{i.ivr_menu_name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {vms.length > 0 && (
+                  <div>
+                    <p className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Voicemail</p>
+                    {vms.map(v => (
+                      <button key={v.voicemail_uuid || v.id} type="button" onClick={() => select('voicemail', v.voicemail_uuid || v.id)}
+                        className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
+                        <span className="font-mono font-bold text-purple-500 w-10 shrink-0">{v.voicemail_id}</span>
+                        <span className="text-sm truncate text-muted-foreground">{v.description || ''}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {confs.length > 0 && (
+                  <div>
+                    <p className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Conferences</p>
+                    {confs.map(c => (
+                      <button key={c.conference_uuid} type="button" onClick={() => select('conference', c.conference_uuid)}
+                        className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
+                        <span className="font-mono font-bold text-sky-500 w-10 shrink-0">{c.conference_extension || '—'}</span>
+                        <span className="text-sm truncate">{c.conference_name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {whs.length > 0 && (
+                  <div>
+                    <p className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Working Hours</p>
+                    {whs.map(w => (
+                      <button key={w.working_hours_uuid} type="button" onClick={() => select('working_hours', w.working_hours_uuid)}
+                        className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
+                        <span className="font-mono font-bold text-teal-500 w-10 shrink-0">WH</span>
+                        <span className="text-sm truncate">{w.working_hours_name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {showNumber && (
+                  <div>
+                    <p className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">External Number</p>
+                    <button type="button" onClick={() => select('external', '', query)}
+                      className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
+                      <PhoneForwarded className="h-4 w-4 text-slate-500 shrink-0" />
+                      <span className="text-sm">Forward to <span className="font-mono font-semibold">{query}</span></span>
+                    </button>
+                  </div>
+                )}
+                {q && !hasAny && (
+                  <p className="px-3 py-4 text-sm text-muted-foreground text-center">No results for &ldquo;{query}&rdquo;</p>
+                )}
+                <div className="border-t mt-1 pt-1">
+                  <button type="button" onClick={() => select('fax')}
+                    className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
+                    <span className={cn('text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0', DEST_META.fax.color, DEST_META.fax.bg)}>Fax</span>
+                    <span className="text-sm text-orange-500 font-medium">Direct Fax Receive</span>
+                  </button>
+                  <button type="button" onClick={() => select('hangup')}
+                    className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
+                    <PhoneOff className="h-4 w-4 text-red-500 shrink-0" />
+                    <span className="text-sm text-red-500 font-medium">Hangup</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── UI helpers ─────────────────────────────────────────────────────────────────
+
+function Field({ label, hint, children, className }) {
+  return (
+    <div className={cn('space-y-1.5', className)}>
+      <Label className="text-sm font-medium">{label}</Label>
+      {children}
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  )
+}
+
+function Row({ children }) {
+  return <div className="grid grid-cols-2 gap-4">{children}</div>
+}
+
+function Toggle({ checked, onChange }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        'relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        checked ? 'bg-primary' : 'bg-input',
+      )}
+    >
+      <span className={cn('pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform', checked ? 'translate-x-4' : 'translate-x-0')} />
+    </button>
+  )
+}
+
+function ToggleRow({ label, hint, checked, onChange }) {
+  return (
+    <div className="flex items-center justify-between py-1.5">
+      <div>
+        <p className="text-sm font-medium leading-none">{label}</p>
+        {hint && <p className="text-xs text-muted-foreground mt-0.5">{hint}</p>}
+      </div>
+      <Toggle checked={checked} onChange={onChange} />
+    </div>
+  )
+}
+
+function SectionTitle({ children }) {
+  return <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mt-5 mb-2 first:mt-0">{children}</p>
+}
+
+// ── Tab body ───────────────────────────────────────────────────────────────────
+
+function DIDFormBody({ tab, form, set, setForm, destData, destLoading }) {
+  const addAction    = () => setForm(p => ({ ...p, actions: [...p.actions, { ...EMPTY_ACTION }] }))
+  const removeAction = (idx) => setForm(p => ({ ...p, actions: p.actions.filter((_, i) => i !== idx) }))
+  const updateAction = (idx, v) => setForm(p => ({
+    ...p,
+    actions: p.actions.map((a, i) => i === idx ? { type: v.type, target_uuid: v.target_uuid, external_number: v.external_number } : a),
+  }))
+
+  if (tab === 'information') return (
+    <div className="space-y-3">
+      <Row>
+        <Field label="DID / Phone Number *">
+          <Input placeholder="+12025551234" value={form.destination_number} onChange={set('destination_number')} />
+        </Field>
+        <Field label="Friendly Name">
+          <Input placeholder="e.g. IHS Main" value={form.destination_name} onChange={set('destination_name')} />
+        </Field>
+      </Row>
+      <Field label="Match Regex" hint="Override carrier number matching (e.g. ^\+?1?2025551234$). Leave blank to match exactly.">
+        <Input placeholder="^\+?1?2025551234$" value={form.destination_number_regex} onChange={set('destination_number_regex')} />
+      </Field>
+
+      <SectionTitle>Priority Routing</SectionTitle>
+      <p className="text-xs text-muted-foreground -mt-1">
+        Routes are tried in order. Add multiple for failover (e.g. Extension → Ring Group → Voicemail).
+      </p>
+
+      <div className="space-y-2">
+        {form.actions.length === 0 && (
+          <p className="text-sm text-muted-foreground text-center py-3 border border-dashed rounded-xl">
+            No routing defined — add a route below.
+          </p>
+        )}
+        {form.actions.map((action, idx) => (
+          <div key={idx} className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground w-4 shrink-0 text-right font-mono">{idx + 1}</span>
+            <div className="flex-1">
+              <DestinationPicker
+                action={action}
+                onChange={(v) => updateAction(idx, v)}
+                data={destData}
+                loading={destLoading}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => removeAction(idx)}
+              className="shrink-0 h-7 w-7 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-muted transition-colors"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+        <Button type="button" variant="outline" size="sm" onClick={addAction} className="w-full mt-1">
+          <Plus className="h-3.5 w-3.5 mr-1" /> Add Route
+        </Button>
+      </div>
+
+      <SectionTitle>Capacity &amp; Caller ID</SectionTitle>
+      <Row>
+        <Field label="Max Channels" hint="Null = unlimited">
+          <Input type="number" min="0" placeholder="Unlimited" value={form.max_channels} onChange={set('max_channels')} />
+        </Field>
+        <Field label="Inbound Call Rate" hint="Per-minute rate (blank = not applied)">
+          <Input placeholder="0.0050" value={form.inbound_call_rate} onChange={set('inbound_call_rate')} />
+        </Field>
+      </Row>
+      <div className="space-y-1">
+        <ToggleRow label="Notify when over channel limit" checked={form.notify_over_limit} onChange={v => setForm(p => ({ ...p, notify_over_limit: v }))} />
+        <ToggleRow label="Use CNAM service" checked={form.use_cnam_service} onChange={v => setForm(p => ({ ...p, use_cnam_service: v }))} />
+        <ToggleRow label="Hide caller ID" checked={form.hide_callerid} onChange={v => setForm(p => ({ ...p, hide_callerid: v }))} />
+        <ToggleRow label="Use as emergency caller ID" checked={form.use_as_emergency_callerid} onChange={v => setForm(p => ({ ...p, use_as_emergency_callerid: v }))} />
+      </div>
+
+      <SectionTitle>Caller ID Manipulation</SectionTitle>
+      <Row>
+        <Field label="CID Number Prefix">
+          <Input placeholder="IHS-" value={form.destination_cid_number_prefix} onChange={set('destination_cid_number_prefix')} />
+        </Field>
+        <Field label="CID Name Prefix">
+          <Input placeholder="Sales: " value={form.destination_cid_name_prefix} onChange={set('destination_cid_name_prefix')} />
+        </Field>
+      </Row>
+      <Row>
+        <Field label="Ringback" hint="Tone URI or leave blank">
+          <Input placeholder="us-ring" value={form.destination_ringback} onChange={set('destination_ringback')} />
+        </Field>
+        <Field label="Hold Music URI">
+          <Input placeholder="local_stream://default" value={form.destination_hold_music} onChange={set('destination_hold_music')} />
+        </Field>
+      </Row>
+      <Field label="Account Code" hint="Billing code for CDR">
+        <Input value={form.destination_accountcode} onChange={set('destination_accountcode')} />
+      </Field>
+
+      <SectionTitle>Status</SectionTitle>
+      <ToggleRow label="Enabled" checked={form.destination_enabled} onChange={v => setForm(p => ({ ...p, destination_enabled: v }))} />
+      <Field label="Description">
+        <textarea
+          className="flex min-h-[64px] w-full rounded-xl border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:border-primary/60 hover:border-primary/40 transition-all duration-150"
+          placeholder="Optional notes"
+          value={form.destination_description}
+          onChange={set('destination_description')}
+        />
+      </Field>
+    </div>
+  )
+
+  if (tab === 'voice') return (
+    <div className="space-y-3">
+      <SectionTitle>Forwarding</SectionTitle>
+      <ToggleRow label="Unconditional Forward" hint="Forward all calls immediately, bypassing routing" checked={form.unconditional_forward} onChange={v => setForm(p => ({ ...p, unconditional_forward: v }))} />
+      <ToggleRow label="Route to Last Caller" hint="Send inbound calls to the last extension that called this number" checked={form.callback_to_last_caller} onChange={v => setForm(p => ({ ...p, callback_to_last_caller: v }))} />
+
+      <SectionTitle>Recording</SectionTitle>
+      <Field label="Always Record">
+        <Select value={form.always_record} onChange={set('always_record')}>
+          {ALWAYS_RECORD_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </Select>
+      </Field>
+      <Field label="Email Recording To">
+        <Input type="email" placeholder="recordings@example.com" value={form.email_recording_to} onChange={set('email_recording_to')} />
+      </Field>
+
+      <SectionTitle>AI Features</SectionTitle>
+      <div className="space-y-1">
+        <ToggleRow label="Transcribe Recordings" checked={form.transcript_recorded} onChange={v => setForm(p => ({ ...p, transcript_recorded: v }))} />
+        <ToggleRow label="Summarize Recordings" checked={form.summarize_recorded} onChange={v => setForm(p => ({ ...p, summarize_recorded: v }))} />
+        <ToggleRow label="Sentiment Analysis" checked={form.sentiment_analysis} onChange={v => setForm(p => ({ ...p, sentiment_analysis: v }))} />
+      </div>
+    </div>
+  )
+
+  if (tab === 'fax') return (
+    <div className="space-y-3">
+      <Field label="Fax Box" hint="Link a fax box to enable fax receive on this DID">
+        <Select value={form.fax_id} onChange={set('fax_id')}>
+          <option value="">— None —</option>
+          {(destData.fax_boxes || []).map(b => (
+            <option key={b.fax_uuid} value={b.fax_uuid}>
+              {b.fax_name} ({b.fax_extension})
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <ToggleRow label="Enable Fax Receive" hint="Accept incoming faxes on this DID" checked={form.fax_receive} onChange={v => setForm(p => ({ ...p, fax_receive: v }))} />
+
+      <SectionTitle>Fax Identity</SectionTitle>
+      <Row>
+        <Field label="Station ID">
+          <Input placeholder="My Fax" value={form.fax_station_id} onChange={set('fax_station_id')} />
+        </Field>
+        <Field label="Fax Header">
+          <Input placeholder="Company Name" value={form.fax_header} onChange={set('fax_header')} />
+        </Field>
+      </Row>
+
+      <SectionTitle>Protocol</SectionTitle>
+      <Field label="Fax Protocol">
+        <Select value={form.fax_protocol} onChange={set('fax_protocol')}>
+          {FAX_PROTOCOL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </Select>
+      </Field>
+
+      <SectionTitle>Delivery</SectionTitle>
+      <Field label="Email Destinations" hint="Comma-separated addresses to receive faxes">
+        <Input placeholder="fax@example.com, admin@example.com" value={form.fax_email_destinations} onChange={set('fax_email_destinations')} />
+      </Field>
+      <ToggleRow label="Store Received Faxes" checked={form.fax_store} onChange={v => setForm(p => ({ ...p, fax_store: v }))} />
+      <Field label="On Receive Action" hint="Extension or dialplan action after fax received">
+        <Input placeholder="hangup" value={form.fax_on_receive} onChange={set('fax_on_receive')} />
+      </Field>
+    </div>
+  )
+
+  return null
+}
+
+// ── Table routing cell ─────────────────────────────────────────────────────────
+
+function RoutingCell({ row }) {
+  const actions = row.actions || []
+  if (actions.length === 0) return <span className="text-muted-foreground text-sm">—</span>
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {actions.map((a, i) => {
+        const meta = DEST_META[a.dest_type]
+        const name = a.dest_label || null
+        return (
+          <span key={i} className="flex items-center gap-1">
+            {i > 0 && <span className="text-muted-foreground text-xs">→</span>}
+            <span className={cn('text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded', meta?.color, meta?.bg)}>
+              {meta?.label || a.dest_type}
+            </span>
+            {name && <span className="text-xs text-muted-foreground">{name}</span>}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Bulk Add DIDs Dialog ────────────────────────────────────────────────────────────────
+
+function normalizePhone(raw) {
+  const digits = raw.replace(/\D/g, '')
+  if (digits.length === 10) return `+1${digits}`
+  if (digits.length === 11 && digits[0] === '1') return `+${digits}`
+  return null
+}
+
+function BulkAddDIDsDialog({ open, onClose, onDone }) {
+  const [text, setText] = useState('')
+  const [preview, setPreview] = useState([])
+  const [step, setStep] = useState('input')
+  const [progress, setProgress] = useState(0)
+  const [results, setResults] = useState([])
+  const [error, setError] = useState('')
+
+  const reset = () => {
+    setText(''); setPreview([]); setStep('input'); setProgress(0); setResults([]); setError('')
+  }
+
+  useEffect(() => { if (!open) reset() }, [open])
+
+  const buildPreview = () => {
+    setError('')
+    const lines = text.split('\n').map(s => s.trim()).filter(Boolean)
+    if (!lines.length) { setError('Enter at least one phone number.'); return }
+    if (lines.length > 200) { setError('Maximum 200 DIDs per bulk add.'); return }
+    const items = lines.map(raw => ({ original: raw, normalized: normalizePhone(raw) }))
+    const bad = items.filter(i => !i.normalized)
+    if (bad.length) {
+      setError(`Cannot normalize (expected 10 or 11 digit US numbers): ${bad.map(b => b.original).slice(0, 4).join(', ')}`)
+      return
+    }
+    setPreview(items)
+    setStep('preview')
+  }
+
+  const handleCreate = async () => {
+    setStep('creating'); setProgress(0)
+    const res = []
+    for (let i = 0; i < preview.length; i++) {
+      const { original, normalized } = preview[i]
+      try {
+        await api.create({ destination_number: normalized, destination_enabled: true, actions: [] })
+        res.push({ original, normalized, status: 'ok' })
+      } catch (err) {
+        const d = err?.response?.data
+        const msg = d?.destination_number?.[0] || d?.message || Object.values(d || {}).flat()[0] || 'Failed'
+        res.push({ original, normalized, status: 'error', error: String(msg) })
+      }
+      setProgress(i + 1)
+      setResults([...res])
+    }
+    setStep('done')
+  }
+
+  const ok  = results.filter(r => r.status === 'ok').length
+  const bad = results.filter(r => r.status === 'error').length
+
+  return (
+    <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
+      <DialogContent className="w-[95vw] max-w-lg h-[540px] max-h-[90vh] flex flex-col p-0 overflow-hidden">
+        <DialogHeader className="px-6 pt-5 pb-4 border-b">
+          <DialogTitle className="flex items-center gap-2">
+            <Layers className="h-4 w-4 text-primary" /> Bulk Add DIDs
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+
+          {step === 'input' && (
+            <>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Phone Numbers — one per line</Label>
+                <p className="text-xs text-muted-foreground">Accepts any US format: (346) 571-1216 · 3465711216 · +13465711216</p>
+                <textarea
+                  className="flex min-h-[160px] w-full rounded-xl border border-input bg-background px-3 py-2 text-sm font-mono placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 transition-all"
+                  placeholder={"(346) 571-1216\n(346) 831-0764\n3468310765"}
+                  value={text}
+                  onChange={e => setText(e.target.value)}
+                />
+              </div>
+              {error && (
+                <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />{error}
+                </div>
+              )}
+            </>
+          )}
+
+          {step === 'preview' && (
+            <>
+              <p className="text-sm text-muted-foreground">
+                {preview.length} DID{preview.length !== 1 ? 's' : ''} will be added (unrouted — configure routing in the Destinations page after creation).
+              </p>
+              <div className="rounded-xl border overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="border-b bg-muted/40">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">Original</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">E.164 (stored as)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {preview.map(({ original, normalized }) => (
+                      <tr key={normalized}>
+                        <td className="px-3 py-1.5 text-sm text-muted-foreground">{original}</td>
+                        <td className="px-3 py-1.5 font-mono font-bold text-blue-500">{normalized}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {step === 'creating' && (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">Creating {progress} / {preview.length}…</p>
+              <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+                <div className="h-2 bg-primary transition-all duration-300 rounded-full"
+                  style={{ width: `${(progress / preview.length) * 100}%` }} />
+              </div>
+              <div className="max-h-48 overflow-y-auto space-y-1">
+                {results.map(r => (
+                  <div key={r.normalized} className={cn('flex items-center gap-2 text-xs px-2 py-1 rounded',
+                    r.status === 'ok' ? 'text-emerald-600' : 'text-destructive bg-destructive/5')}>
+                    {r.status === 'ok'
+                      ? <CheckCircle2 className="h-3 w-3 shrink-0" />
+                      : <AlertCircle className="h-3 w-3 shrink-0" />}
+                    <span className="font-mono font-bold">{r.normalized}</span>
+                    <span>{r.status === 'ok' ? 'Created' : r.error}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {step === 'done' && (
+            <div className="space-y-3">
+              <div className={cn('flex items-center gap-2 rounded-lg px-4 py-3 text-sm font-medium',
+                bad === 0 ? 'bg-emerald-500/10 text-emerald-700 border border-emerald-200' : 'bg-amber-500/10 text-amber-700 border border-amber-200')}>
+                <CheckCircle2 className="h-4 w-4" />
+                {ok} DID{ok !== 1 ? 's' : ''} added{bad > 0 ? `, ${bad} failed` : ' — all done!'}
+              </div>
+              {bad > 0 && (
+                <div className="max-h-40 overflow-y-auto space-y-1">
+                  {results.filter(r => r.status === 'error').map(r => (
+                    <div key={r.normalized} className="flex items-start gap-2 text-xs text-destructive">
+                      <AlertCircle className="h-3 w-3 shrink-0 mt-0.5" />
+                      <span><span className="font-mono font-bold">{r.normalized}</span>: {r.error}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+        </div>
+
+        <div className="flex justify-between gap-2 px-6 py-4 border-t">
+          <Button variant="ghost" onClick={() => { onClose(); if (step === 'done') onDone() }}>
+            {step === 'done' ? 'Close' : 'Cancel'}
+          </Button>
+          <div className="flex gap-2">
+            {step === 'preview' && <Button variant="outline" onClick={() => setStep('input')}>Back</Button>}
+            {step === 'input' && <Button onClick={buildPreview}>Preview →</Button>}
+            {step === 'preview' && (
+              <Button onClick={handleCreate}>Add {preview.length} DID{preview.length !== 1 ? 's' : ''}</Button>
+            )}
+            {step === 'done' && ok > 0 && <Button onClick={() => { onClose(); onDone() }}>Done</Button>}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── Page ───────────────────────────────────────────────────────────────────────
+
+
+export default function Destinations() {
+  const [rows, setRows]           = useState([])
+  const [loading, setLoading]     = useState(true)
+  const [search, setSearch]       = useState('')
+  const debouncedSearch           = useDebounce(search, 300)
+  const [dialogOpen, setDialog]   = useState(false)
+  const [bulkOpen, setBulkOpen]   = useState(false)
+  const [editId, setEditId]       = useState(null)
+  const [form, setForm]           = useState(EMPTY)
+  const [tab, setTab]             = useState('information')
+  const [saving, setSaving]       = useState(false)
+  const [formError, setFormError] = useState('')
+  const [deleting, setDeleting]   = useState(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+
+  const { destData, destLoading, loadDestData } = useDestinationData({ withConferences: true, withFaxBoxes: true })
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const { data } = await api.list(debouncedSearch ? { search: debouncedSearch } : {})
+      setRows(Array.isArray(data) ? data : data.results || [])
+    } finally { setLoading(false) }
+  }, [search])
+
+  useEffect(() => { load() }, [load])
+
+  const set = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
+
+  const openCreate = () => {
+    setEditId(null); setForm(EMPTY); setTab('information'); setFormError('')
+    setDialog(true); loadDestData()
+  }
+
+  const openEdit = async (r) => {
+    const id = r.destination_uuid
+    setEditId(id); setForm(rowToForm(r)); setTab('information'); setFormError('')
+    setDialog(true); loadDestData()
+    setDetailLoading(true)
+    try {
+      const { data } = await api.get(id)
+      setForm(rowToForm(data))
+    } catch { /* keep list data */ }
+    finally { setDetailLoading(false) }
+  }
+
+  const handleSave = async () => {
+    if (!form.destination_number.trim()) {
+      setFormError('DID / Phone Number is required.'); setTab('information'); return
+    }
+    setSaving(true); setFormError('')
+    try {
+      const payload = {
+        destination_number:        form.destination_number,
+        destination_number_regex:  form.destination_number_regex,
+        destination_name:          form.destination_name,
+        actions: form.actions.map((a, i) => ({
+          dest_type:            a.type,
+          dest_target_uuid:     a.target_uuid || null,
+          dest_external_number: a.external_number || '',
+          order:                i,
+        })),
+        max_channels:              form.max_channels !== '' ? parseInt(form.max_channels, 10) : null,
+        notify_over_limit:         form.notify_over_limit,
+        use_cnam_service:          form.use_cnam_service,
+        hide_callerid:             form.hide_callerid,
+        use_as_emergency_callerid: form.use_as_emergency_callerid,
+        inbound_call_rate:         form.inbound_call_rate,
+        destination_cid_number_prefix: form.destination_cid_number_prefix,
+        destination_cid_name_prefix:   form.destination_cid_name_prefix,
+        destination_ringback:      form.destination_ringback,
+        destination_hold_music:    form.destination_hold_music,
+        destination_accountcode:   form.destination_accountcode,
+        destination_enabled:       form.destination_enabled,
+        destination_description:   form.destination_description,
+        unconditional_forward:     form.unconditional_forward,
+        callback_to_last_caller:   form.callback_to_last_caller,
+        always_record:             form.always_record,
+        email_recording_to:        form.email_recording_to,
+        transcript_recorded:       form.transcript_recorded,
+        summarize_recorded:        form.summarize_recorded,
+        sentiment_analysis:        form.sentiment_analysis,
+        fax_id:                    form.fax_id || null,
+        fax_receive:               form.fax_receive,
+        fax_station_id:            form.fax_station_id,
+        fax_header:                form.fax_header,
+        fax_protocol:              form.fax_protocol,
+        fax_email_destinations:    form.fax_email_destinations,
+        fax_store:                 form.fax_store,
+        fax_on_receive:            form.fax_on_receive,
+      }
+      editId ? await api.update(editId, payload) : await api.create(payload)
+      setDialog(false); load()
+    } catch (err) {
+      const d = err?.response?.data
+      if (d && typeof d === 'object') {
+        const msgs = Object.entries(d).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join(' | ')
+        setFormError(msgs || 'Save failed.')
+      } else {
+        setFormError(typeof d === 'string' ? d : 'Save failed.')
+      }
+    } finally { setSaving(false) }
+  }
+
+  const handleDelete = async (id) => {
+    if (!confirm('Delete this DID?')) return
+    setDeleting(id)
+    try { await api.delete(id); load() } finally { setDeleting(null) }
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* toolbar */}
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input placeholder="Search DIDs…" className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <Button variant="outline" size="sm" onClick={() => setBulkOpen(true)}>
+          <Layers className="h-4 w-4 mr-1" />Bulk Add
+        </Button>
+        <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />Define DID</Button>
+      </div>
+
+      <BulkAddDIDsDialog
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        onDone={() => { setBulkOpen(false); load() }}
+      />
+
+      {/* table */}
+      <Card><CardContent className="p-0 overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Number</TableHead>
+              <TableHead>Name</TableHead>
+              <TableHead>Routing</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="w-20" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading
+              ? [...Array(4)].map((_, i) => (
+                  <TableRow key={i}>
+                    {[...Array(5)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
+                  </TableRow>
+                ))
+              : rows.length === 0
+                ? <TableRow><TableCell colSpan={5} className="text-center py-10 text-muted-foreground">No DIDs defined.</TableCell></TableRow>
+                : rows.map((r) => (
+                    <TableRow key={r.destination_uuid}>
+                      <TableCell className="font-mono font-medium">{r.destination_number}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{r.destination_name || '—'}</TableCell>
+                      <TableCell><RoutingCell row={r} /></TableCell>
+                      <TableCell>
+                        <Badge variant={r.destination_enabled !== false ? 'success' : 'secondary'}>
+                          {r.destination_enabled !== false ? 'Active' : 'Disabled'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                            onClick={() => handleDelete(r.destination_uuid)}
+                            disabled={deleting === r.destination_uuid}
+                          >
+                            {deleting === r.destination_uuid
+                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              : <Trash2 className="h-3.5 w-3.5" />}
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
+            }
+          </TableBody>
+        </Table>
+      </CardContent></Card>
+
+      {/* dialog */}
+      <Dialog open={dialogOpen} onOpenChange={setDialog}>
+        <DialogContent className="w-[95vw] max-w-2xl h-[700px] max-h-[90vh] flex flex-col p-0 overflow-hidden">
+          {/* Header */}
+          <DialogHeader className="px-6 pt-5 pb-4 border-b border-border/60">
+            <DialogTitle>{editId ? 'Edit DID' : 'Define DID'}</DialogTitle>
+          </DialogHeader>
+
+          {/* Tab bar */}
+          <div className="flex items-center gap-1 px-4 pt-2 pb-0 border-b border-border/60">
+            {TABS.map(t => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={cn(
+                  'px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-all duration-150',
+                  tab === t.id
+                    ? 'border-primary text-primary bg-primary/5'
+                    : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50',
+                )}
+              >
+                {t.label}
+              </button>
+            ))}
+            {detailLoading && <Loader2 className="h-4 w-4 animate-spin ml-auto mr-2 text-muted-foreground" />}
+          </div>
+
+          {/* Body */}
+          <div className="overflow-y-auto flex-1 px-6 py-4 space-y-1">
+            {formError && (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive mb-3">
+                {formError}
+              </div>
+            )}
+            <DIDFormBody tab={tab} form={form} set={set} setForm={setForm} destData={destData} destLoading={destLoading} />
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-between px-6 py-4 border-t border-border/60 bg-muted/30 rounded-b-2xl">
+            <span className="text-xs text-muted-foreground">
+              Step {TABS.findIndex(t => t.id === tab) + 1} of {TABS.length}
+            </span>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setDialog(false)}>Cancel</Button>
+              {TABS.findIndex(t => t.id === tab) > 0 && (
+                <Button variant="outline" onClick={() => setTab(TABS[TABS.findIndex(t => t.id === tab) - 1].id)}>
+                  ← Back
+                </Button>
+              )}
+              {TABS.findIndex(t => t.id === tab) < TABS.length - 1 ? (
+                <Button onClick={() => setTab(TABS[TABS.findIndex(t => t.id === tab) + 1].id)}>
+                  Next →
+                </Button>
+              ) : (
+                <Button onClick={handleSave} disabled={saving}>
+                  {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+                  {editId ? 'Save Changes' : 'Create DID'}
+                </Button>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}

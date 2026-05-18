@@ -1,0 +1,276 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-border:                    hsl(var(--border));
+  --color-input:                     hsl(var(--input));
+  --color-ring:                      hsl(var(--ring));
+  --color-background:                hsl(var(--background));
+  --color-foreground:                hsl(var(--foreground));
+  --color-primary:                   hsl(var(--primary));
+  --color-primary-foreground:        hsl(var(--primary-foreground));
+  --color-secondary:                 hsl(var(--secondary));
+  --color-secondary-foreground:      hsl(var(--secondary-foreground));
+  --color-destructive:               hsl(var(--destructive));
+  --color-destructive-foreground:    hsl(var(--destructive-foreground));
+  --color-muted:                     hsl(var(--muted));
+  --color-muted-foreground:          hsl(var(--muted-foreground));
+  --color-accent:                    hsl(var(--accent));
+  --color-accent-foreground:         hsl(var(--accent-foreground));
+  --color-card:                      hsl(var(--card));
+  --color-card-foreground:           hsl(var(--card-foreground));
+  --color-popover:                   hsl(var(--popover));
+  --color-popover-foreground:        hsl(var(--popover-foreground));
+  --color-sidebar:                   hsl(var(--sidebar));
+  --color-sidebar-foreground:        hsl(var(--sidebar-foreground));
+  --color-sidebar-muted:             hsl(var(--sidebar-muted));
+  --color-sidebar-active:            hsl(var(--sidebar-active));
+  --color-sidebar-active-foreground: hsl(var(--sidebar-active-foreground));
+  --color-sidebar-border:            hsl(var(--sidebar-border));
+  --color-sidebar-text:              hsl(var(--sidebar-text));
+  --color-sidebar-hover:             hsl(var(--sidebar-hover));
+  --color-sidebar-dropdown:          hsl(var(--sidebar-dropdown));
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+@layer base {
+  :root {
+    --background: 220 25% 97%;
+    --foreground: 224 71% 8%;
+    --card: 0 0% 100%;
+    --card-foreground: 224 71% 8%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 71% 8%;
+    --primary: 199 95% 40%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 20% 92%;
+    --secondary-foreground: 224 71% 8%;
+    --muted: 220 20% 92%;
+    --muted-foreground: 220 15% 50%;
+    --accent: 220 20% 92%;
+    --accent-foreground: 224 71% 8%;
+    --destructive: 4 86% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 20% 87%;
+    --input: 220 20% 87%;
+    --ring: 199 95% 40%;
+    --radius: 0.625rem;
+    /* Sidebar — light mode: light grey */
+    --sidebar: 0 0% 100%;
+    --sidebar-foreground: 220 10% 40%;
+    --sidebar-muted: 220 10% 58%;
+    --sidebar-active: 199 95% 40%;
+    --sidebar-active-foreground: 0 0% 100%;
+    --sidebar-border: 220 13% 88%;
+    --sidebar-text: 220 20% 14%;
+    --sidebar-hover: 220 14% 91%;
+    --sidebar-dropdown: 0 0% 100%;
+  }
+
+  .dark {
+    --background: 0 0% 4%;
+    --foreground: 0 0% 93%;
+    --card: 0 0% 0%;
+    --card-foreground: 0 0% 93%;
+    --popover: 0 0% 0%;
+    --popover-foreground: 0 0% 93%;
+    --primary: 199 95% 45%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 93%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 52%;
+    --accent: 0 0% 15%;
+    --accent-foreground: 0 0% 93%;
+    --destructive: 4 74% 42%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 18%;
+    --input: 0 0% 18%;
+    --ring: 199 95% 45%;
+    /* Sidebar — dark mode: near-black grey */
+    --sidebar: 0 0% 0%;
+    --sidebar-foreground: 0 0% 58%;
+    --sidebar-muted: 0 0% 38%;
+    --sidebar-active: 199 95% 45%;
+    --sidebar-active-foreground: 0 0% 100%;
+    --sidebar-border: 0 0% 12%;
+    --sidebar-text: 0 0% 92%;
+    --sidebar-hover: 0 0% 11%;
+    --sidebar-dropdown: 0 0% 9%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+    box-sizing: border-box;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  /* Smooth theme transition — applies to everything except images/videos */
+  *,
+  *::before,
+  *::after {
+    transition-property: background-color, border-color, color, fill, stroke, box-shadow;
+    transition-duration: 120ms;
+    transition-timing-function: ease-out;
+  }
+  /* Don't transition layout or transform properties globally */
+  img, video, svg { transition: none; }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    line-height: 1.5;
+  }
+
+  /* Page transition */
+  @keyframes page-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Dialog animation */
+  @keyframes dialog-in {
+    from { opacity: 0; transform: scale(0.95) translateY(12px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  @keyframes overlay-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  /* Dropdown */
+  @keyframes dropdown-in {
+    from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  /* Live pulse */
+  @keyframes live-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.4; transform: scale(1.5); }
+  }
+
+  /* Shimmer */
+  @keyframes shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* Login orb float */
+  @keyframes orb-float {
+    0%, 100% { transform: translateY(0) scale(1); }
+    50%       { transform: translateY(-18px) scale(1.06); }
+  }
+  @keyframes orb-float-slow {
+    0%, 100% { transform: translateY(0) scale(1) rotate(0deg); }
+    50%       { transform: translateY(14px) scale(0.94) rotate(6deg); }
+  }
+
+  /* Login logo bounce */
+  @keyframes logo-bounce {
+    0%, 100% { transform: translateY(0); }
+    40%       { transform: translateY(-6px); }
+    60%       { transform: translateY(-3px); }
+  }
+
+  /* Login form card slide-up */
+  @keyframes card-in {
+    from { opacity: 0; transform: translateY(24px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  /* Staggered feature item */
+  @keyframes feature-in {
+    from { opacity: 0; transform: translateX(-16px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  /* Subtle glow pulse for the logo icon */
+  @keyframes glow-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 hsl(199 95% 40% / 0.4); }
+    50%       { box-shadow: 0 0 0 10px hsl(199 95% 40% / 0); }
+  }
+}
+
+/* Global slim scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--sidebar-border)) transparent;
+}
+*::-webkit-scrollbar { width: 4px; height: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--sidebar-border));
+  border-radius: 9999px;
+}
+*::-webkit-scrollbar-corner { background: transparent; }
+
+@layer utilities {
+  /* Scrollbar */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--sidebar-border)) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--sidebar-border));
+    border-radius: 9999px;
+  }
+
+  /* Glass */
+  .glass {
+    background: rgba(255,255,255,0.65);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255,255,255,0.85);
+  }
+  .dark .glass {
+    background: rgba(8,13,30,0.75);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+
+  /* Gradient text */
+  .gradient-text {
+    background: linear-gradient(130deg, hsl(199 95% 50%), hsl(217 91% 65%));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Shimmer skeleton */
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      hsl(var(--muted)) 25%,
+      hsl(var(--muted) / 0.5) 50%,
+      hsl(var(--muted)) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.6s ease-in-out infinite;
+  }
+
+  /* Animation classes */
+  .animate-page-in      { animation: page-in 0.22s cubic-bezier(0.16, 1, 0.3, 1); }
+  .animate-dialog-in    { animation: dialog-in 0.22s cubic-bezier(0.16, 1, 0.3, 1); }
+  .animate-overlay-in   { animation: overlay-in 0.15s ease-out; }
+  .animate-dropdown-in  { animation: dropdown-in 0.15s cubic-bezier(0.16, 1, 0.3, 1); }
+  .animate-live-pulse   { animation: live-pulse 2s ease-in-out infinite; }
+  .animate-orb-float    { animation: orb-float 6s ease-in-out infinite; }
+  .animate-orb-float-slow { animation: orb-float-slow 9s ease-in-out infinite; }
+  .animate-logo-bounce  { animation: logo-bounce 2.8s ease-in-out infinite; }
+  .animate-card-in      { animation: card-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both; }
+  .animate-glow-pulse   { animation: glow-pulse 2.5s ease-in-out infinite; }
+  .animate-feature-in   { animation: feature-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both; }
+}

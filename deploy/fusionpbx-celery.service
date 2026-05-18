@@ -1,0 +1,34 @@
+[Unit]
+Description=IHS PBX Celery Worker
+After=network.target redis.service postgresql.service
+Requires=redis.service
+
+[Service]
+Type=forking
+User=ihspbx
+Group=ihspbx
+WorkingDirectory=/opt/ihspbx-django/backend
+EnvironmentFile=/opt/ihspbx-django/.env
+Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
+PIDFile=/var/run/ihspbx/celery.pid
+ExecStart=/opt/ihspbx-django/venv/bin/celery \
+    -A config \
+    multi start worker \
+    --pidfile=/var/run/ihspbx/celery.pid \
+    --logfile=/var/log/ihspbx/celery.log \
+    --loglevel=INFO \
+    --concurrency=4 \
+    --queues=default,esl,email
+ExecStop=/opt/ihspbx-django/venv/bin/celery \
+    -A config multi stopwait worker \
+    --pidfile=/var/run/ihspbx/celery.pid
+ExecReload=/opt/ihspbx-django/venv/bin/celery \
+    -A config multi restart worker \
+    --pidfile=/var/run/ihspbx/celery.pid \
+    --logfile=/var/log/ihspbx/celery.log \
+    --loglevel=INFO
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

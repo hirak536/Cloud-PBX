@@ -1,0 +1,33 @@
+{
+  "id": "ihspbx-client-api",
+  "name": "IHSPBX Client API",
+  "values": [
+    {
+      "key": "base_url",
+      "value": "https://fs.ihsclients.com/api/v1/client",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "api_key",
+      "value": "",
+      "type": "secret",
+      "enabled": true
+    },
+    {
+      "key": "master_key",
+      "value": "",
+      "type": "secret",
+      "enabled": true
+    },
+    {
+      "key": "tenant_uuid",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    }
+  ],
+  "_postman_variable_scope": "environment",
+  "_postman_exported_at": "2026-03-27T00:00:00.000Z",
+  "_postman_exported_using": "Postman"
+}

@@ -1,0 +1,15 @@
+##############################################################################
+# /etc/fail2ban/jail.local — global overrides and sshd fix
+# On modern Ubuntu/Debian, SSH logs go to journald not /var/log/auth.log.
+# Setting backend = systemd fixes "Have not found any log file for sshd jail".
+##############################################################################
+
+[DEFAULT]
+allowipv6 = auto
+
+[sshd]
+enabled  = true
+backend  = systemd
+maxretry = 5
+findtime = 300
+bantime  = 3600

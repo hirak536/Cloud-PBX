@@ -1,0 +1,399 @@
+{
+  "info": {
+    "name": "IHSPBX Client API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Master Key",
+      "item": [
+        {
+          "name": "List All Tenants",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "MasterKey {{master_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/tenants/",
+              "host": ["{{base_url}}"],
+              "path": ["tenants", ""]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Get My Tenant Info",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.tenant_id) {",
+                  "    pm.environment.set('tenant_uuid', json.tenant_id);",
+                  "    console.log('tenant_uuid set to: ' + json.tenant_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/tenant/",
+              "host": ["{{base_url}}"],
+              "path": ["tenant", ""]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Extensions",
+      "item": [
+        {
+          "name": "List Extensions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/extensions/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "extensions", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Extension Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/extensions/:extension_uuid/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "extensions", ":extension_uuid", ""],
+              "variable": [
+                {
+                  "key": "extension_uuid",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "DIDs",
+      "item": [
+        {
+          "name": "List DIDs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/destinations/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "destinations", ""]
+            }
+          }
+        },
+        {
+          "name": "Get DID Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/destinations/:destination_uuid/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "destinations", ":destination_uuid", ""],
+              "variable": [
+                {
+                  "key": "destination_uuid",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "CDR",
+      "item": [
+        {
+          "name": "List Call Records",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/cdr/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "cdr", ""],
+              "query": [
+                { "key": "direction", "value": "inbound", "disabled": true },
+                { "key": "missed_call", "value": "true", "disabled": true },
+                { "key": "start_stamp__gte", "value": "2026-03-01", "disabled": true },
+                { "key": "start_stamp__lte", "value": "2026-03-31", "disabled": true },
+                { "key": "hangup_cause", "value": "NO_ANSWER", "disabled": true },
+                { "key": "search", "value": "", "disabled": true },
+                { "key": "page", "value": "1", "disabled": true },
+                { "key": "page_size", "value": "25", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "CDR Summary",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/cdr/summary/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "cdr", "summary", ""]
+            }
+          }
+        },
+        {
+          "name": "Get CDR Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/cdr/:xml_cdr_uuid/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "cdr", ":xml_cdr_uuid", ""],
+              "variable": [
+                {
+                  "key": "xml_cdr_uuid",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Fax",
+      "item": [
+        {
+          "name": "List Fax Boxes",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/fax/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "fax", ""]
+            }
+          }
+        },
+        {
+          "name": "Get Fax Box Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/fax/:fax_uuid/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "fax", ":fax_uuid", ""],
+              "variable": [
+                {
+                  "key": "fax_uuid",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Fax Files",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/fax/files/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "fax", "files", ""],
+              "query": [
+                { "key": "fax_file_status", "value": "received", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Send Fax",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "fax_uuid", "value": "", "type": "text" },
+                { "key": "destination_number", "value": "+14045551234", "type": "text" },
+                { "key": "file", "type": "file", "src": "" }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/fax/quick-send/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "fax", "quick-send", ""]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Voicemail",
+      "item": [
+        {
+          "name": "List Voicemail Messages",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/voicemail-messages/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "voicemail-messages", ""],
+              "query": [
+                { "key": "read", "value": "false", "disabled": true },
+                { "key": "voicemail_id", "value": "901", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Voicemail Message Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/voicemail-messages/:message_uuid/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "voicemail-messages", ":message_uuid", ""],
+              "variable": [
+                {
+                  "key": "message_uuid",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mark Voicemail Read",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "ApiKey {{api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"read\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/{{tenant_uuid}}/voicemail-messages/:message_uuid/mark-read/",
+              "host": ["{{base_url}}"],
+              "path": ["{{tenant_uuid}}", "voicemail-messages", ":message_uuid", "mark-read", ""],
+              "variable": [
+                {
+                  "key": "message_uuid",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
