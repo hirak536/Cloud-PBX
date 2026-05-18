@@ -1,0 +1,89 @@
+<profile name="webrtc">
+  <aliases>
+  </aliases>
+
+  <gateways>
+  </gateways>
+
+  <domains>
+    <domain name="all" alias="false" parse="true"/>
+  </domains>
+
+  <settings>
+    <param name="user-agent-string" value="IHS-PBX-WebRTC"/>
+    <param name="debug" value="0"/>
+    <param name="sip-trace" value="no"/>
+    <param name="sip-capture" value="no"/>
+
+    <param name="rfc2833-pt" value="101"/>
+    <param name="dtmf-duration" value="2000"/>
+    <param name="dtmf-type" value="rfc2833"/>
+
+    <param name="context" value="public"/>
+    <param name="dialplan" value="XML"/>
+
+    <param name="rtp-ip" value="$${local_ip_v4}"/>
+    <param name="sip-ip" value="$${local_ip_v4}"/>
+    <param name="ext-rtp-ip" value="$${external_rtp_ip}"/>
+    <param name="ext-sip-ip" value="$${external_sip_ip}"/>
+
+    <param name="sip-port" value="5066"/>
+    <param name="tls" value="true"/>
+    <param name="tls-only" value="false"/>
+    <param name="tls-bind-params" value="transport=tls"/>
+    <param name="tls-sip-port" value="5067"/>
+    <param name="tls-cert-dir" value="/etc/freeswitch/tls"/>
+    <param name="tls-passphrase" value=""/>
+    <param name="tls-verify-date" value="true"/>
+    <param name="tls-verify-policy" value="none"/>
+    <param name="tls-verify-depth" value="2"/>
+    <param name="tls-verify-in-subjects" value=""/>
+    <param name="tls-version" value="tlsv1,tlsv1.1,tlsv1.2"/>
+
+    <param name="wss-binding" value=":7443"/>
+
+    <param name="hold-music" value="$${hold_music}"/>
+    <param name="apply-nat-acl" value="nat.auto"/>
+
+    <param name="auth-calls" value="true"/>
+    <param name="apply-inbound-acl" value="domains"/>
+
+    <param name="inbound-codec-prefs" value="opus,PCMU,PCMA,G722"/>
+    <param name="outbound-codec-prefs" value="opus,PCMU,PCMA,G722"/>
+    <param name="inbound-codec-negotiation" value="generous"/>
+    <param name="inbound-late-negotiation" value="true"/>
+
+    <param name="rtp-timer-name" value="soft"/>
+
+    <param name="rtcp-audio-interval-msec" value="5000"/>
+    <param name="rtcp-video-interval-msec" value="5000"/>
+    <param name="dtls-srtp" value="true"/>
+
+    <param name="liberal-dtmf" value="true"/>
+
+    <param name="enable-3pcc" value="true"/>
+
+    <param name="manage-presence" value="true"/>
+    <param name="presence-hosts" value="$${domain},$${local_ip_v4}"/>
+    <param name="presence-privacy" value="false"/>
+
+    <param name="multiple-registrations" value="contact"/>
+    <param name="force-register-domain" value="$${domain}"/>
+    <param name="force-subscription-domain" value="$${domain}"/>
+    <param name="force-register-db-domain" value="$${domain}"/>
+
+    <param name="aggressive-nat-detection" value="true"/>
+    <param name="NDLB-received-in-nat-reg-contact" value="true"/>
+
+    <param name="watchdog-enabled" value="no"/>
+
+    <param name="rtp-autoflush-during-bridge" value="true"/>
+    <param name="rtp-rewrite-timestamps" value="true"/>
+
+    <param name="pass-rfc2833" value="false"/>
+    <param name="inbound-bypass-media" value="false"/>
+    <param name="inbound-proxy-media" value="false"/>
+
+    <param name="ws-binding" value=":5066"/>
+  </settings>
+</profile>
