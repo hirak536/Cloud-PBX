@@ -40,7 +40,7 @@
     <param name="tls-verify-in-subjects" value=""/>
     <param name="tls-version" value="tlsv1,tlsv1.1,tlsv1.2"/>
 
-    <param name="wss-binding" value=":7443"/>
+    <param name="wss-binding" value=":8089"/>
 
     <param name="hold-music" value="$${hold_music}"/>
     <param name="apply-nat-acl" value="nat.auto"/>
