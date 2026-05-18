@@ -38,7 +38,6 @@ const TABS = [
   { id: 'general',       label: 'General' },
   { id: 'configuration', label: 'Configuration' },
   { id: 'voicemail',     label: 'Voicemail' },
-  { id: 'network',       label: 'Network' },
   { id: 'outbound',      label: 'Outbound' },
   { id: 'forwarding',    label: 'Forwarding' },
 ]
@@ -57,19 +56,12 @@ const EMPTY_FORM = {
   codec_preference: DEFAULT_CODECS,
   absolute_codec_string: '',
   sip_bypass_media: '',
-  sip_bypass_media_webrtc: '',
-  max_registrations: 0,
-  call_timeout: 30,
   call_group: '',
   ring_group_ids: [],
   hold_music: '',
   language: '',
-  user_context: 'default',
-  force_ping: false,
   call_screen_enabled: false,
   user_record: '',
-  limit_max: 0,
-  limit_destination: '',
   // Recording
   call_recording: 'inherit',
   // Voicemail
@@ -81,33 +73,11 @@ const EMPTY_FORM = {
   voicemail_file: 'attach',
   voicemail_local_after_email: true,
   mwi_account: '',
-  // Network (model-backed)
-  sip_force_contact: '',
-  sip_force_expires: '',
-  auth_acl: '',
-  cidr: '',
-  // Network (UI-ready, stored as ext settings later)
-  transport: 'any',
-  webrtc_support: false,
-  rtp_encryption: false,
-  outbound_proxy: '',
-  send_rpid: 'system_default',
-  trust_rpid: 'system_default',
-  tos_audio: '',
-  tos_video: '',
-  cos_audio: '',
-  cos_video: '',
-  sip_from_filter: '',
-  sip_agent_filter: '',
   // Outbound
   outbound_did: '',
   outbound_caller_id_number: '',
   outbound_caller_id_name: '',
-  emergency_caller_id_number: '',
-  emergency_caller_id_name: '',
   outbound_route: '',
-  outbound_xheader_name: '',
-  outbound_xheader_value: '',
   // Forwarding
   call_forward_active: false,
   forward_all_enabled: false,
@@ -483,6 +453,27 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
       .finally(() => setVmLoading(false))
   }, [activeTab, voicemailBoxes.length])
 
+  // Find the voicemail box for the current extension (by voicemail_id, or extension number).
+  const matchedVoicemailBox = (() => {
+    const mailboxKey = form.voicemail_id || form.extension
+    if (!mailboxKey) return null
+    return voicemailBoxes.find(vm => vm.voicemail_id === mailboxKey) || null
+  })()
+
+  // When the matched box is found, mirror its email + PIN into the form.
+  // Edits on these fields flow to both sides on save.
+  useEffect(() => {
+    if (!matchedVoicemailBox) return
+    const boxEmail = matchedVoicemailBox.voicemail_mail_to || ''
+    const boxPin = matchedVoicemailBox.voicemail_password || ''
+    setForm(f => ({
+      ...f,
+      voicemail_mail_to: f.voicemail_mail_to === boxEmail ? f.voicemail_mail_to : boxEmail,
+      voicemail_password: f.voicemail_password === boxPin ? f.voicemail_password : boxPin,
+    }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchedVoicemailBox?.voicemail_uuid])
+
   // Fetch gateways and DIDs when outbound tab opens
   useEffect(() => {
     if (activeTab !== 'outbound') return
@@ -660,31 +651,6 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
         {activeTab === 'configuration' && (
           <div className="grid grid-cols-2 gap-x-4 gap-y-4">
 
-            <SectionTitle>Security</SectionTitle>
-
-            <Field label="WebRTC Support">
-              <div className="flex h-9 items-center gap-3">
-                <Toggle checked={form.webrtc_support} onChange={val => setForm(f => ({
-                  ...f,
-                  webrtc_support: val,
-                  sip_bypass_media: val ? '' : f.sip_bypass_media,
-                  codec_preference: val ? f.codec_preference : f.codec_preference,
-                }))} />
-                <span className="text-sm text-muted-foreground">{form.webrtc_support ? 'Yes' : 'No'}</span>
-              </div>
-            </Field>
-
-            <Field label="RTP Encryption (SRTP)">
-              <div className="flex h-9 items-center gap-3">
-                <Toggle checked={form.rtp_encryption} onChange={val => setForm(f => ({
-                  ...f,
-                  rtp_encryption: val,
-                  sip_bypass_media: val ? '' : f.sip_bypass_media,
-                }))} />
-                <span className="text-sm text-muted-foreground">{form.rtp_encryption ? 'Yes' : 'No'}</span>
-              </div>
-            </Field>
-
             <SectionTitle>Media</SectionTitle>
 
             <Field
@@ -698,10 +664,9 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
               />
             </Field>
 
-            <Field label="Direct Media (UDP/TCP/TLS)" span2 hint={form.webrtc_support || form.rtp_encryption ? 'Not available — WebRTC/SRTP requires FreeSWITCH in the media path' : 'Forces PCMU codec when enabled'}>
+            <Field label="Direct Media" span2 hint="Forces PCMU codec when enabled">
               <Select
-                value={form.webrtc_support || form.rtp_encryption ? '' : form.sip_bypass_media}
-                disabled={form.webrtc_support || form.rtp_encryption}
+                value={form.sip_bypass_media}
                 onChange={e => {
                   const val = e.target.value
                   setForm(f => ({
@@ -717,23 +682,7 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
               </Select>
             </Field>
 
-            <SectionTitle>Limits & Routing</SectionTitle>
-
-            <Field label="Max Registrations" hint="0 = unlimited">
-              <Input
-                type="number" min={0} max={20}
-                value={form.max_registrations}
-                onChange={(e) => setForm(f => ({ ...f, max_registrations: parseInt(e.target.value) || 0 }))}
-              />
-            </Field>
-
-            <Field label="Call Timeout (seconds)" hint="Ring time before going to voicemail/forward">
-              <Input
-                type="number" min={5} max={300}
-                value={form.call_timeout}
-                onChange={(e) => setForm(f => ({ ...f, call_timeout: parseInt(e.target.value) || 30 }))}
-              />
-            </Field>
+            <SectionTitle>Routing</SectionTitle>
 
             <Field label="Call Group" hint="Ring groups this extension is a member of" span2>
               <MultiSelect
@@ -749,29 +698,6 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
               />
             </Field>
 
-            <Field label="User Context" hint="FreeSWITCH dialplan context for this extension">
-              <Input placeholder="default" value={form.user_context} onChange={set('user_context')} />
-            </Field>
-
-            <Field label="Limit Max Calls" hint="0 = unlimited">
-              <Input
-                type="number" min={0} max={100}
-                value={form.limit_max}
-                onChange={(e) => setForm(f => ({ ...f, limit_max: parseInt(e.target.value) || 0 }))}
-              />
-            </Field>
-
-            <Field label="Limit Destination" hint="Where to send calls when limit is exceeded">
-              <DestinationPicker
-                value={stringToDest(form.limit_destination, destData)}
-                onChange={(dest) => setForm(f => ({ ...f, limit_destination: destToString(dest, destData) }))}
-                data={destData}
-                loading={destLoading}
-                compact
-                placeholder="Select destination…"
-              />
-            </Field>
-
             <SectionTitle>Behaviour</SectionTitle>
 
             <Field label="User Record">
@@ -782,13 +708,6 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                 <option value="outbound">Outbound only</option>
                 <option value="inbound">Inbound only</option>
               </Select>
-            </Field>
-
-            <Field label="Force Ping" hint="Send OPTIONS keep-alive to registered endpoints">
-              <div className="flex h-9 items-center gap-3">
-                <Toggle checked={form.force_ping} onChange={setToggle('force_ping')} />
-                <span className="text-sm text-muted-foreground">{form.force_ping ? 'Yes' : 'No'}</span>
-              </div>
             </Field>
 
             <Field label="Call Screen">
@@ -871,7 +790,12 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
               />
             </Field>
 
-            <Field label="Voicemail PIN" hint="4-digit PIN to access voicemail">
+            <Field
+              label="Voicemail PIN"
+              hint={matchedVoicemailBox
+                ? `Linked to voicemail box ${matchedVoicemailBox.voicemail_id} — changes save to both`
+                : '4-digit PIN to access voicemail'}
+            >
               <Input
                 type="text"
                 placeholder="Auto-generated on create"
@@ -882,7 +806,13 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
               />
             </Field>
 
-            <Field label="Email for Voicemail" hint="Send voicemail notifications to this address" span2>
+            <Field
+              label="Email for Voicemail"
+              hint={matchedVoicemailBox
+                ? `Linked to voicemail box ${matchedVoicemailBox.voicemail_id} — changes save to both`
+                : 'Send voicemail notifications to this address'}
+              span2
+            >
               <Input
                 type="email"
                 placeholder="e.g. user@example.com"
@@ -911,106 +841,6 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                   {form.voicemail_local_after_email ? 'Keep' : 'Delete after email'}
                 </span>
               </div>
-            </Field>
-
-          </div>
-        )}
-
-        {/* ── Network ── */}
-        {activeTab === 'network' && (
-          <div className="grid grid-cols-2 gap-x-4 gap-y-4">
-
-            <SectionTitle>Registration</SectionTitle>
-
-            <Field label="Host" hint="Leave blank for dynamic registration">
-              <Select value={form.sip_force_contact} onChange={set('sip_force_contact')}>
-                <option value="">Dynamic (default)</option>
-                <option value="NDLB-connectile-dysfunction">NDLB Fix NAT</option>
-                <option value="NDLB-tls-connectile-dysfunction">NDLB TLS Fix NAT</option>
-              </Select>
-            </Field>
-
-            <Field label="Force Expires (seconds)" hint="Override registration expiry (blank = use client value)">
-              <Input
-                type="number" min={60} max={86400}
-                placeholder="e.g. 3600"
-                value={form.sip_force_expires}
-                onChange={(e) => setForm(f => ({ ...f, sip_force_expires: e.target.value }))}
-              />
-            </Field>
-
-            <Field label="Insecure" hint="Controls what parts of auth are skipped">
-              <Select value={form.auth_acl} onChange={set('auth_acl')}>
-                <option value="">No (default)</option>
-                <option value="very">Very — skip all auth</option>
-                <option value="port">Port — skip port check</option>
-                <option value="port,invite">Port + Invite</option>
-              </Select>
-            </Field>
-
-            <Field label="Transport">
-              <Select value={form.transport} onChange={set('transport')}>
-                <option value="any">Any (UDP, TCP, TLS and WebRTC)</option>
-                <option value="udp">UDP only</option>
-                <option value="tcp">TCP only</option>
-                <option value="tls">TLS only</option>
-                <option value="wss">WebRTC (WSS) only</option>
-              </Select>
-            </Field>
-
-            <Field label="Outbound Proxy" hint="SIP proxy for outbound calls">
-              <Input placeholder="e.g. sip:proxy.example.com" value={form.outbound_proxy} onChange={set('outbound_proxy')} />
-            </Field>
-
-            <Field label="Restrict to IP Addresses (CIDR)" hint="e.g. 192.168.1.0/24">
-              <Input placeholder="e.g. 10.0.0.0/8" value={form.cidr} onChange={set('cidr')} />
-            </Field>
-
-            <SectionTitle>Identity</SectionTitle>
-
-            <Field label="Send RPID">
-              <Select value={form.send_rpid} onChange={set('send_rpid')}>
-                <option value="system_default">System default</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-                <option value="pai">P-Asserted-Identity</option>
-              </Select>
-            </Field>
-
-            <Field label="Trust RPID">
-              <Select value={form.trust_rpid} onChange={set('trust_rpid')}>
-                <option value="system_default">System default</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </Select>
-            </Field>
-
-            <SectionTitle>QoS</SectionTitle>
-
-            <Field label="TOS Audio" hint="Type of Service for audio packets">
-              <Input placeholder="e.g. EF or 0xb8" value={form.tos_audio} onChange={set('tos_audio')} />
-            </Field>
-
-            <Field label="TOS Video" hint="Type of Service for video packets">
-              <Input placeholder="e.g. CS3 or 0x60" value={form.tos_video} onChange={set('tos_video')} />
-            </Field>
-
-            <Field label="COS Audio" hint="Class of Service for audio">
-              <Input placeholder="e.g. 6" value={form.cos_audio} onChange={set('cos_audio')} />
-            </Field>
-
-            <Field label="COS Video" hint="Class of Service for video">
-              <Input placeholder="e.g. 3" value={form.cos_video} onChange={set('cos_video')} />
-            </Field>
-
-            <SectionTitle>Filters</SectionTitle>
-
-            <Field label="Regex Filter — SIP From" hint="Reject calls if From header doesn't match">
-              <Input placeholder="e.g. ^sip:.*@example\.com$" value={form.sip_from_filter} onChange={set('sip_from_filter')} />
-            </Field>
-
-            <Field label="Regex Filter — SIP User Agent" hint="Reject calls by User-Agent header">
-              <Input placeholder="e.g. ^Polycom.*" value={form.sip_agent_filter} onChange={set('sip_agent_filter')} />
             </Field>
 
           </div>
@@ -1070,16 +900,6 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
               )}
             </Field>
 
-            <SectionTitle>Custom SIP Headers</SectionTitle>
-
-            <Field label="Custom X-Header Name" hint="Sent on outbound calls, must start with X-">
-              <Input placeholder="e.g. X-Tenant-ID" value={form.outbound_xheader_name} onChange={set('outbound_xheader_name')} />
-            </Field>
-
-            <Field label="Custom X-Header Value">
-              <Input placeholder="e.g. tenant-001" value={form.outbound_xheader_value} onChange={set('outbound_xheader_value')} />
-            </Field>
-
             <SectionTitle>Caller ID</SectionTitle>
 
             <Field
@@ -1106,14 +926,6 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                 readOnly={!!form.outbound_did}
                 className={form.outbound_did ? 'bg-muted text-muted-foreground' : ''}
               />
-            </Field>
-
-            <Field label="Emergency Caller ID Number">
-              <Input placeholder="e.g. +18005551234" value={form.emergency_caller_id_number} onChange={set('emergency_caller_id_number')} />
-            </Field>
-
-            <Field label="Emergency Caller ID Name">
-              <Input placeholder="Emergency" value={form.emergency_caller_id_name} onChange={set('emergency_caller_id_name')} />
             </Field>
 
           </div>
@@ -1266,7 +1078,6 @@ function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant }) {
           codec_preference: DEFAULT_CODECS,
           voicemail_enabled: true, voicemail_file: 'attach',
           voicemail_local_after_email: true,
-          call_timeout: 30, max_registrations: 0,
           enabled: true,
         })
         res.push({ ext, status: 'ok' })
@@ -1557,21 +1368,14 @@ export default function Extensions() {
     directory_full_name:                     d.directory_full_name || '',
     directory_visible:                       d.directory_visible !== false,
     directory_exten_visible:                 d.directory_exten_visible !== false,
-    sip_bypass_media:                        (d.webrtc_support || d.rtp_encryption) ? '' : (d.sip_bypass_media || ''),
-    codec_preference:                        (d.sip_bypass_media === 'true' || d.sip_bypass_media === 'proxy') && !d.webrtc_support && !d.rtp_encryption ? 'PCMU' : (d.codec_preference || DEFAULT_CODECS),
+    sip_bypass_media:                        d.sip_bypass_media || '',
+    codec_preference:                        (d.sip_bypass_media === 'true' || d.sip_bypass_media === 'proxy') ? 'PCMU' : (d.codec_preference || DEFAULT_CODECS),
     absolute_codec_string:                   d.absolute_codec_string || '',
-    sip_bypass_media_webrtc:                 d.sip_bypass_media_webrtc || '',
-    max_registrations:                       d.max_registrations ?? 0,
-    call_timeout:                            d.call_timeout || 30,
     call_group:                              d.call_group || '',
     hold_music:                              d.hold_music || '',
     language:                                d.language || '',
-    user_context:                            d.user_context || 'default',
-    force_ping:                              d.force_ping || false,
     call_screen_enabled:                     d.call_screen_enabled || false,
     user_record:                             d.user_record || '',
-    limit_max:                               d.limit_max ?? 0,
-    limit_destination:                       d.limit_destination || '',
     call_recording:                          d.call_recording || 'inherit',
     reject_to_voicemail:                     d.reject_to_voicemail || false,
     voicemail_enabled:                       d.voicemail_enabled !== false,
@@ -1581,21 +1385,10 @@ export default function Extensions() {
     voicemail_file:                          d.voicemail_file || 'attach',
     voicemail_local_after_email:             d.voicemail_local_after_email !== false,
     mwi_account:                             d.mwi_account || '',
-    sip_force_contact:                       d.sip_force_contact || '',
-    sip_force_expires:                       d.sip_force_expires != null ? String(d.sip_force_expires) : '',
-    auth_acl:                                d.auth_acl || '',
-    cidr:                                    d.cidr || '',
-    transport:                               d.transport || 'any',
-    webrtc_support:                          d.webrtc_support || false,
-    rtp_encryption:                          d.rtp_encryption || false,
     outbound_did:                            d.outbound_did || '',
     outbound_caller_id_number:               d.outbound_caller_id_number || '',
     outbound_caller_id_name:                 d.outbound_caller_id_name || '',
-    emergency_caller_id_number:              d.emergency_caller_id_number || '',
-    emergency_caller_id_name:                d.emergency_caller_id_name || '',
     outbound_route:                          d.outbound_route || '',
-    outbound_xheader_name:                   d.outbound_xheader_name || '',
-    outbound_xheader_value:                  d.outbound_xheader_value || '',
     call_forward_active:                     d.call_forward_active || false,
     forward_all_enabled:                     d.forward_all_enabled || false,
     forward_all_destination:                 d.forward_all_destination || '',
@@ -1654,22 +1447,14 @@ export default function Extensions() {
         directory_visible:                       form.directory_visible,
         directory_exten_visible:                 form.directory_exten_visible,
         // Configuration
-        // webrtc_support/rtp_encryption are incompatible with bypass/proxy — clear it at payload level too
-        sip_bypass_media:                        (form.webrtc_support || form.rtp_encryption) ? '' : form.sip_bypass_media,
-        sip_bypass_media_webrtc:                 form.sip_bypass_media_webrtc,
-        codec_preference:                        (form.sip_bypass_media === 'true' || form.sip_bypass_media === 'proxy') && !form.webrtc_support && !form.rtp_encryption ? 'PCMU' : form.codec_preference,
+        sip_bypass_media:                        form.sip_bypass_media,
+        codec_preference:                        (form.sip_bypass_media === 'true' || form.sip_bypass_media === 'proxy') ? 'PCMU' : form.codec_preference,
         absolute_codec_string:                   form.absolute_codec_string,
-        max_registrations:                       form.max_registrations,
-        call_timeout:                            form.call_timeout,
         call_group:                              form.call_group,
         hold_music:                              form.hold_music,
         language:                                form.language,
-        user_context:                            form.user_context,
-        force_ping:                              form.force_ping,
         call_screen_enabled:                     form.call_screen_enabled,
         user_record:                             form.user_record,
-        limit_max:                               form.limit_max,
-        limit_destination:                       form.limit_destination,
         // Recording
         call_recording:                          form.call_recording,
         // Voicemail
@@ -1680,23 +1465,11 @@ export default function Extensions() {
         voicemail_file:                          form.voicemail_file,
         voicemail_local_after_email:             form.voicemail_local_after_email,
         mwi_account:                             form.mwi_account,
-        // Network (model-backed only)
-        sip_force_contact:                       form.sip_force_contact,
-        sip_force_expires:                       form.sip_force_expires !== '' ? parseInt(form.sip_force_expires) : null,
-        auth_acl:                                form.auth_acl,
-        cidr:                                    form.cidr,
-        transport:                               form.transport,
-        webrtc_support:                          form.webrtc_support,
-        rtp_encryption:                          form.rtp_encryption,
         // Outbound
         outbound_did:                            form.outbound_did || null,
         outbound_caller_id_number:               form.outbound_caller_id_number,
         outbound_caller_id_name:                 form.outbound_caller_id_name,
-        emergency_caller_id_number:              form.emergency_caller_id_number,
-        emergency_caller_id_name:                form.emergency_caller_id_name,
         outbound_route:                          form.outbound_route || null,
-        outbound_xheader_name:                   form.outbound_xheader_name,
-        outbound_xheader_value:                  form.outbound_xheader_value,
         reject_to_voicemail:                     form.reject_to_voicemail,
         // Forwarding
         call_forward_active:                     form.call_forward_active,
@@ -1717,6 +1490,24 @@ export default function Extensions() {
         await extensionsApi.update(editId, payload)
       } else {
         await extensionsApi.create(payload)
+      }
+
+      // Sync email + PIN to the linked voicemail box so the two stay in lockstep.
+      if (matchedVoicemailBox) {
+        const emailChanged = (matchedVoicemailBox.voicemail_mail_to || '') !== (form.voicemail_mail_to || '')
+        const pinChanged   = (matchedVoicemailBox.voicemail_password || '') !== (form.voicemail_password || '')
+        if (emailChanged || pinChanged) {
+          try {
+            await voicemailsApi.update(
+              matchedVoicemailBox.voicemail_uuid || matchedVoicemailBox.id,
+              {
+                ...matchedVoicemailBox,
+                voicemail_mail_to: form.voicemail_mail_to || '',
+                voicemail_password: form.voicemail_password || '',
+              },
+            )
+          } catch (e) { console.error('Failed to sync voicemail box', e) }
+        }
       }
 
       // Sync ring group memberships
