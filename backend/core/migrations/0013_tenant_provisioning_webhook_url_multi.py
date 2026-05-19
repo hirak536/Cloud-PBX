@@ -5,7 +5,6 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('core', '0011_tenant_provisioning_webhook_url'),
-        ('core', '0012_add_is_occupied_parked_call_uuid'),
     ]
 
     operations = [

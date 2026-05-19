@@ -173,6 +173,10 @@ class Extension(models.Model):
         default=False,
         help_text='Require SRTP for RTP encryption.',
     )
+    mobile_push_enabled = models.BooleanField(
+        default=False,
+        help_text='Enable mobile push notifications for this extension.',
+    )
     # ── Outbound DID (caller ID source) ──────────────────────────────────
     outbound_did = models.ForeignKey(
         'destinations.Destination',
