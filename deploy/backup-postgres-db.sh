@@ -24,6 +24,10 @@ fi
 : "${DB_NAME:?DB_NAME not set}"
 : "${DB_USER:?DB_USER not set}"
 : "${DB_PASSWORD:?DB_PASSWORD not set}"
+# Force IPv4 when DB_HOST is "localhost" to avoid ::1-vs-127.0.0.1 pg_hba mismatches.
+if [[ "${DB_HOST:-}" = "localhost" ]]; then
+  DB_HOST="127.0.0.1"
+fi
 : "${DB_HOST:?DB_HOST not set}"
 : "${DB_PORT:=5432}"
 
