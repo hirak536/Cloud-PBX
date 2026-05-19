@@ -17,8 +17,12 @@ ENV_FILE="${ENV_FILE:-/opt/IHS-PBX/.env}"
 
 # Load DB_* from .env if present (without exporting everything blindly).
 if [[ -f "${ENV_FILE}" ]]; then
-  # shellcheck disable=SC2046
-  export $(grep -E '^(DB_NAME|DB_USER|DB_PASSWORD|DB_HOST|DB_PORT)=' "${ENV_FILE}" | xargs -d '\n')
+  while IFS='=' read -r key val; do
+    # Strip optional surrounding single or double quotes
+    val="${val%\"}"; val="${val#\"}"
+    val="${val%\'}"; val="${val#\'}"
+    export "${key}=${val}"
+  done < <(grep -E '^(DB_NAME|DB_USER|DB_PASSWORD|DB_HOST|DB_PORT)=' "${ENV_FILE}")
 fi
 
 : "${DB_NAME:?DB_NAME not set}"
