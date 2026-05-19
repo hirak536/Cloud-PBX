@@ -368,12 +368,12 @@ export default function TenantList() {
                     <Input
                       value={webhookCustom}
                       onChange={e => setWebhookCustom(e.target.value)}
-                      placeholder="http://your-server.com/webhook"
+                      placeholder="https://server-a.com/webhook, https://server-b.com/webhook"
                       className="mt-1.5"
                     />
                   )}
                   <p className="text-xs text-muted-foreground">
-                    An API key will be auto-generated and POSTed here when the tenant is created.
+                    An API key will be auto-generated and POSTed here when the tenant is created. Separate multiple URLs with commas to fan out to all of them.
                   </p>
                 </div>
 

@@ -1,4 +1,6 @@
 from django.contrib.auth import authenticate
+from django.core.validators import URLValidator
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -66,6 +68,18 @@ class TenantSerializer(serializers.ModelSerializer):
 
     def get_domain_count(self, obj):
         return obj.domains.count()
+
+    def validate_provisioning_webhook_url(self, value):
+        if not value:
+            return ''
+        urls = [u.strip() for u in value.split(',') if u.strip()]
+        validator = URLValidator()
+        for url in urls:
+            try:
+                validator(url)
+            except DjangoValidationError:
+                raise serializers.ValidationError(f'Invalid URL: {url}')
+        return ', '.join(urls)
 
 
 class TenantListSerializer(serializers.ModelSerializer):

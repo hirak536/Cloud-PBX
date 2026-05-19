@@ -128,13 +128,19 @@ class Tenant(models.Model):
 
     description = models.TextField(blank=True, default='')
 
-    # Provisioning webhook: called once on tenant creation with the generated API key
-    provisioning_webhook_url = models.URLField(
-        max_length=512,
+    # Provisioning webhook: called once on tenant creation with the generated API key.
+    # Accepts one URL or multiple URLs separated by commas; all are POSTed.
+    provisioning_webhook_url = models.TextField(
         blank=True,
         default='',
-        help_text='Optional URL to POST the generated API key to when this tenant is created.',
+        help_text='Optional URL(s) to POST the generated API key to when this tenant is created. Separate multiple URLs with commas.',
     )
+
+    @property
+    def provisioning_webhook_urls(self):
+        """Return the configured webhook URL(s) as a clean list."""
+        raw = self.provisioning_webhook_url or ''
+        return [u.strip() for u in raw.split(',') if u.strip()]
 
     insert_date = models.DateTimeField(auto_now_add=True, null=True)
     insert_user = models.UUIDField(null=True, blank=True)

@@ -375,17 +375,20 @@ class TenantViewSet(viewsets.ModelViewSet):
         import requests
         from apps.client_api.models import TenantAPIKey
         logger_local = logging.getLogger(__name__)
+        webhook_urls = tenant.provisioning_webhook_urls
+        # Store the first URL on the API key for backward compatibility with per-key webhook fan-out.
+        primary_url = webhook_urls[0] if webhook_urls else ''
         try:
             api_key_instance, plaintext = TenantAPIKey.generate(
                 tenant=tenant,
                 label='Auto-generated on tenant creation',
-                webhook_url=tenant.provisioning_webhook_url or '',
+                webhook_url=primary_url,
             )
         except Exception:
             logger_local.exception('Failed to auto-generate API key for tenant %s', tenant.tenant_code)
             return
 
-        if not tenant.provisioning_webhook_url:
+        if not webhook_urls:
             return
 
         payload = {
@@ -396,22 +399,23 @@ class TenantViewSet(viewsets.ModelViewSet):
             'api_key': plaintext,
             'api_key_id': str(api_key_instance.id),
         }
-        try:
-            resp = requests.post(
-                tenant.provisioning_webhook_url,
-                json=payload,
-                timeout=10,
-                headers={'Content-Type': 'application/json'},
-            )
-            logger_local.info(
-                'Provisioning webhook for tenant %s → %s (%s)',
-                tenant.tenant_code, tenant.provisioning_webhook_url, resp.status_code,
-            )
-        except Exception:
-            logger_local.exception(
-                'Provisioning webhook failed for tenant %s → %s',
-                tenant.tenant_code, tenant.provisioning_webhook_url,
-            )
+        for url in webhook_urls:
+            try:
+                resp = requests.post(
+                    url,
+                    json=payload,
+                    timeout=10,
+                    headers={'Content-Type': 'application/json'},
+                )
+                logger_local.info(
+                    'Provisioning webhook for tenant %s → %s (%s)',
+                    tenant.tenant_code, url, resp.status_code,
+                )
+            except Exception:
+                logger_local.exception(
+                    'Provisioning webhook failed for tenant %s → %s',
+                    tenant.tenant_code, url,
+                )
 
     def perform_update(self, serializer):
         changes = _capture_changes(serializer.instance, serializer.validated_data)
