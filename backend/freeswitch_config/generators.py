@@ -933,8 +933,11 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
         etree.SubElement(bridge_cond, 'action', application='set',
                          data='fail_on_single_reject=USER_BUSY,CALL_REJECTED,603')
     _add_recording_actions(bridge_cond, domain_name)
+    # Ring ALL registered contacts simultaneously (desk phone + softphone, etc.).
+    # sofia_contact(*/user@domain) expands to a comma-joined dial string of every
+    # active registration; user/user@domain would only ring the most recent one.
     etree.SubElement(bridge_cond, 'action', application='bridge',
-                     data=f'user/{sip_id}@{domain_name}')
+                     data=f'${{sofia_contact(*/{sip_id}@{domain_name})}}')
 
     # ── 4. Post-bridge fallback ───────────────────────────────────────────
     # Actions below this line only execute when bridge FAILS (continue_on_fail=true).
@@ -1179,20 +1182,21 @@ def _ring_group_to_dialplan_xml(rg, domain_name, ctx, preload=None):
     strategy = rg.ring_group_strategy
 
     if strategy in ('simultaneous', 'enterprise') or not destinations:
-        # Use user/ instead of sofia_contact to ensure FreeSWITCH respects max-calls/limit_max
-        # and correctly handles multiple registrations and multi-line calls.
+        # Use sofia_contact(*/...) so every registered device for each member rings —
+        # critical when an extension is registered on multiple endpoints (e.g. desk
+        # phone + softphone). user/ only rings the most recent registration.
         legs = []
         for dest in destinations:
             number = dest.destination_number
             delay = dest.destination_delay or 0
             timeout = dest.destination_timeout or call_timeout
-            
+
             leg_vars = []
             if delay > 0:
                 leg_vars.append(f'leg_delay_start={delay}')
             if timeout and timeout != call_timeout:
                 leg_vars.append(f'leg_timeout={timeout}')
-                
+
             leg_prefix = f"[{','.join(leg_vars)}]" if leg_vars else ""
 
             if re.match(r'^\d{2,10}$', number):
@@ -1201,7 +1205,7 @@ def _ring_group_to_dialplan_xml(rg, domain_name, ctx, preload=None):
                     ctx_name = f'default-{tenant_code}' if tenant_code else 'default'
                     legs.append(f'{leg_prefix}loopback/{number}/{ctx_name}')
                 else:
-                    legs.append(f'{leg_prefix}user/{sip_user}@{domain_name}')
+                    legs.append(f'{leg_prefix}${{sofia_contact(*/{sip_user}@{domain_name})}}')
             else:
                 gw = _get_default_gateway(domain_name)
                 if gw:
