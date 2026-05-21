@@ -999,9 +999,13 @@ class ClientVoicemailMessageView(APIView):
             reader=VoicemailReadState.READER_CLIENT,
             defaults={'is_read': True},
         )
-        read_uuids = VoicemailReadState.objects.filter(
+        # Materialize read_uuids on Postgres first; passing the bare queryset
+        # makes Django try to JOIN across databases (VoicemailMessage lives in
+        # FreeSWITCH's SQLite via VoicemailSQLiteRouter), which fails with
+        # "no such table: voicemail_read_state".
+        read_uuids = list(VoicemailReadState.objects.filter(
             reader=VoicemailReadState.READER_CLIENT, is_read=True
-        ).values_list('message_uuid', flat=True)
+        ).values_list('message_uuid', flat=True))
         unread = VoicemailMessage.objects.filter(username=msg.username).exclude(uuid__in=read_uuids).count()
         return Response({'status': 'ok', 'unread': unread})
 
@@ -1026,9 +1030,13 @@ class ClientVoicemailMessageView(APIView):
             reader=VoicemailReadState.READER_CLIENT,
             defaults={'is_read': bool(read_val)},
         )
-        read_uuids = VoicemailReadState.objects.filter(
+        # Materialize read_uuids on Postgres first; passing the bare queryset
+        # makes Django try to JOIN across databases (VoicemailMessage lives in
+        # FreeSWITCH's SQLite via VoicemailSQLiteRouter), which fails with
+        # "no such table: voicemail_read_state".
+        read_uuids = list(VoicemailReadState.objects.filter(
             reader=VoicemailReadState.READER_CLIENT, is_read=True
-        ).values_list('message_uuid', flat=True)
+        ).values_list('message_uuid', flat=True))
         unread = VoicemailMessage.objects.filter(username=msg.username).exclude(uuid__in=read_uuids).count()
         return Response({'status': 'ok', 'unread': unread})
 
@@ -1104,9 +1112,11 @@ class ClientVoicemailUnreadCountsView(APIView):
 
         from django.db import OperationalError as DjOperationalError
         try:
-            read_uuids = VoicemailReadState.objects.filter(
+            # Materialize to a list — see the mark-read view for why we can't
+            # pass this queryset directly to a VoicemailMessage filter.
+            read_uuids = list(VoicemailReadState.objects.filter(
                 reader=VoicemailReadState.READER_CLIENT, is_read=True
-            ).values_list('message_uuid', flat=True)
+            ).values_list('message_uuid', flat=True))
 
             voicemail_id_filter = _normalize_voicemail_id(request.query_params.get('voicemail_id'), tenant)
             from apps.voicemails.models import Voicemail as VoicemailModel  # noqa: PLC0415
