@@ -621,26 +621,46 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
             effective_callback = cd.callback_to_last_caller
         except Exception:
             pass
-    if effective_callback and caller_id_number and dest.tenant_id:
-        # Read the sticky mapping from v_caller_extension_affinity. The affinity
-        # table is kept current by the outbound CDR signal AND by manual CSV seed,
-        # so it's faster (indexed single-row lookup) and more complete than scanning
-        # XmlCdr at every inbound call.
-        from apps.custom_destinations.affinity import normalize_number
-        from apps.custom_destinations.models import CallerExtensionAffinity
-        caller_norm = normalize_number(caller_id_number)
-        sticky = None
-        if caller_norm:
-            sticky = CallerExtensionAffinity.objects.filter(
-                tenant_id=dest.tenant_id, caller_number=caller_norm,
-            ).first()
-        if sticky and sticky.extension_number:
-            ext_plain = sticky.extension_number.split('-')[0]
-            tenant_code = dest.tenant.tenant_code if dest.tenant else None
-            ctx = f'default-{tenant_code}' if tenant_code else 'default'
-            etree.SubElement(cond, 'action', application='transfer',
-                             data=f'{ext_plain} XML {ctx}')
-            routed_to_last = True
+    if effective_callback and dest.tenant_id:
+        # Sticky last-agent routing.
+        #
+        # Emit a Lua action that runs at call-execute time, NOT a static transfer
+        # baked into the cached XML. Reason: mod_xml_curl caches dialplan responses
+        # by destination_number alone; if we baked the sticky extension into the
+        # XML it would only be correct for the first caller, then every subsequent
+        # caller to this DID would get bridged to the same wrong extension. The
+        # Lua reads caller_id_number live from the session and queries
+        # v_caller_extension_affinity at execute time.
+        #
+        # The fallback is what the CustomDestination wrapping this DID configured
+        # (its dest_type / dest_target_uuid) — used when no affinity match exists.
+        tenant_code = dest.tenant.tenant_code if dest.tenant else None
+        ctx = f'default-{tenant_code}' if tenant_code else 'default'
+
+        fb_type = 'hangup'
+        fb_data = ''
+        if dest.dest_type == 'custom_destination' and dest.dest_target_uuid:
+            try:
+                from apps.custom_destinations.models import CustomDestination
+                cd = CustomDestination.objects.get(custom_destination_uuid=dest.dest_target_uuid)
+                if cd.dest_type == 'extension' and cd.dest_target_uuid:
+                    # Look up the extension number for the fallback
+                    from apps.extensions.models import Extension
+                    fb_ext = Extension.objects.filter(extension_uuid=cd.dest_target_uuid).only('extension').first()
+                    if fb_ext:
+                        fb_type = 'extension'
+                        fb_data = str(fb_ext.extension)
+                elif cd.dest_type == 'external' and cd.dest_external_number:
+                    fb_type = 'transfer'
+                    fb_data = f'{cd.dest_external_number} XML public'
+            except Exception:
+                pass
+
+        etree.SubElement(
+            cond, 'action', application='lua',
+            data=f'affinity_route.lua {dest.tenant_id} {fb_type} {fb_data} {ctx}',
+        )
+        routed_to_last = True
 
     if not routed_to_last:
         # Resolve destination type → FreeSWITCH routing actions
