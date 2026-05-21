@@ -1282,7 +1282,16 @@ def _ring_group_to_dialplan_xml(rg, domain_name, ctx, preload=None):
         elif timeout_type in ('external', 'number', 'call_forward') and timeout_external:
             gw = _get_default_gateway(domain_name)
             if gw:
-                timeout_actions = [('bridge', f'sofia/gateway/{gw}/{timeout_external}')]
+                digits = re.sub(r'\D', '', timeout_external)
+                if timeout_external.strip().startswith('+'):
+                    dial_number = '+' + digits
+                elif len(digits) == 10:
+                    dial_number = '+1' + digits
+                elif len(digits) == 11 and digits.startswith('1'):
+                    dial_number = '+' + digits
+                else:
+                    dial_number = digits or timeout_external
+                timeout_actions = [('bridge', f'sofia/gateway/{gw}/{dial_number}')]
             else:
                 logger.warning(
                     f"Ring group {rg.ring_group_extension}: no default gateway for "
