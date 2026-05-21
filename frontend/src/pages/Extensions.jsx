@@ -1493,21 +1493,27 @@ export default function Extensions() {
       }
 
       // Sync email + PIN to the linked voicemail box so the two stay in lockstep.
-      if (matchedVoicemailBox) {
-        const emailChanged = (matchedVoicemailBox.voicemail_mail_to || '') !== (form.voicemail_mail_to || '')
-        const pinChanged   = (matchedVoicemailBox.voicemail_password || '') !== (form.voicemail_password || '')
-        if (emailChanged || pinChanged) {
-          try {
-            await voicemailsApi.update(
-              matchedVoicemailBox.voicemail_uuid || matchedVoicemailBox.id,
-              {
-                ...matchedVoicemailBox,
-                voicemail_mail_to: form.voicemail_mail_to || '',
-                voicemail_password: form.voicemail_password || '',
-              },
-            )
-          } catch (e) { console.error('Failed to sync voicemail box', e) }
-        }
+      const mailboxKey = form.voicemail_id || form.extension
+      if (mailboxKey) {
+        try {
+          const { data: vms } = await voicemailsApi.list({ page_size: 200 })
+          const list = Array.isArray(vms) ? vms : vms.results || []
+          const matchedBox = list.find(vm => vm.voicemail_id === mailboxKey)
+          if (matchedBox) {
+            const emailChanged = (matchedBox.voicemail_mail_to || '') !== (form.voicemail_mail_to || '')
+            const pinChanged   = (matchedBox.voicemail_password || '') !== (form.voicemail_password || '')
+            if (emailChanged || pinChanged) {
+              await voicemailsApi.update(
+                matchedBox.voicemail_uuid || matchedBox.id,
+                {
+                  ...matchedBox,
+                  voicemail_mail_to: form.voicemail_mail_to || '',
+                  voicemail_password: form.voicemail_password || '',
+                },
+              )
+            }
+          }
+        } catch (e) { console.error('Failed to sync voicemail box', e) }
       }
 
       // Sync ring group memberships
