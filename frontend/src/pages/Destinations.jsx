@@ -12,7 +12,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { Plus, Pencil, Trash2, Search, Loader2, X, ChevronDown, PhoneForwarded, PhoneOff, Layers, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { Plus, Pencil, Trash2, Search, Loader2, X, ChevronDown, PhoneForwarded, PhoneOff, Layers, AlertCircle, CheckCircle2, Sparkles, History } from 'lucide-react'
+import { AffinityPanel } from './CustomDestinations'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -527,7 +528,25 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading }) {
     <div className="space-y-3">
       <SectionTitle>Forwarding</SectionTitle>
       <ToggleRow label="Unconditional Forward" hint="Forward all calls immediately, bypassing routing" checked={form.unconditional_forward} onChange={v => setForm(p => ({ ...p, unconditional_forward: v }))} />
-      <ToggleRow label="Route to Last Caller" hint="Send inbound calls to the last extension that called this number" checked={form.callback_to_last_caller} onChange={v => setForm(p => ({ ...p, callback_to_last_caller: v }))} />
+      <div className={cn('rounded-xl border px-4 py-3 transition-colors', form.callback_to_last_caller ? 'border-amber-200 bg-amber-500/5' : 'border-border/60')}>
+        <ToggleRow
+          label="Route to last agent"
+          hint="If the caller has been dialed before, send them to that same extension. Falls through to the routing above when no match."
+          checked={form.callback_to_last_caller}
+          onChange={v => setForm(p => ({ ...p, callback_to_last_caller: v }))}
+        />
+        {form.callback_to_last_caller && (
+          <div className="flex items-start gap-2 text-xs text-amber-700 mt-1">
+            <Sparkles className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            <span>
+              Mappings update automatically from outbound calls.{' '}
+              <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('open-affinity'))} className="underline font-medium">
+                View current mappings
+              </button>.
+            </span>
+          </div>
+        )}
+      </div>
 
       <SectionTitle>Recording</SectionTitle>
       <Field label="Always Record">
@@ -813,6 +832,13 @@ export default function Destinations() {
   const [formError, setFormError] = useState('')
   const [deleting, setDeleting]   = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [affinityOpen, setAffinityOpen] = useState(false)
+
+  useEffect(() => {
+    const h = () => setAffinityOpen(true)
+    window.addEventListener('open-affinity', h)
+    return () => window.removeEventListener('open-affinity', h)
+  }, [])
 
   const { destData, destLoading, loadDestData } = useDestinationData({ withConferences: true, withFaxBoxes: true })
 
@@ -928,6 +954,8 @@ export default function Destinations() {
         onClose={() => setBulkOpen(false)}
         onDone={() => { setBulkOpen(false); load() }}
       />
+
+      <AffinityPanel open={affinityOpen} onClose={() => setAffinityOpen(false)} />
 
       {/* table */}
       <Card><CardContent className="p-0 overflow-x-auto">

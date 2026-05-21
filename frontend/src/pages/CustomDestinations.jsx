@@ -1,20 +1,619 @@
-import { Bookmark, Clock } from 'lucide-react'
+import { useDebounce } from '@/hooks/useDebounce'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { customDestinations as api } from '@/api'
+import { useDestinationData } from '@/hooks/useDestinationData'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardContent } from '@/components/ui/card'
+import { Select } from '@/components/ui/select'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/lib/utils'
+import {
+  Plus, Pencil, Trash2, Search, Loader2, X, ChevronDown,
+  PhoneForwarded, PhoneOff, History, Users, Sparkles,
+} from 'lucide-react'
+
+const DEST_META = {
+  extension:     { label: 'Extension',     color: 'text-blue-500',   bg: 'bg-blue-500/10'   },
+  ivr_menu:      { label: 'IVR Menu',      color: 'text-amber-500',  bg: 'bg-amber-500/10'  },
+  ring_group:    { label: 'Ring Group',    color: 'text-green-600',  bg: 'bg-green-600/10'  },
+  voicemail:     { label: 'Voicemail',     color: 'text-purple-500', bg: 'bg-purple-500/10' },
+  conference:    { label: 'Conference',    color: 'text-sky-500',    bg: 'bg-sky-500/10'    },
+  working_hours: { label: 'Working Hours', color: 'text-teal-500',   bg: 'bg-teal-500/10'   },
+  time_condition:{ label: 'Time Cond.',    color: 'text-indigo-500', bg: 'bg-indigo-500/10' },
+  call_flow:     { label: 'Call Flow',     color: 'text-pink-500',   bg: 'bg-pink-500/10'   },
+  call_forward:  { label: 'Forward',       color: 'text-cyan-500',   bg: 'bg-cyan-500/10'   },
+  external:      { label: 'External',      color: 'text-slate-500',  bg: 'bg-slate-500/10'  },
+  fax:           { label: 'Fax',           color: 'text-orange-500', bg: 'bg-orange-500/10' },
+  hangup:        { label: 'Hangup',        color: 'text-red-500',    bg: 'bg-red-500/10'    },
+}
+
+const EMPTY = {
+  name: '',
+  description: '',
+  kind: 'simple',
+  dest_type: '',
+  dest_target_uuid: '',
+  dest_external_number: '',
+  callback_to_last_caller: false,
+  enabled: true,
+}
+
+// ── Kind registry ────────────────────────────────────────────────────────────
+// Each kind owns: label, short description, the body it renders inside the
+// dialog, and how it derives back-compat flags before save. To add a new kind:
+//   1. Add KIND_CHOICES entry in backend models.py
+//   2. Add an entry here with renderBody + onSavePrep
+const KIND_REGISTRY = {
+  simple: {
+    label: 'Simple Destination',
+    icon: PhoneForwarded,
+    description: 'Route directly to a target (extension, IVR, ring group, etc.).',
+    renderBody: ({ form, setForm, destData, destLoading }) => (
+      <Field label="Destination *" hint="Where calls using this preset go.">
+        <TargetPicker
+          value={form}
+          onChange={(v) => setForm(p => ({ ...p, ...v }))}
+          data={destData}
+          loading={destLoading}
+        />
+      </Field>
+    ),
+    onSavePrep: (form) => ({ ...form, callback_to_last_caller: false }),
+  },
+
+  sticky_last_agent: {
+    label: 'Route to Last Agent',
+    icon: Sparkles,
+    description: 'If the caller has been dialed before, send them to that same extension. Falls back to the destination below when no match exists.',
+    renderBody: ({ form, setForm, destData, destLoading, openAffinity }) => (
+      <>
+        <Field label="Fallback Destination *" hint="Used when no sticky agent is found for the caller.">
+          <TargetPicker
+            value={form}
+            onChange={(v) => setForm(p => ({ ...p, ...v }))}
+            data={destData}
+            loading={destLoading}
+          />
+        </Field>
+        <div className="flex items-start gap-2 text-xs text-amber-700 rounded-lg border border-amber-200 bg-amber-500/5 px-3 py-2">
+          <Sparkles className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          <span>
+            Affinity updates automatically whenever an extension makes an outbound call to a customer.{' '}
+            <button type="button" onClick={openAffinity} className="underline font-medium">View current mappings</button>.
+          </span>
+        </div>
+      </>
+    ),
+    onSavePrep: (form) => ({ ...form, callback_to_last_caller: true }),
+  },
+}
+
+const KIND_LIST = Object.entries(KIND_REGISTRY).map(([value, def]) => ({ value, ...def }))
+
+function targetLabel(type, targetUuid, extNumber, data) {
+  if (!type) return null
+  if (type === 'hangup')   return 'Hangup'
+  if (type === 'external') return extNumber || 'External Number'
+  if (type === 'extension') {
+    const e = data.extensions.find(x => x.extension_uuid === targetUuid)
+    return e ? `${e.extension}${e.effective_caller_id_name ? ` — ${e.effective_caller_id_name}` : ''}` : null
+  }
+  if (type === 'voicemail') {
+    const v = data.voicemails.find(x => (x.voicemail_uuid || x.id) === targetUuid)
+    return v ? `Voicemail ${v.voicemail_id}` : null
+  }
+  if (type === 'ivr_menu') {
+    const i = data.ivr_menus.find(x => x.ivr_menu_uuid === targetUuid)
+    return i?.ivr_menu_name || null
+  }
+  if (type === 'ring_group') {
+    const r = data.ring_groups.find(x => x.ring_group_uuid === targetUuid)
+    return r?.ring_group_name || null
+  }
+  if (type === 'conference') {
+    const c = data.conferences.find(x => x.conference_uuid === targetUuid)
+    return c?.conference_name || null
+  }
+  if (type === 'working_hours') {
+    const w = data.working_hours.find(x => x.working_hours_uuid === targetUuid)
+    return w?.working_hours_name || null
+  }
+  return null
+}
+
+function TargetPicker({ value, onChange, data, loading }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const ref = useRef(null)
+  const inputRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const h = (e) => { if (!ref.current?.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+
+  useEffect(() => { if (open) requestAnimationFrame(() => inputRef.current?.focus()) }, [open])
+
+  const q = query.toLowerCase().trim()
+  const filt = (items, fields) => !q ? items
+    : items.filter(it => fields.some(f => String(it[f] || '').toLowerCase().includes(q)))
+
+  const exts  = filt(data.extensions,    ['extension', 'effective_caller_id_name', 'description'])
+  const vms   = filt(data.voicemails,    ['voicemail_id', 'description'])
+  const ivrs  = filt(data.ivr_menus,     ['ivr_menu_name', 'ivr_menu_extension'])
+  const rgs   = filt(data.ring_groups,   ['ring_group_name', 'ring_group_extension'])
+  const confs = filt(data.conferences,   ['conference_name', 'conference_extension'])
+  const whs   = filt(data.working_hours, ['working_hours_name'])
+  const showNum = q.length >= 2 && /^[\d+\s().-]+$/.test(q)
+
+  const pick = (type, target_uuid = '', external_number = '') => {
+    onChange({ dest_type: type, dest_target_uuid: target_uuid, dest_external_number: external_number })
+    setOpen(false); setQuery('')
+  }
+
+  const label = targetLabel(value.dest_type, value.dest_target_uuid, value.dest_external_number, data)
+  const meta = value.dest_type ? DEST_META[value.dest_type] : null
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="flex h-9 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-sm shadow-sm hover:border-ring/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
+      >
+        {loading ? (
+          <span className="flex items-center gap-2 text-muted-foreground text-xs">
+            <Loader2 className="h-3 w-3 animate-spin" /> Loading…
+          </span>
+        ) : label ? (
+          <span className="flex items-center gap-2 min-w-0">
+            <span className={cn('shrink-0 text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded', meta?.color, meta?.bg)}>{meta?.label}</span>
+            <span className="truncate text-sm">{label}</span>
+          </span>
+        ) : (
+          <span className="text-muted-foreground text-sm">Select destination…</span>
+        )}
+        <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+      </button>
+
+      {open && (
+        <div className="absolute z-50 mt-1 w-full min-w-[300px] rounded-xl border border-border/60 bg-card shadow-2xl">
+          <div className="flex items-center gap-2 border-b px-3 py-1.5">
+            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search or type a number…"
+              className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
+            />
+            {query && <button type="button" onClick={() => setQuery('')}><X className="h-3 w-3 text-muted-foreground" /></button>}
+          </div>
+          <div className="max-h-60 overflow-y-auto py-1">
+            {exts.length > 0 && (
+              <Section title="Extensions">
+                {exts.map(e => (
+                  <ResultBtn key={e.extension_uuid} onClick={() => pick('extension', e.extension_uuid)}>
+                    <span className="font-mono font-bold text-blue-500 w-10 shrink-0">{e.extension}</span>
+                    <span className="text-sm truncate text-muted-foreground">{e.effective_caller_id_name || e.description || ''}</span>
+                  </ResultBtn>
+                ))}
+              </Section>
+            )}
+            {rgs.length > 0 && (
+              <Section title="Ring Groups">
+                {rgs.map(r => (
+                  <ResultBtn key={r.ring_group_uuid} onClick={() => pick('ring_group', r.ring_group_uuid)}>
+                    <span className="font-mono font-bold text-green-600 w-10 shrink-0">{r.ring_group_extension || '—'}</span>
+                    <span className="text-sm truncate">{r.ring_group_name}</span>
+                  </ResultBtn>
+                ))}
+              </Section>
+            )}
+            {ivrs.length > 0 && (
+              <Section title="IVR Menus">
+                {ivrs.map(i => (
+                  <ResultBtn key={i.ivr_menu_uuid} onClick={() => pick('ivr_menu', i.ivr_menu_uuid)}>
+                    <span className="font-mono font-bold text-amber-500 w-10 shrink-0">{i.ivr_menu_extension || '—'}</span>
+                    <span className="text-sm truncate">{i.ivr_menu_name}</span>
+                  </ResultBtn>
+                ))}
+              </Section>
+            )}
+            {vms.length > 0 && (
+              <Section title="Voicemail">
+                {vms.map(v => (
+                  <ResultBtn key={v.voicemail_uuid || v.id} onClick={() => pick('voicemail', v.voicemail_uuid || v.id)}>
+                    <span className="font-mono font-bold text-purple-500 w-10 shrink-0">{v.voicemail_id}</span>
+                    <span className="text-sm truncate text-muted-foreground">{v.description || ''}</span>
+                  </ResultBtn>
+                ))}
+              </Section>
+            )}
+            {confs.length > 0 && (
+              <Section title="Conferences">
+                {confs.map(c => (
+                  <ResultBtn key={c.conference_uuid} onClick={() => pick('conference', c.conference_uuid)}>
+                    <span className="font-mono font-bold text-sky-500 w-10 shrink-0">{c.conference_extension || '—'}</span>
+                    <span className="text-sm truncate">{c.conference_name}</span>
+                  </ResultBtn>
+                ))}
+              </Section>
+            )}
+            {whs.length > 0 && (
+              <Section title="Working Hours">
+                {whs.map(w => (
+                  <ResultBtn key={w.working_hours_uuid} onClick={() => pick('working_hours', w.working_hours_uuid)}>
+                    <span className="font-mono font-bold text-teal-500 w-10 shrink-0">WH</span>
+                    <span className="text-sm truncate">{w.working_hours_name}</span>
+                  </ResultBtn>
+                ))}
+              </Section>
+            )}
+            {showNum && (
+              <Section title="External Number">
+                <ResultBtn onClick={() => pick('external', '', query)}>
+                  <PhoneForwarded className="h-4 w-4 text-slate-500 shrink-0" />
+                  <span className="text-sm">Forward to <span className="font-mono font-semibold">{query}</span></span>
+                </ResultBtn>
+              </Section>
+            )}
+            <div className="border-t mt-1 pt-1">
+              <ResultBtn onClick={() => pick('hangup')}>
+                <PhoneOff className="h-4 w-4 text-red-500 shrink-0" />
+                <span className="text-sm text-red-500 font-medium">Hangup</span>
+              </ResultBtn>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Section({ title, children }) {
+  return (
+    <div>
+      <p className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+      {children}
+    </div>
+  )
+}
+
+function ResultBtn({ onClick, children }) {
+  return (
+    <button type="button" onClick={onClick}
+      className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
+      {children}
+    </button>
+  )
+}
+
+function Field({ label, hint, children, className }) {
+  return (
+    <div className={cn('space-y-1.5', className)}>
+      <Label className="text-sm font-medium">{label}</Label>
+      {children}
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  )
+}
+
+function Toggle({ checked, onChange }) {
+  return (
+    <button
+      type="button" role="switch" aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        'relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        checked ? 'bg-primary' : 'bg-input',
+      )}
+    >
+      <span className={cn('pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform', checked ? 'translate-x-4' : 'translate-x-0')} />
+    </button>
+  )
+}
+
+function ToggleRow({ label, hint, checked, onChange }) {
+  return (
+    <div className="flex items-center justify-between py-1.5">
+      <div>
+        <p className="text-sm font-medium leading-none">{label}</p>
+        {hint && <p className="text-xs text-muted-foreground mt-0.5">{hint}</p>}
+      </div>
+      <Toggle checked={checked} onChange={onChange} />
+    </div>
+  )
+}
+
+export function AffinityPanel({ open, onClose }) {
+  const [loading, setLoading] = useState(false)
+  const [data, setData] = useState({ total: 0, recent: [] })
+
+  useEffect(() => {
+    if (!open) return
+    setLoading(true)
+    api.affinityStats()
+      .then(({ data }) => setData(data))
+      .catch(() => setData({ total: 0, recent: [] }))
+      .finally(() => setLoading(false))
+  }, [open])
+
+  return (
+    <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
+      <DialogContent className="w-[95vw] max-w-xl h-[600px] max-h-[90vh] flex flex-col p-0 overflow-hidden">
+        <DialogHeader className="px-6 pt-5 pb-4 border-b">
+          <DialogTitle className="flex items-center gap-2">
+            <History className="h-4 w-4 text-primary" /> Caller → Extension Affinity
+          </DialogTitle>
+        </DialogHeader>
+        <div className="px-6 py-4 border-b bg-muted/30">
+          <div className="flex items-center gap-3">
+            <Users className="h-5 w-5 text-muted-foreground" />
+            <div>
+              <p className="text-2xl font-bold">{loading ? '…' : data.total.toLocaleString()}</p>
+              <p className="text-xs text-muted-foreground">customers currently mapped to a sticky extension</p>
+            </div>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : data.recent.length === 0 ? (
+            <div className="px-6 py-12 text-center text-sm text-muted-foreground">
+              No mappings yet. Outbound calls will populate this automatically.
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Customer</TableHead>
+                  <TableHead>Extension</TableHead>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Last seen</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.recent.map(r => (
+                  <TableRow key={r.affinity_uuid}>
+                    <TableCell className="font-mono text-sm">{r.caller_number}</TableCell>
+                    <TableCell><span className="font-mono font-bold text-blue-500">{r.extension_number}</span></TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="text-xs">
+                        {r.source === 'manual_seed' ? 'seeded' : 'outbound'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {r.last_seen ? new Date(r.last_seen).toLocaleString() : '—'}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </div>
+        <div className="px-6 py-4 border-t flex justify-end">
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 export default function CustomDestinations() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const debouncedSearch = useDebounce(search, 300)
+  const [dialogOpen, setDialog] = useState(false)
+  const [editId, setEditId] = useState(null)
+  const [form, setForm] = useState(EMPTY)
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState('')
+  const [deleting, setDeleting] = useState(null)
+  const [affinityOpen, setAffinityOpen] = useState(false)
+
+  const { destData, destLoading, loadDestData } = useDestinationData({ withConferences: true })
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const { data } = await api.list(debouncedSearch ? { search: debouncedSearch } : {})
+      setRows(Array.isArray(data) ? data : data.results || [])
+    } finally { setLoading(false) }
+  }, [debouncedSearch])
+
+  useEffect(() => { load() }, [load])
+
+  const openCreate = () => {
+    setEditId(null); setForm(EMPTY); setFormError('')
+    setDialog(true); loadDestData()
+  }
+
+  const openEdit = (r) => {
+    setEditId(r.custom_destination_uuid)
+    setForm({
+      name: r.name || '',
+      description: r.description || '',
+      kind: r.kind || (r.callback_to_last_caller ? 'sticky_last_agent' : 'simple'),
+      dest_type: r.dest_type || '',
+      dest_target_uuid: r.dest_target_uuid || '',
+      dest_external_number: r.dest_external_number || '',
+      callback_to_last_caller: !!r.callback_to_last_caller,
+      enabled: r.enabled !== false,
+    })
+    setFormError(''); setDialog(true); loadDestData()
+  }
+
+  const handleSave = async () => {
+    if (!form.name.trim()) { setFormError('Name is required.'); return }
+    if (!form.dest_type)   { setFormError('Pick a destination.'); return }
+    setSaving(true); setFormError('')
+    try {
+      const kindDef = KIND_REGISTRY[form.kind] || KIND_REGISTRY.simple
+      const prepped = kindDef.onSavePrep ? kindDef.onSavePrep(form) : form
+      const payload = {
+        ...prepped,
+        dest_target_uuid: prepped.dest_target_uuid || null,
+      }
+      editId ? await api.update(editId, payload) : await api.create(payload)
+      setDialog(false); load()
+    } catch (err) {
+      const d = err?.response?.data
+      if (d && typeof d === 'object') {
+        const msgs = Object.entries(d).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join(' | ')
+        setFormError(msgs || 'Save failed.')
+      } else {
+        setFormError(typeof d === 'string' ? d : 'Save failed.')
+      }
+    } finally { setSaving(false) }
+  }
+
+  const handleDelete = async (id) => {
+    if (!confirm('Delete this custom destination?')) return
+    setDeleting(id)
+    try { await api.delete(id); load() } finally { setDeleting(null) }
+  }
+
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-center">
-      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-500/10">
-        <Bookmark className="h-8 w-8 text-indigo-500" />
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input placeholder="Search…" className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <Button variant="outline" size="sm" onClick={() => setAffinityOpen(true)}>
+          <History className="h-4 w-4 mr-1" /> View Affinity
+        </Button>
+        <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />New Destination</Button>
       </div>
-      <div>
-        <h1 className="text-2xl font-bold">Custom Destinations</h1>
-        <p className="mt-1 text-muted-foreground flex items-center justify-center gap-1.5">
-          <Clock className="h-4 w-4" /> Coming Soon
-        </p>
-      </div>
-      <p className="max-w-sm text-sm text-muted-foreground">
-        Define reusable named destination presets that can be referenced from DIDs, Working Hours, Ring Groups, and anywhere else a destination is needed.
-      </p>
+
+      <AffinityPanel open={affinityOpen} onClose={() => setAffinityOpen(false)} />
+
+      <Card><CardContent className="p-0 overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Kind</TableHead>
+              <TableHead>Destination</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="w-20" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading
+              ? [...Array(4)].map((_, i) => (
+                  <TableRow key={i}>
+                    {[...Array(5)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
+                  </TableRow>
+                ))
+              : rows.length === 0
+                ? <TableRow><TableCell colSpan={5} className="text-center py-10 text-muted-foreground">No custom destinations defined.</TableCell></TableRow>
+                : rows.map((r) => {
+                    const meta = DEST_META[r.dest_type]
+                    const kindKey = r.kind || (r.callback_to_last_caller ? 'sticky_last_agent' : 'simple')
+                    const kindDef = KIND_REGISTRY[kindKey] || KIND_REGISTRY.simple
+                    const KindIcon = kindDef.icon
+                    return (
+                      <TableRow key={r.custom_destination_uuid}>
+                        <TableCell>
+                          <div className="font-medium">{r.name}</div>
+                          {r.description && <div className="text-xs text-muted-foreground truncate max-w-md">{r.description}</div>}
+                        </TableCell>
+                        <TableCell>
+                          <span className="inline-flex items-center gap-1.5 text-xs">
+                            <KindIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                            <span className="font-medium">{kindDef.label}</span>
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <span className={cn('text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded', meta?.color, meta?.bg)}>
+                            {meta?.label || r.dest_type || '—'}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={r.enabled !== false ? 'success' : 'secondary'}>
+                            {r.enabled !== false ? 'Active' : 'Disabled'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                              onClick={() => handleDelete(r.custom_destination_uuid)}
+                              disabled={deleting === r.custom_destination_uuid}>
+                              {deleting === r.custom_destination_uuid
+                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                : <Trash2 className="h-3.5 w-3.5" />}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })
+            }
+          </TableBody>
+        </Table>
+      </CardContent></Card>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialog}>
+        <DialogContent className="w-[95vw] max-w-lg p-0 overflow-hidden">
+          <DialogHeader className="px-6 pt-5 pb-4 border-b">
+            <DialogTitle>{editId ? 'Edit Custom Destination' : 'New Custom Destination'}</DialogTitle>
+          </DialogHeader>
+          <div className="px-6 py-4 space-y-4">
+            {formError && (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">{formError}</div>
+            )}
+
+            <Field label="Type *" hint={KIND_REGISTRY[form.kind]?.description}>
+              <Select value={form.kind} onChange={e => setForm(p => ({ ...p, kind: e.target.value }))}>
+                {KIND_LIST.map(k => (
+                  <option key={k.value} value={k.value}>{k.label}</option>
+                ))}
+              </Select>
+            </Field>
+
+            <Field label="Name *">
+              <Input placeholder='e.g. "After Hours VM"' value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
+            </Field>
+            <Field label="Description">
+              <Input placeholder="Optional notes" value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} />
+            </Field>
+
+            {/* Kind-specific body */}
+            {(KIND_REGISTRY[form.kind] || KIND_REGISTRY.simple).renderBody({
+              form, setForm, destData, destLoading,
+              openAffinity: () => setAffinityOpen(true),
+            })}
+
+            <ToggleRow
+              label="Enabled"
+              checked={form.enabled}
+              onChange={v => setForm(p => ({ ...p, enabled: v }))}
+            />
+          </div>
+          <div className="flex items-center justify-end gap-2 px-6 py-4 border-t bg-muted/30">
+            <Button variant="outline" onClick={() => setDialog(false)}>Cancel</Button>
+            <Button onClick={handleSave} disabled={saving}>
+              {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+              {editId ? 'Save Changes' : 'Create'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

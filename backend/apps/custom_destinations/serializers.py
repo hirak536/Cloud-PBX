@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import CustomDestination
+from .models import CustomDestination, CallerExtensionAffinity
 
 
 class CustomDestinationSerializer(serializers.ModelSerializer):
@@ -15,6 +15,16 @@ class CustomDestinationSerializer(serializers.ModelSerializer):
         ]
 
 
+class CallerExtensionAffinitySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CallerExtensionAffinity
+        fields = [
+            'affinity_uuid', 'caller_number', 'extension_number',
+            'last_seen', 'source', 'insert_date', 'update_date',
+        ]
+        read_only_fields = fields
+
+
 class CustomDestinationListSerializer(serializers.ModelSerializer):
     dest_type_display = serializers.CharField(source='get_dest_type_display', read_only=True)
 
@@ -24,6 +34,7 @@ class CustomDestinationListSerializer(serializers.ModelSerializer):
             'custom_destination_uuid',
             'name',
             'description',
+            'kind',
             'dest_type',
             'dest_type_display',
             'dest_target_uuid',

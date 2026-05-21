@@ -319,6 +319,7 @@ export const customDestinations = {
   create: (data) => api.post('/custom-destinations/', data),
   update: (id, data) => api.put(`/custom-destinations/${id}/`, data),
   delete: (id) => api.delete(`/custom-destinations/${id}/`),
+  affinityStats: () => api.get('/custom-destinations/affinity-stats/'),
 }
 
 export const recordings = {
