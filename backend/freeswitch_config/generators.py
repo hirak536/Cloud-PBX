@@ -1925,35 +1925,31 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
                 e.extension for e in preload['extensions'].values()
                 if (e.tenant_id == ivr.tenant_id) and e.extension
             ]
-            dd_el = etree.Element('extension', name=f'ivr_dd_{short}')
-            # First condition: capture the dialled digits into _dd_ext.
-            cap_cond = etree.SubElement(dd_el, 'condition',
-                                        field='destination_number',
-                                        expression=f'^ivr_dd_{short}(\\d+)$')
-            etree.SubElement(cap_cond, 'action', application='set',
-                             data='_dd_ext=$1')
-            # Match: dialled extension exists in this tenant → transfer.
+            # 1. Direct-dial match extension: matches destination_number directly if the extension exists.
             if tenant_exts:
                 alt = '|'.join(re.escape(e) for e in tenant_exts)
+                dd_el = etree.Element('extension', name=f'ivr_dd_{short}')
                 match_cond = etree.SubElement(dd_el, 'condition',
-                                              field='${_dd_ext}',
-                                              expression=f'^({alt})$')
-                match_cond.set('break', 'on-true')
+                                              field='destination_number',
+                                              expression=f'^ivr_dd_{short}({alt})$')
                 etree.SubElement(match_cond, 'action', application='transfer',
-                                 data=f'${{_dd_ext}} XML {ctx_name}')
-            # No-match: configured fallback (or hangup).
+                                 data=f'$1 XML {ctx_name}')
+                get_or_create_context(ctx_name).append(dd_el)
+
+            # 2. Direct-dial fallback extension: matches any other digits dialed inside this IVR direct dial.
+            dd_fb_el = etree.Element('extension', name=f'ivr_dd_{short}_fallback')
+            fb_cond = etree.SubElement(dd_fb_el, 'condition',
+                                       field='destination_number',
+                                       expression=f'^ivr_dd_{short}(\\d+)$')
             invalid_actions = _resolve_wh_dest_from_type(
                 ivr.ivr_menu_internal_dial_invalid_type,
                 ivr.ivr_menu_internal_dial_invalid_target_uuid,
                 ivr.ivr_menu_internal_dial_invalid_external_number,
                 domain_name, ctx_name, preload=preload,
             ) or [('hangup', 'NORMAL_CLEARING')]
-            fb_cond = etree.SubElement(dd_el, 'condition',
-                                       field='${_dd_ext}',
-                                       expression='^.+$')
             for app, data in invalid_actions:
                 etree.SubElement(fb_cond, 'action', application=app, data=data)
-            get_or_create_context(ctx_name).append(dd_el)
+            get_or_create_context(ctx_name).append(dd_fb_el)
 
     # ── 9. Call flow routing + feature code extensions ────────────────────
     for cf in preload['call_flows'].values():
