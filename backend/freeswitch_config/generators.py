@@ -1828,6 +1828,18 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
         etree.SubElement(ivr_cond, 'action', application='sleep', data='1000')
         etree.SubElement(ivr_cond, 'action', application='ivr',
                          data=str(ivr.ivr_menu_uuid))
+        # IVR exit/timeout fallback. mod_ivr_menu returns to the dialplan when
+        # max-timeouts or max-failures is reached; without follow-up actions the
+        # call hangs up. Reuse the internal-dial-invalid destination as a
+        # general "where to go when the IVR gives up" target. Hangup if unset.
+        exit_actions = _resolve_wh_dest_from_type(
+            ivr.ivr_menu_internal_dial_invalid_type,
+            ivr.ivr_menu_internal_dial_invalid_target_uuid,
+            ivr.ivr_menu_internal_dial_invalid_external_number,
+            domain_name, ctx_name, preload=preload,
+        ) or [('hangup', 'NORMAL_CLEARING')]
+        for app, data in exit_actions:
+            etree.SubElement(ivr_cond, 'action', application=app, data=data)
         get_or_create_context(ctx_name).append(ivr_ext_el)
 
         # 8b. Direct-dial fallback extension — handles <digits># entered inside
