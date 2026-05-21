@@ -814,13 +814,25 @@ export default function Cdr() {
                               return <span className="text-muted-foreground">—</span>
                             }
                             if (app === 'voicemail') {
-                              const vmBox = primary.last_arg?.trim().split(/\s+/)[2] || primary.destination_number || ''
-                              return <span className="text-orange-500">VM {vmBox}</span>
+                              const tokens = primary.last_arg?.trim().split(/\s+/) || []
+                              const vmBox = (tokens.length >= 3 ? tokens[2] : '') || primary.extension_number || primary.destination_number || ''
+                              return <span className="text-orange-500">VM {vmBox.replace(/-[^-]+$/, '')}</span>
                             }
                             if (isVoicemailCall(primary.last_app, primary.last_arg)) {
                               const raw = primary.extension_number || primary.destination_number || ''
                               const ext = raw.replace(/-[^-]+$/, '')
                               return <span className="text-orange-500">VM {ext}</span>
+                            }
+                            // Legacy Asterisk rows use last_app="Dial". If a real extension is
+                            // recorded and the call connected, surface it the same as bridge.
+                            if (primary.extension_number && primary.billsec > 0) {
+                              if (primary.direction === 'inbound') {
+                                const ext = primary.extension_number.replace(/-[^-]+$/, '')
+                                return <span className="text-green-600 font-mono">Ext {ext}</span>
+                              }
+                              if (primary.destination_number) {
+                                return <span className="text-blue-500 font-mono">{primary.destination_number}</span>
+                              }
                             }
                             return <span className="text-muted-foreground">—</span>
                           })()}

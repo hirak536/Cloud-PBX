@@ -52,6 +52,7 @@ const EMPTY_FORM = {
   ivr_menu_allow_internal_dial: false,
   ivr_menu_allow_custom_codes: false,
   ivr_menu_allow_feature_codes: false,
+  ivr_menu_internal_dial_invalid: { ...EMPTY_DEST },
   ivr_menu_description: '',
   options: makeEmptyOptions(),
 }
@@ -162,6 +163,11 @@ export default function IvrMenus() {
         ivr_menu_allow_internal_dial: d.ivr_menu_allow_internal_dial || false,
         ivr_menu_allow_custom_codes:  d.ivr_menu_allow_custom_codes  || false,
         ivr_menu_allow_feature_codes: d.ivr_menu_allow_feature_codes || false,
+        ivr_menu_internal_dial_invalid: {
+          type:            d.ivr_menu_internal_dial_invalid_type || '',
+          target_uuid:     d.ivr_menu_internal_dial_invalid_target_uuid || '',
+          external_number: d.ivr_menu_internal_dial_invalid_external_number || '',
+        },
         ivr_menu_description:      d.ivr_menu_description || '',
         options: optionsMap,
       })
@@ -197,6 +203,9 @@ export default function IvrMenus() {
         ivr_menu_allow_internal_dial: form.ivr_menu_allow_internal_dial,
         ivr_menu_allow_custom_codes:  form.ivr_menu_allow_custom_codes,
         ivr_menu_allow_feature_codes: form.ivr_menu_allow_feature_codes,
+        ivr_menu_internal_dial_invalid_type:            form.ivr_menu_internal_dial_invalid?.type || '',
+        ivr_menu_internal_dial_invalid_target_uuid:     form.ivr_menu_internal_dial_invalid?.target_uuid || null,
+        ivr_menu_internal_dial_invalid_external_number: form.ivr_menu_internal_dial_invalid?.external_number || '',
         ivr_menu_description:      form.ivr_menu_description,
         options:                   optionsPayload,
       }
@@ -404,6 +413,22 @@ export default function IvrMenus() {
                     ))}
                   </div>
                 </div>
+
+                {/* Direct-dial fallback (only when internal dial is allowed) */}
+                {form.ivr_menu_allow_internal_dial && (
+                  <div className="space-y-1.5">
+                    <Label>If dialed extension doesn't exist</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Caller types &lt;ext&gt;# inside the IVR. If the extension isn't found in this tenant, route the call here.
+                    </p>
+                    <DestinationPicker
+                      value={form.ivr_menu_internal_dial_invalid}
+                      onChange={dest => setForm(p => ({ ...p, ivr_menu_internal_dial_invalid: dest }))}
+                      data={destData}
+                      loading={destLoading}
+                    />
+                  </div>
+                )}
 
                 {/* Description */}
                 <div className="space-y-1.5">
