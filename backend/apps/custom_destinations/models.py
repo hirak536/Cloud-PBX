@@ -16,6 +16,7 @@ DEST_TYPE_CHOICES = [
     ('call_forward',    'Call Forward'),
     ('fax',             'Fax'),
     ('hangup',          'Hangup'),
+    ('custom_destination', 'Custom Destination'),
 ]
 
 

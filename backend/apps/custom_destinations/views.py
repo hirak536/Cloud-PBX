@@ -27,12 +27,18 @@ class CustomDestinationViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='affinity-stats')
     def affinity_stats(self, request):
         """Tenant-scoped count + most-recent affinity mappings."""
-        qs = self.get_queryset().model._meta.apps.get_model(
-            'custom_destinations', 'CallerExtensionAffinity'
-        ).objects.all()
-        # Reuse TenantScopedViewSetMixin's filter by hand: it already scoped self.queryset.
-        tenant_ids = self.get_queryset().values_list('tenant_id', flat=True).distinct()
-        qs = qs.filter(tenant_id__in=list(tenant_ids))
+        qs = CallerExtensionAffinity.objects.all()
+        user = request.user
+        if not user.is_superuser:
+            tenant_id = getattr(user, 'tenant_id', None)
+            if not tenant_id:
+                return Response({'total': 0, 'recent': []})
+            qs = qs.filter(tenant_id=tenant_id)
+        else:
+            # Superuser: honor ?tenant=<uuid> from sidebar selection.
+            tenant_id = request.query_params.get('tenant')
+            if tenant_id:
+                qs = qs.filter(tenant_id=tenant_id)
 
         total = qs.count()
         recent = qs.order_by('-last_seen')[:50]

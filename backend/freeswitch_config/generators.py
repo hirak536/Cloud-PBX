@@ -621,25 +621,21 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
             effective_callback = cd.callback_to_last_caller
         except Exception:
             pass
-    if effective_callback and caller_id_number:
-        from apps.xml_cdr.models import XmlCdr
-        import re as _re
-        # Normalize caller number: strip +1 prefix for matching
-        norm = _re.sub(r'^\+?1?', '', caller_id_number).lstrip('0') if len(caller_id_number) > 10 else caller_id_number
-        # Find the most recent answered outbound CDR where destination_number matches the caller
-        last_cdr = XmlCdr.objects.filter(
-            domain=dest.domain,
-            direction='outbound',
-            billsec__gt=0,
-        ).filter(
-            models.Q(destination_number=caller_id_number) |
-            models.Q(destination_number=norm) |
-            models.Q(destination_number=f'+1{norm}') |
-            models.Q(destination_number=f'1{norm}')
-        ).order_by('-start_stamp').first()
-        if last_cdr and last_cdr.extension_number:
-            # extension_number is the SIP username like "1001-IHS"; extract the plain extension
-            ext_plain = last_cdr.extension_number.split('-')[0]
+    if effective_callback and caller_id_number and dest.tenant_id:
+        # Read the sticky mapping from v_caller_extension_affinity. The affinity
+        # table is kept current by the outbound CDR signal AND by manual CSV seed,
+        # so it's faster (indexed single-row lookup) and more complete than scanning
+        # XmlCdr at every inbound call.
+        from apps.custom_destinations.affinity import normalize_number
+        from apps.custom_destinations.models import CallerExtensionAffinity
+        caller_norm = normalize_number(caller_id_number)
+        sticky = None
+        if caller_norm:
+            sticky = CallerExtensionAffinity.objects.filter(
+                tenant_id=dest.tenant_id, caller_number=caller_norm,
+            ).first()
+        if sticky and sticky.extension_number:
+            ext_plain = sticky.extension_number.split('-')[0]
             tenant_code = dest.tenant.tenant_code if dest.tenant else None
             ctx = f'default-{tenant_code}' if tenant_code else 'default'
             etree.SubElement(cond, 'action', application='transfer',

@@ -39,15 +39,16 @@ const TABS = [
 ]
 
 const DEST_META = {
-  extension:     { label: 'Extension',     color: 'text-blue-500',   bg: 'bg-blue-500/10'   },
-  ivr_menu:      { label: 'IVR Menu',      color: 'text-amber-500',  bg: 'bg-amber-500/10'  },
-  ring_group:    { label: 'Ring Group',    color: 'text-green-600',  bg: 'bg-green-600/10'  },
-  voicemail:     { label: 'Voicemail',     color: 'text-purple-500', bg: 'bg-purple-500/10' },
-  conference:    { label: 'Conference',    color: 'text-sky-500',    bg: 'bg-sky-500/10'    },
-  working_hours: { label: 'Working Hours', color: 'text-teal-500',   bg: 'bg-teal-500/10'   },
-  external:      { label: 'External',      color: 'text-slate-500',  bg: 'bg-slate-500/10'  },
-  fax:           { label: 'Fax',           color: 'text-orange-500', bg: 'bg-orange-500/10' },
-  hangup:        { label: 'Hangup',        color: 'text-red-500',    bg: 'bg-red-500/10'    },
+  extension:          { label: 'Extension',          color: 'text-blue-500',   bg: 'bg-blue-500/10'   },
+  ivr_menu:           { label: 'IVR Menu',           color: 'text-amber-500',  bg: 'bg-amber-500/10'  },
+  ring_group:         { label: 'Ring Group',         color: 'text-green-600',  bg: 'bg-green-600/10'  },
+  voicemail:          { label: 'Voicemail',          color: 'text-purple-500', bg: 'bg-purple-500/10' },
+  conference:         { label: 'Conference',         color: 'text-sky-500',    bg: 'bg-sky-500/10'    },
+  working_hours:      { label: 'Working Hours',      color: 'text-teal-500',   bg: 'bg-teal-500/10'   },
+  custom_destination: { label: 'Custom Destination', color: 'text-fuchsia-500',bg: 'bg-fuchsia-500/10'},
+  external:           { label: 'External',           color: 'text-slate-500',  bg: 'bg-slate-500/10'  },
+  fax:                { label: 'Fax',                color: 'text-orange-500', bg: 'bg-orange-500/10' },
+  hangup:             { label: 'Hangup',             color: 'text-red-500',    bg: 'bg-red-500/10'    },
 }
 
 const EMPTY_ACTION = { type: '', target_uuid: '', external_number: '' }
@@ -161,6 +162,10 @@ function actionLabel(type, targetUuid, extNumber, data) {
     const w = data.working_hours.find(x => x.working_hours_uuid === targetUuid)
     return w ? w.working_hours_name : (targetUuid ? `WH ${targetUuid.slice(0, 8)}…` : null)
   }
+  if (type === 'custom_destination') {
+    const c = (data.custom_destinations || []).find(x => x.custom_destination_uuid === targetUuid)
+    return c ? c.name : (targetUuid ? `CD ${targetUuid.slice(0, 8)}…` : null)
+  }
   return null
 }
 
@@ -200,8 +205,9 @@ function DestinationPicker({ action, onChange, data, loading }) {
   const rgs   = filter(data.ring_groups,   ['ring_group_name', 'ring_group_extension'])
   const confs = filter(data.conferences,   ['conference_name', 'conference_extension'])
   const whs   = filter(data.working_hours, ['working_hours_name'])
+  const cds   = filter(data.custom_destinations || [], ['name', 'description'])
   const showNumber = q.length >= 2 && /^[\d+\s().-]+$/.test(q)
-  const hasAny = exts.length || vms.length || ivrs.length || rgs.length || confs.length || whs.length || showNumber
+  const hasAny = exts.length || vms.length || ivrs.length || rgs.length || confs.length || whs.length || cds.length || showNumber
 
   const select = (type, target_uuid = '', external_number = '') => {
     onChange({ type, target_uuid, external_number })
@@ -327,6 +333,19 @@ function DestinationPicker({ action, onChange, data, loading }) {
                         className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
                         <span className="font-mono font-bold text-teal-500 w-10 shrink-0">WH</span>
                         <span className="text-sm truncate">{w.working_hours_name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {cds.length > 0 && (
+                  <div>
+                    <p className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Custom Destinations</p>
+                    {cds.map(c => (
+                      <button key={c.custom_destination_uuid} type="button" onClick={() => select('custom_destination', c.custom_destination_uuid)}
+                        className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
+                        <span className="font-mono font-bold text-fuchsia-500 w-10 shrink-0">CD</span>
+                        <span className="text-sm truncate">{c.name}</span>
+                        {c.callback_to_last_caller && <span className="text-[10px] text-amber-600 ml-auto shrink-0">sticky</span>}
                       </button>
                     ))}
                   </div>

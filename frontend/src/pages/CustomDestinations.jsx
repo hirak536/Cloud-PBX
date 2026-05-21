@@ -27,9 +27,10 @@ const DEST_META = {
   time_condition:{ label: 'Time Cond.',    color: 'text-indigo-500', bg: 'bg-indigo-500/10' },
   call_flow:     { label: 'Call Flow',     color: 'text-pink-500',   bg: 'bg-pink-500/10'   },
   call_forward:  { label: 'Forward',       color: 'text-cyan-500',   bg: 'bg-cyan-500/10'   },
-  external:      { label: 'External',      color: 'text-slate-500',  bg: 'bg-slate-500/10'  },
-  fax:           { label: 'Fax',           color: 'text-orange-500', bg: 'bg-orange-500/10' },
-  hangup:        { label: 'Hangup',        color: 'text-red-500',    bg: 'bg-red-500/10'    },
+  external:           { label: 'External',           color: 'text-slate-500',  bg: 'bg-slate-500/10'   },
+  fax:                { label: 'Fax',                color: 'text-orange-500', bg: 'bg-orange-500/10'  },
+  hangup:             { label: 'Hangup',             color: 'text-red-500',    bg: 'bg-red-500/10'     },
+  custom_destination: { label: 'Custom Destination', color: 'text-fuchsia-500',bg: 'bg-fuchsia-500/10' },
 }
 
 const EMPTY = {
@@ -123,6 +124,10 @@ function targetLabel(type, targetUuid, extNumber, data) {
     const w = data.working_hours.find(x => x.working_hours_uuid === targetUuid)
     return w?.working_hours_name || null
   }
+  if (type === 'custom_destination') {
+    const c = (data.custom_destinations || []).find(x => x.custom_destination_uuid === targetUuid)
+    return c?.name || null
+  }
   return null
 }
 
@@ -151,6 +156,7 @@ function TargetPicker({ value, onChange, data, loading }) {
   const rgs   = filt(data.ring_groups,   ['ring_group_name', 'ring_group_extension'])
   const confs = filt(data.conferences,   ['conference_name', 'conference_extension'])
   const whs   = filt(data.working_hours, ['working_hours_name'])
+  const cds   = filt(data.custom_destinations || [], ['name', 'description'])
   const showNum = q.length >= 2 && /^[\d+\s().-]+$/.test(q)
 
   const pick = (type, target_uuid = '', external_number = '') => {
@@ -253,6 +259,17 @@ function TargetPicker({ value, onChange, data, loading }) {
                   <ResultBtn key={w.working_hours_uuid} onClick={() => pick('working_hours', w.working_hours_uuid)}>
                     <span className="font-mono font-bold text-teal-500 w-10 shrink-0">WH</span>
                     <span className="text-sm truncate">{w.working_hours_name}</span>
+                  </ResultBtn>
+                ))}
+              </Section>
+            )}
+            {cds.length > 0 && (
+              <Section title="Custom Destinations">
+                {cds.map(c => (
+                  <ResultBtn key={c.custom_destination_uuid} onClick={() => pick('custom_destination', c.custom_destination_uuid)}>
+                    <span className="font-mono font-bold text-fuchsia-500 w-10 shrink-0">CD</span>
+                    <span className="text-sm truncate">{c.name}</span>
+                    {c.callback_to_last_caller && <span className="text-[10px] text-amber-600 ml-auto shrink-0">sticky</span>}
                   </ResultBtn>
                 ))}
               </Section>
