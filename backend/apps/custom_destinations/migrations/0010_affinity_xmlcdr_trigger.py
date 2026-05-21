@@ -20,30 +20,48 @@ CREATE OR REPLACE FUNCTION custom_destinations_xmlcdr_affinity_upsert()
 RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
 DECLARE
-    cust_norm text;
-    digits    text;
-    when_ts   timestamptz;
+    customer_raw  text;
+    customer_norm text;
+    digits        text;
+    when_ts       timestamptz;
 BEGIN
-    -- Only outbound rows with a resolved extension and a tenant participate
-    IF NEW.direction <> 'outbound'
+    -- Track affinity from any CDR where a real extension actually talked to a
+    -- customer for some non-zero duration. Two cases produce a usable row:
+    --   - Live FreeSWITCH A-leg of an inbound call: direction='inbound',
+    --     caller_id_number is the customer, extension_number is the answering ext.
+    --   - Django-imported outbound migration: direction='outbound',
+    --     destination_number is the customer, extension_number is the dialer.
+    -- Both express "ext X is the agent for customer Y".
+    IF NEW.tenant_uuid IS NULL
        OR NEW.extension_number IS NULL OR NEW.extension_number = ''
-       OR NEW.tenant_uuid IS NULL
-       OR NEW.destination_number IS NULL OR NEW.destination_number = ''
+       OR (NEW.last_app IS NOT NULL AND lower(NEW.last_app) = 'voicemail')
     THEN
         RETURN NEW;
     END IF;
 
+    IF NEW.direction = 'outbound' THEN
+        customer_raw := NEW.destination_number;
+    ELSIF NEW.direction = 'inbound' THEN
+        customer_raw := NEW.caller_id_number;
+    ELSE
+        RETURN NEW;
+    END IF;
+
+    IF customer_raw IS NULL OR customer_raw = '' THEN
+        RETURN NEW;
+    END IF;
+
     -- Normalize: strip non-digits, drop leading 1, last 10
-    digits := regexp_replace(NEW.destination_number, '\D', '', 'g');
+    digits := regexp_replace(customer_raw, '\D', '', 'g');
     IF length(digits) > 10 AND left(digits, 1) = '1' THEN
         digits := substring(digits from 2);
     END IF;
     IF length(digits) >= 10 THEN
-        cust_norm := right(digits, 10);
+        customer_norm := right(digits, 10);
     ELSE
-        cust_norm := digits;
+        customer_norm := digits;
     END IF;
-    IF cust_norm = '' THEN
+    IF customer_norm = '' THEN
         RETURN NEW;
     END IF;
 
@@ -53,12 +71,12 @@ BEGIN
         (affinity_uuid, tenant_uuid, domain_uuid, caller_number,
          extension_number, last_seen, source, insert_date, update_date)
     VALUES
-        (gen_random_uuid(), NEW.tenant_uuid, NEW.domain_uuid, cust_norm,
-         NEW.extension_number, when_ts, 'outbound', now(), now())
+        (gen_random_uuid(), NEW.tenant_uuid, NEW.domain_uuid, customer_norm,
+         NEW.extension_number, when_ts, 'cdr', now(), now())
     ON CONFLICT ON CONSTRAINT uniq_affinity_tenant_caller DO UPDATE SET
         extension_number = EXCLUDED.extension_number,
         last_seen        = EXCLUDED.last_seen,
-        source           = 'outbound',
+        source           = 'cdr',
         update_date      = now(),
         domain_uuid      = COALESCE(v_caller_extension_affinity.domain_uuid, EXCLUDED.domain_uuid)
       WHERE EXCLUDED.last_seen > v_caller_extension_affinity.last_seen;

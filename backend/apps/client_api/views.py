@@ -1060,7 +1060,7 @@ class ClientVoicemailMessageView(APIView):
             except OSError:
                 pass
         VoicemailReadState.objects.filter(message_uuid=message_uuid, reader=VoicemailReadState.READER_CLIENT).delete()
-        return Response(status=204)
+        return Response({'status': 'deleted'})
 
 
 # ──────────────────────────────────────────────
@@ -1210,7 +1210,7 @@ class APIKeyDetailView(APIView):
         from .tasks import fire_webhook_event
         fire_webhook_event.delay(str(instance.tenant_id), 'key.revoked', str(instance.id))
         instance.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response({'status': 'deleted'})
 
 
 # ──────────────────────────────────────────────
