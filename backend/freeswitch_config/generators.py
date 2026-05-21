@@ -1279,9 +1279,15 @@ def _ring_group_to_dialplan_xml(rg, domain_name, ctx, preload=None):
             from apps.ivr_menus.models import IvrMenu
             ivr = _pl_get('ivr_menus', timeout_target) or IvrMenu.objects.get(ivr_menu_uuid=timeout_target)
             timeout_actions = [('transfer', f'{ivr.ivr_menu_extension} XML {ctx}')]
-        elif timeout_type == 'external' and timeout_external:
+        elif timeout_type in ('external', 'number', 'call_forward') and timeout_external:
             gw = _get_default_gateway(domain_name)
-            timeout_actions = [('bridge', f'sofia/gateway/{gw}/{timeout_external}')]
+            if gw:
+                timeout_actions = [('bridge', f'sofia/gateway/{gw}/{timeout_external}')]
+            else:
+                logger.warning(
+                    f"Ring group {rg.ring_group_extension}: no default gateway for "
+                    f"timeout forward to {timeout_external} on domain {domain_name}."
+                )
         elif timeout_type == 'hangup':
             timeout_actions = [('hangup', 'NORMAL_CLEARING')]
     except Exception:
