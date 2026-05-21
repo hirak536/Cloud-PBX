@@ -1814,6 +1814,46 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
                          data=str(ivr.ivr_menu_uuid))
         get_or_create_context(ctx_name).append(ivr_ext_el)
 
+        # 8b. Direct-dial fallback extension — handles <digits># entered inside
+        # the IVR. The IVR conf entry transfers to "ivr_dd_<short><digits>"; we
+        # check if <digits> matches an extension in this tenant. If yes,
+        # transfer; otherwise execute the configured invalid-fallback action.
+        if ivr.ivr_menu_allow_internal_dial:
+            short = str(ivr.ivr_menu_uuid).replace('-', '')[:8]
+            tenant_exts = [
+                e.extension for e in preload['extensions'].values()
+                if (e.tenant_id == ivr.tenant_id) and e.extension
+            ]
+            dd_el = etree.Element('extension', name=f'ivr_dd_{short}')
+            # First condition: capture the dialled digits into _dd_ext.
+            cap_cond = etree.SubElement(dd_el, 'condition',
+                                        field='destination_number',
+                                        expression=f'^ivr_dd_{short}(\\d+)$')
+            etree.SubElement(cap_cond, 'action', application='set',
+                             data='_dd_ext=$1')
+            # Match: dialled extension exists in this tenant → transfer.
+            if tenant_exts:
+                alt = '|'.join(re.escape(e) for e in tenant_exts)
+                match_cond = etree.SubElement(dd_el, 'condition',
+                                              field='${_dd_ext}',
+                                              expression=f'^({alt})$')
+                match_cond.set('break', 'on-true')
+                etree.SubElement(match_cond, 'action', application='transfer',
+                                 data=f'${{_dd_ext}} XML {ctx_name}')
+            # No-match: configured fallback (or hangup).
+            invalid_actions = _resolve_wh_dest_from_type(
+                ivr.ivr_menu_internal_dial_invalid_type,
+                ivr.ivr_menu_internal_dial_invalid_target_uuid,
+                ivr.ivr_menu_internal_dial_invalid_external_number,
+                domain_name, ctx_name, preload=preload,
+            ) or [('hangup', 'NORMAL_CLEARING')]
+            fb_cond = etree.SubElement(dd_el, 'condition',
+                                       field='${_dd_ext}',
+                                       expression='^.+$')
+            for app, data in invalid_actions:
+                etree.SubElement(fb_cond, 'action', application=app, data=data)
+            get_or_create_context(ctx_name).append(dd_el)
+
     # ── 9. Call flow routing + feature code extensions ────────────────────
     for cf in preload['call_flows'].values():
         tenant_code = cf.tenant.tenant_code if cf.tenant else None
@@ -2079,11 +2119,14 @@ def generate_ivr_conf(domain_name=''):
 
         # ── Direct Dial (Extensions) ──────────────────────────────────────
         if ivr.ivr_menu_allow_internal_dial:
-            # Add a regex entry that matches 3-digit or 4-digit extensions 
-            # and transfers them to the current context.
-            etree.SubElement(menu_el, 'entry', action='menu-exec-app', 
-                             digits='/^(\d{3,6})$/', 
-                             param=f'transfer $1 XML {ctx}')
+            # Caller types <digits># (mod_ivr terminates digit collection on #).
+            # Route to the per-IVR fallback dialplan entry (ivr_dd_<short>) which
+            # transfers to the extension if it exists, else runs the configured
+            # invalid-extension fallback action.
+            short = str(ivr.ivr_menu_uuid).replace('-', '')[:8]
+            etree.SubElement(menu_el, 'entry', action='menu-exec-app',
+                             digits='/^(\d{2,6})$/',
+                             param=f'transfer ivr_dd_{short}$1 XML {ctx}')
 
     return etree.tostring(root, pretty_print=True, xml_declaration=True, encoding='UTF-8').decode()
 
