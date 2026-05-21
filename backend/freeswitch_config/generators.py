@@ -1587,7 +1587,7 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
 
     preload = {
         'extensions':      {str(e.extension_uuid): e   for e in _ext_qs},
-        'ivr_menus':       {str(o.ivr_menu_uuid): o    for o in _IvrMenu.objects.select_related('tenant').filter(domain=domain, ivr_menu_enabled=True)},
+        'ivr_menus':       {str(o.ivr_menu_uuid): o    for o in _IvrMenu.objects.select_related('tenant').prefetch_related('options').filter(domain=domain, ivr_menu_enabled=True)},
         'ring_groups':     {str(o.ring_group_uuid): o  for o in _RingGroup.objects.select_related('tenant').prefetch_related('destinations').filter(domain=domain, ring_group_enabled=True)},
         'voicemails':      {str(o.voicemail_uuid): o   for o in _Voicemail.objects.filter(domain=domain, voicemail_enabled=True)},
         'time_conditions': {str(o.dialplan_uuid): o    for o in _TimeCondition.objects.select_related('tenant').filter(domain=domain, dialplan_enabled=True)},
@@ -1828,19 +1828,92 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
         etree.SubElement(ivr_cond, 'action', application='sleep', data='1000')
         etree.SubElement(ivr_cond, 'action', application='ivr',
                          data=str(ivr.ivr_menu_uuid))
-        # IVR exit/timeout fallback. mod_ivr_menu returns to the dialplan when
-        # max-timeouts or max-failures is reached; without follow-up actions the
-        # call hangs up. Reuse the internal-dial-invalid destination as a
-        # general "where to go when the IVR gives up" target. Hangup if unset.
-        exit_actions = _resolve_wh_dest_from_type(
+        # After mod_ivr_menu exits, transfer to the exit handler extension to evaluate ivr_menu_status
+        etree.SubElement(ivr_cond, 'action', application='transfer',
+                         data=f'ivr_{ivr.ivr_menu_extension}_exit XML {ctx_name}')
+        get_or_create_context(ctx_name).append(ivr_ext_el)
+
+        # 8a. IVR Exit handler extension to evaluate ivr_menu_status
+        ivr_exit_el = etree.Element('extension', name=f'ivr_{ivr.ivr_menu_extension}_exit')
+        match_cond = etree.SubElement(ivr_exit_el, 'condition',
+                                      field='destination_number',
+                                      expression=f'^ivr_{re.escape(ivr.ivr_menu_extension)}_exit$')
+        match_cond.set('break', 'never')
+
+        # Find specific timeout, invalid (failure), or hangup options
+        timeout_opt = None
+        invalid_opt = None
+        hangup_opt = None
+        for opt in ivr.options.all():
+            if opt.ivr_menu_option_digits == 'timeout':
+                timeout_opt = opt
+            elif opt.ivr_menu_option_digits == 'invalid':
+                invalid_opt = opt
+            elif opt.ivr_menu_option_digits == 'hangup':
+                hangup_opt = opt
+
+        if timeout_opt:
+            timeout_actions = _resolve_wh_dest_from_type(
+                timeout_opt.ivr_menu_option_dest_type,
+                timeout_opt.ivr_menu_option_dest_target_uuid,
+                timeout_opt.ivr_menu_option_dest_external_number,
+                domain_name, ctx_name, preload=preload,
+            )
+            if timeout_actions:
+                timeout_cond = etree.SubElement(ivr_exit_el, 'condition',
+                                                field='${ivr_menu_status}',
+                                                expression='^timeout$')
+                timeout_cond.set('break', 'on-true')
+                for app, data in timeout_actions:
+                    etree.SubElement(timeout_cond, 'action', application=app, data=data)
+
+        if invalid_opt:
+            invalid_actions = _resolve_wh_dest_from_type(
+                invalid_opt.ivr_menu_option_dest_type,
+                invalid_opt.ivr_menu_option_dest_target_uuid,
+                invalid_opt.ivr_menu_option_dest_external_number,
+                domain_name, ctx_name, preload=preload,
+            )
+            if invalid_actions:
+                invalid_cond = etree.SubElement(ivr_exit_el, 'condition',
+                                                field='${ivr_menu_status}',
+                                                expression='^failure$')
+                invalid_cond.set('break', 'on-true')
+                for app, data in invalid_actions:
+                    etree.SubElement(invalid_cond, 'action', application=app, data=data)
+
+        if hangup_opt:
+            hangup_actions = _resolve_wh_dest_from_type(
+                hangup_opt.ivr_menu_option_dest_type,
+                hangup_opt.ivr_menu_option_dest_target_uuid,
+                hangup_opt.ivr_menu_option_dest_external_number,
+                domain_name, ctx_name, preload=preload,
+            )
+            if hangup_actions:
+                hangup_cond = etree.SubElement(ivr_exit_el, 'condition',
+                                               field='${ivr_menu_status}',
+                                               expression='^hangup$')
+                hangup_cond.set('break', 'on-true')
+                for app, data in hangup_actions:
+                    etree.SubElement(hangup_cond, 'action', application=app, data=data)
+
+        # Fallback / General Exit Action
+        # Reuse the internal-dial-invalid destination as a general "where to go when the IVR gives up" target.
+        # Hangup if unset.
+        fallback_actions = _resolve_wh_dest_from_type(
             ivr.ivr_menu_internal_dial_invalid_type,
             ivr.ivr_menu_internal_dial_invalid_target_uuid,
             ivr.ivr_menu_internal_dial_invalid_external_number,
             domain_name, ctx_name, preload=preload,
         ) or [('hangup', 'NORMAL_CLEARING')]
-        for app, data in exit_actions:
-            etree.SubElement(ivr_cond, 'action', application=app, data=data)
-        get_or_create_context(ctx_name).append(ivr_ext_el)
+
+        fallback_cond = etree.SubElement(ivr_exit_el, 'condition',
+                                         field='destination_number',
+                                         expression=f'^ivr_{re.escape(ivr.ivr_menu_extension)}_exit$')
+        for app, data in fallback_actions:
+            etree.SubElement(fallback_cond, 'action', application=app, data=data)
+
+        get_or_create_context(ctx_name).append(ivr_exit_el)
 
         # 8b. Direct-dial fallback extension — handles <digits># entered inside
         # the IVR. The IVR conf entry transfers to "ivr_dd_<short><digits>"; we
@@ -2056,6 +2129,8 @@ def generate_ivr_conf(domain_name=''):
         # ── IVR Options ───────────────────────────────────────────────────
         for opt in ivr.options.all():
             digits = opt.ivr_menu_option_digits
+            if digits in ('timeout', 'invalid', 'hangup'):
+                continue
             dest_type = opt.ivr_menu_option_dest_type
             dest_uuid = opt.ivr_menu_option_dest_target_uuid
             external = opt.ivr_menu_option_dest_external_number
