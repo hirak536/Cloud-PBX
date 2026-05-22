@@ -45,7 +45,7 @@ POLL_INTERVAL = 1     # seconds between offline-extension poll attempts
 # Thread pool — webhook delivery + offline poll loops run here
 _executor = ThreadPoolExecutor(max_workers=40, thread_name_prefix='esl-worker')
 
-SUBSCRIBE_EVENTS = ['CHANNEL_CREATE', 'CHANNEL_ANSWER', 'CHANNEL_HANGUP', 'CHANNEL_PARK', 'PLAYBACK_STOP']
+SUBSCRIBE_EVENTS = ['CHANNEL_CREATE', 'CHANNEL_ANSWER', 'CHANNEL_HANGUP', 'CHANNEL_PARK', 'PLAYBACK_STOP', 'CUSTOM']
 
 # Active ESL connection — set by run_listener(), used by _esl_api()
 _esl_conn = None
@@ -447,6 +447,50 @@ def _fix_park_presence(headers: dict):
         logger.error('Failed to fire PRESENCE_IN for parked channel: %s', exc)
 
 
+def _is_mobile_agent(agent: str) -> bool:
+    if not agent:
+        return False
+    agent_lower = agent.lower()
+    return any(keyword in agent_lower for keyword in ['linphone', 'ihs', 'mobile', 'ios', 'android', 'uc-'])
+
+
+def _get_registered_agents(sip_id: str, domain_name: str) -> list:
+    """Return a list of user-agents for all active registrations of this SIP ID."""
+    agents = []
+    try:
+        raw = _esl_api(f'sofia status profile internal reg')
+        import re
+        for block in re.split(r'\n(?=Call-ID:)', raw):
+            if f'User: {sip_id}@{domain_name}' in block or f'User: {sip_id}@' in block:
+                for line in block.splitlines():
+                    if line.strip().startswith('Agent:'):
+                        agents.append(line.split(':', 1)[1].strip())
+    except Exception as exc:
+        logger.error('Failed to parse registered agents: %s', exc)
+    return agents
+
+
+def _trigger_re_transfer(sip_id: str, domain_name: str):
+    try:
+        raw_channels = _esl_api('show channels as json')
+        if not raw_channels or 'rows' not in raw_channels:
+            return
+        import json
+        data = json.loads(raw_channels)
+        rows = data.get('rows', [])
+        for row in rows:
+            dest = row.get('dest', '')
+            # We want to find inbound calls that are currently ringing or routing to this extension
+            if dest == sip_id and row.get('direction') == 'inbound' and row.get('answerstate') == 'ringing':
+                call_uuid = row.get('uuid')
+                tenant = _tenant_by_domain.get(domain_name)
+                tenant_code = tenant['tenant_code'] if tenant else ''
+                logger.info('Active ringing call found for %s (uuid: %s). Re-transferring to include mobile.', sip_id, call_uuid)
+                _esl_api(f'uuid_transfer {call_uuid} {sip_id} XML default-{tenant_code}')
+    except Exception as exc:
+        logger.error('Failed to trigger re-transfer on mobile registration: %s', exc)
+
+
 # ── Event handler ─────────────────────────────────────────────────────────────
 
 def _handle_event(event):
@@ -455,6 +499,17 @@ def _handle_event(event):
         headers = event.headers
         event_name = headers.get('Event-Name', '')
         if event_name not in SUBSCRIBE_EVENTS:
+            return
+
+        if event_name == 'CUSTOM':
+            subclass = headers.get('Event-Subclass', '')
+            if subclass == 'sofia::register':
+                sip_id = headers.get('username')
+                domain_name = headers.get('realm')
+                user_agent = headers.get('user-agent', '')
+                if sip_id and domain_name and _is_mobile_agent(user_agent):
+                    logger.info('Mobile registration detected: %s@%s (%s)', sip_id, domain_name, user_agent)
+                    _trigger_re_transfer(sip_id, domain_name)
             return
 
         tenant = _resolve_tenant(headers)
@@ -602,6 +657,16 @@ def _handle_event(event):
 
         sip_id = extension.sip_username or extension.extension
         if _is_registered(sip_id, domain_name):
+            # If registered, we check if a mobile app is registered.
+            # If not, we still fire the push notification webhook to wake the mobile app up!
+            registered_agents = _get_registered_agents(sip_id, domain_name)
+            has_mobile = any(_is_mobile_agent(agent) for agent in registered_agents)
+            if not has_mobile and (getattr(extension, 'mobile_push_enabled', False) or tenant.get('push_notifications_enabled', False)):
+                logger.info('Extension %s registered on desk phone, but mobile is offline. Dispatching push wake-up.', sip_id)
+                # Fire webhook so the push notification server can wake the mobile app
+                payload['event'] = 'call.incoming'
+                payload['extension'] = f'{ext_number}-{tenant_code}' if tenant_code else ext_number
+                _fire_webhooks(tenant, payload)
             return
 
         offline_poll_timeout = tenant.get('offline_poll_timeout', 30)

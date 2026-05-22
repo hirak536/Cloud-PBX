@@ -26,9 +26,10 @@ def normalize_number(num):
 
 def upsert_affinity(tenant, customer, extension, when, *, domain=None, source='outbound'):
     """
-    Upsert (tenant, customer) → extension. Only overwrites if `when` is newer
-    than the stored last_seen — safe for out-of-order signal delivery and
-    idempotent for repeated seed runs.
+    Upsert (tenant, customer) → extension. Last-write-wins: every call
+    overwrites the stored extension so out-of-order or equal-timestamp
+    deliveries don't silently drop updates. Mirrors the DB trigger in
+    migration 0011.
     """
     cust_n = normalize_number(customer)
     if not cust_n or not extension or not when:
@@ -46,11 +47,10 @@ def upsert_affinity(tenant, customer, extension, when, *, domain=None, source='o
     )
     if created:
         return obj
-    if when > obj.last_seen:
-        obj.extension_number = extension
-        obj.last_seen = when
-        obj.source = source
-        if domain and not obj.domain_id:
-            obj.domain = domain
-        obj.save(update_fields=['extension_number', 'last_seen', 'source', 'domain'])
+    obj.extension_number = extension
+    obj.last_seen = when
+    obj.source = source
+    if domain and not obj.domain_id:
+        obj.domain = domain
+    obj.save(update_fields=['extension_number', 'last_seen', 'source', 'domain'])
     return obj
