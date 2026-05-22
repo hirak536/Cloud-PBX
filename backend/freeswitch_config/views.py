@@ -249,19 +249,32 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
     else:
         billsec = raw_billsec
     leg = 'b' if is_originating_leg else 'a'
-    sip_username = var('username') or var('sip_from_user') or ''
+    # Note: prefer var('username') (the actual sip user on this leg). Only fall
+    # back to sip_from_user for outbound, where it's the dialing extension.
+    # Falling back to sip_from_user on inbound legs would mistake the PSTN
+    # caller for the extension.
+    sip_username_raw = var('username') or ''
+    sip_from_user = var('sip_from_user') or ''
     sip_to_user = var('sip_to_user') or var('sip_req_user') or ''
-    # For inbound calls, prefer dialed_extension (set by dialplan) over sip_to_user (DID number).
-    # For ring group calls, dialed_extension is not set — parse bridge_channel instead.
-    # bridge_channel looks like: sofia/internal/sip:901-IHDT@ip:port;ob
+
+    def _looks_like_internal_ext(val: str) -> bool:
+        """Real internal extensions are short digit strings, optionally suffixed
+        with -TENANTCODE (e.g. '901', '901-IHDT'). PSTN numbers, E.164, and
+        SIP transfer IDs (o7mvb2pc) all fail this check."""
+        if not val:
+            return False
+        head = val.split('-', 1)[0]
+        return head.isdigit() and 1 <= len(head) <= 6
+
     if direction == 'outbound':
-        extension_number = sip_username
+        # Outbound A-leg: the dialing extension is sip_from_user.
+        extension_number = sip_username_raw or sip_from_user
     else:
         # For B-legs of inbound calls (forked ring group dial), each B-leg's
         # `username` is the SIP username of the specific device that rang —
-        # this is the only field that uniquely identifies each fork target.
-        if leg == 'b' and sip_username:
-            extension_number = sip_username
+        # this uniquely identifies each fork target.
+        if leg == 'b' and _looks_like_internal_ext(sip_username_raw):
+            extension_number = sip_username_raw
         else:
             extension_number = var('dialed_extension') or ''
             if not extension_number:
@@ -271,8 +284,13 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                 m = _re.search(r'sip:([^@;]+)@|/([^/@;]+)@', bridge_channel)
                 if m:
                     extension_number = m.group(1) or m.group(2)
-            if not extension_number:
+            # Final fallback: sip_to_user — but only if it looks like a real ext.
+            # Never let PSTN numbers (+13465711217) or random SIP IDs end up in
+            # extension_number; leave it blank instead.
+            if not extension_number and _looks_like_internal_ext(sip_to_user):
                 extension_number = sip_to_user
+            if not _looks_like_internal_ext(extension_number):
+                extension_number = ''
     # Normalize to sip_username format (e.g. "901-IHS") so inbound and outbound are consistent.
     # Look up by plain extension number if extension_number doesn't already contain a dash.
     if extension_number and '-' not in extension_number and tenant:
