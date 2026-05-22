@@ -45,7 +45,7 @@ POLL_INTERVAL = 1     # seconds between offline-extension poll attempts
 # Thread pool — webhook delivery + offline poll loops run here
 _executor = ThreadPoolExecutor(max_workers=40, thread_name_prefix='esl-worker')
 
-SUBSCRIBE_EVENTS = ['CHANNEL_CREATE', 'CHANNEL_ANSWER', 'CHANNEL_HANGUP', 'CHANNEL_PARK', 'PLAYBACK_STOP', 'CUSTOM']
+SUBSCRIBE_EVENTS = ['CHANNEL_CREATE', 'CHANNEL_OUTGOING', 'CHANNEL_ANSWER', 'CHANNEL_HANGUP', 'CHANNEL_PARK', 'PLAYBACK_STOP', 'CUSTOM']
 
 # Active ESL connection — set by run_listener(), used by _esl_api()
 _esl_conn = None
@@ -224,6 +224,105 @@ def _is_fax_destination(dest: str) -> bool:
         return _db_query(_lookup, dest)
     except Exception:
         return False
+
+
+# ── Affinity capture (live, on extension dial-out) ────────────────────────────
+
+import re as _re
+
+
+def _normalize_customer(num: str) -> str:
+    """Strip non-digits, drop leading US '1', keep last 10. Returns '' if too short."""
+    if not num:
+        return ''
+    digits = _re.sub(r'\D', '', str(num))
+    if len(digits) > 10 and digits.startswith('1'):
+        digits = digits[1:]
+    return digits[-10:] if len(digits) >= 10 else ''
+
+
+def _extract_internal_ext(caller_username: str, tenant_code: str) -> str:
+    """
+    Pull the internal extension number from a tenant-suffixed username.
+    "901-IHDT" + tenant_code "IHDT" → "901". Returns '' if it doesn't match.
+    """
+    if not caller_username or not tenant_code:
+        return ''
+    suffix = f'-{tenant_code}'
+    if caller_username.endswith(suffix):
+        head = caller_username[: -len(suffix)]
+        if head.isdigit():
+            return head
+    if caller_username.isdigit():
+        return caller_username
+    return ''
+
+
+def _upsert_affinity_live(tenant_uuid: str, domain_uuid, caller_number: str,
+                          extension_number: str, when_ts):
+    """
+    Last-write-wins upsert into v_caller_extension_affinity using raw psycopg2
+    (avoids Django ORM thread-locals under gevent).
+    """
+    try:
+        conn = _psycopg2_connect()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO v_caller_extension_affinity "
+            "  (affinity_uuid, tenant_uuid, domain_uuid, caller_number, "
+            "   extension_number, last_seen, source, insert_date, update_date) "
+            "VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, 'live_outbound', NOW(), NOW()) "
+            "ON CONFLICT ON CONSTRAINT uniq_affinity_tenant_caller DO UPDATE SET "
+            "  extension_number = EXCLUDED.extension_number, "
+            "  last_seen        = EXCLUDED.last_seen, "
+            "  source           = 'live_outbound', "
+            "  update_date      = NOW(), "
+            "  domain_uuid      = COALESCE(v_caller_extension_affinity.domain_uuid, EXCLUDED.domain_uuid)",
+            (tenant_uuid, domain_uuid, caller_number, extension_number, when_ts),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(
+            '[affinity] live upsert tenant=%s ext=%s customer=%s',
+            tenant_uuid, extension_number, caller_number,
+        )
+    except Exception as exc:
+        logger.error('[affinity] upsert failed: %s', exc)
+
+
+def _maybe_capture_outbound_affinity(headers: dict, tenant: dict):
+    """
+    On CHANNEL_OUTGOING (B-leg created when extension dials out), record
+    (tenant, customer_number) → extension_number. This is the live signal —
+    no CDR involved.
+    """
+    caller_username = headers.get('Caller-Username', '')
+    tenant_code = tenant.get('tenant_code', '')
+    ext = _extract_internal_ext(caller_username, tenant_code)
+    if not ext:
+        return
+
+    customer_raw = (
+        headers.get('Caller-Destination-Number', '')
+        or headers.get('variable_dialed_extension', '')
+    )
+    customer = _normalize_customer(customer_raw)
+    if not customer:
+        return
+
+    # Skip internal-to-internal dials (extension calling another extension).
+    # Internal targets are short (3-5 digits) and never normalize to 10.
+    if customer_raw and customer_raw.isdigit() and len(customer_raw) < 7:
+        return
+
+    when_ts = datetime.datetime.now(datetime.timezone.utc)
+    domain_uuid = headers.get('variable_domain_uuid') or None
+
+    _executor.submit(
+        _upsert_affinity_live,
+        tenant['tenant_uuid'], domain_uuid, customer, ext, when_ts,
+    )
 
 
 # ── ESL helpers ───────────────────────────────────────────────────────────────
@@ -531,6 +630,13 @@ def _handle_event(event):
 
         if event_name == 'CHANNEL_PARK':
             _fix_park_presence(headers)
+            return
+
+        # Live affinity capture: extension dialed out → record (customer → ext).
+        # CHANNEL_OUTGOING fires on the B-leg the moment FreeSWITCH originates
+        # the carrier-side call, regardless of whether the customer answers.
+        if event_name == 'CHANNEL_OUTGOING':
+            _maybe_capture_outbound_affinity(headers, tenant)
             return
 
 # ── Handle Answer / Hangup Webhooks ──────────────────────────────────
