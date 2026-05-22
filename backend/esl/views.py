@@ -534,13 +534,13 @@ class FSEavesdropView(APIView):
             esl = get_esl_client()
             # Originate supervisor's phone and drop into eavesdrop on the target UUID
             cmd = (
-                f'originate {{'
-                f'origination_caller_id_name=Supervisor,'
-                f'origination_caller_id_number={spy_ext},'
-                f'eavesdrop_uuid={uuid},'
-                f'eavesdrop_flags={mode_flags}'
-                f'}}user/{sip_user} '
-                f'eavesdrop XML {context}'
+                f"originate {{"
+                f"origination_caller_id_name='Supervisor',"
+                f"origination_caller_id_number='{spy_ext}',"
+                f"eavesdrop_uuid='{uuid}',"
+                f"eavesdrop_flags='{mode_flags}'"
+                f"}}user/{sip_user} "
+                f"eavesdrop XML {context}"
             )
             result = esl.api(cmd)
             return Response({'uuid': uuid, 'spy_ext': spy_ext, 'mode': mode, 'result': result})

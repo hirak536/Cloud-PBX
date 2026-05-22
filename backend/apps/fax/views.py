@@ -151,16 +151,16 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
         cid_name = fax.fax_caller_id_name or fax.fax_name
         cid_number = fax.fax_caller_id_number or fax.fax_extension
         originate_vars = (
-            f'origination_caller_id_name={cid_name},'
-            f'origination_caller_id_number={cid_number},'
-            f'fax_ident={cid_name},'
-            f'fax_header={cid_name},'
-            f'absolute_codec_string=PCMU,'
-            f'fax_enable_t38=true,'
-            f'fax_enable_t38_request=true,'
-            f'fax_disable_v17=false,'
-            f'fax_use_ecm=true,'
-            f'fax_enable_t38_insist=true'
+            f"origination_caller_id_name='{cid_name}',"
+            f"origination_caller_id_number='{cid_number}',"
+            f"fax_ident='{cid_name}',"
+            f"fax_header='{cid_name}',"
+            f"absolute_codec_string=PCMU,"
+            f"fax_enable_t38=true,"
+            f"fax_enable_t38_request=true,"
+            f"fax_disable_v17=false,"
+            f"fax_use_ecm=true,"
+            f"fax_enable_t38_insist=true"
         )
         originate_cmd = (
             f'originate {{{originate_vars}}}'
@@ -345,16 +345,16 @@ class FaxQuickSendView(APIView):
                 return Response({'error': f'PDF conversion failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         originate_vars = (
-            f'origination_caller_id_name={caller_id_name},'
-            f'origination_caller_id_number={caller_id_number},'
-            f'fax_ident={caller_id_name},'
-            f'fax_header={caller_id_name},'
-            f'absolute_codec_string=PCMU,'
-            f'fax_enable_t38=true,'
-            f'fax_enable_t38_request=true,'
-            f'fax_disable_v17=false,'
-            f'fax_use_ecm=true,'
-            f'fax_enable_t38_insist=true'
+            f"origination_caller_id_name='{caller_id_name}',"
+            f"origination_caller_id_number='{caller_id_number}',"
+            f"fax_ident='{caller_id_name}',"
+            f"fax_header='{caller_id_name}',"
+            f"absolute_codec_string=PCMU,"
+            f"fax_enable_t38=true,"
+            f"fax_enable_t38_request=true,"
+            f"fax_disable_v17=false,"
+            f"fax_use_ecm=true,"
+            f"fax_enable_t38_insist=true"
         )
         originate_cmd = (
             f'originate {{{originate_vars}}}'
