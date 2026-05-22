@@ -371,12 +371,11 @@ def _poll_and_transfer(call_uuid: str, sip_id: str, domain_name: str,
             return
 
         if _is_registered(sip_id, domain_name):
-            logger.info('Extension %s came online — bridging call %s', sip_id, call_uuid)
+            logger.info('Extension %s came online — transferring call %s to extension', sip_id, call_uuid)
             try:
-                contact = _esl_api(f'sofia_contact {sip_id}@{domain_name}').strip()
-                _esl_api(f'uuid_bridge {call_uuid} {contact}')
+                _esl_api(f'uuid_transfer {call_uuid} {sip_id} XML default-{tenant_code}')
             except Exception as exc:
-                logger.error('uuid_bridge failed for %s: %s', call_uuid, exc)
+                logger.error('uuid_transfer failed for %s to %s: %s', call_uuid, sip_id, exc)
             return
 
         time.sleep(POLL_INTERVAL)
