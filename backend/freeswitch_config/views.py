@@ -330,7 +330,7 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         bypass_media=(var('bypass_media') == 'true' or var('proxy_media') == 'true'),
         call_uuid=call_uuid_val,
         leg=leg,
-        bridge_uuid=var('bridge_uuid') or var('signal_bond') or None,
+        bridge_uuid=var('bridge_uuid') or var('signal_bond') or originating_leg_uuid or None,
         pdd_ms=int_var('progress_mediamsec') or int_var('pdd_ms'),
         waitsec=waitsec,
         cc_queue=var('cc_queue'),
