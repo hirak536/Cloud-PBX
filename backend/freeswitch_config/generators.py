@@ -1265,6 +1265,9 @@ def _ring_group_to_dialplan_xml(rg, domain_name, ctx, preload=None):
             etree.SubElement(cond, 'action', application='bridge', data=leg)
 
     # Timeout destination
+    # Reset call_timeout so subsequent/timeout destinations do not inherit the short ringgroup timeout
+    etree.SubElement(cond, 'action', application='set', data='call_timeout=_undef_')
+
     timeout_actions = []
     timeout_type = rg.ring_group_timeout_type
     timeout_target = rg.ring_group_timeout_target_uuid
