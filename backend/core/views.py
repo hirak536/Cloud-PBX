@@ -434,6 +434,28 @@ class TenantViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
+    @action(detail=True, methods=['post'], url_path='apply-push-notifications')
+    def apply_push_notifications(self, request, pk=None):
+        """Bulk-apply the tenant's push_notifications_enabled flag to all extensions."""
+        tenant = self.get_object()
+        from apps.extensions.models import Extension
+        value = tenant.push_notifications_enabled
+        updated = Extension.objects.filter(tenant=tenant).update(mobile_push_enabled=value)
+        
+        # Invalidate FreeSWITCH config cache
+        from freeswitch_config.signals import _invalidate_dialplan_all, _invalidate_directory_all
+        try:
+            _invalidate_dialplan_all()
+            _invalidate_directory_all()
+        except Exception:
+            logger.exception('Failed to invalidate FreeSWITCH cache after applying push notifications.')
+
+        return Response(
+            {'detail': f'Push notifications setting applied to {updated} extension(s).'},
+            status=status.HTTP_200_OK,
+        )
+
+
     def destroy(self, request, *args, **kwargs):
         tenant = self.get_object()
         if tenant.domains.exists():

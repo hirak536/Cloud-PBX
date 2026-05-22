@@ -894,10 +894,16 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
     # Always tag the target extension so CDR ingest can record it
     etree.SubElement(offline_reg_cond, 'action', application='set',
                      data=f'dialed_extension={ext.extension}')
-    # If tenant has push notifications enabled, park the call so the ESL listener
-    # can send a push webhook and poll for the extension to register.
+    # If tenant has push notifications enabled or extension has mobile push enabled,
+    # park the call so the ESL listener can send a push webhook and poll for the extension to register.
     # The ESL listener will handle forwarding/hangup after the poll timeout.
+    is_push_enabled = False
     if ext.tenant and getattr(ext.tenant, 'push_notifications_enabled', False):
+        is_push_enabled = True
+    elif getattr(ext, 'mobile_push_enabled', False):
+        is_push_enabled = True
+
+    if is_push_enabled:
         etree.SubElement(offline_reg_cond, 'action', application='set', data='ringback=${us-ring}')
         etree.SubElement(offline_reg_cond, 'action', application='ring_ready')
         etree.SubElement(offline_reg_cond, 'action', application='park')

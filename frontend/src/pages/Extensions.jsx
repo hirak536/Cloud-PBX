@@ -61,6 +61,7 @@ const EMPTY_FORM = {
   hold_music: '',
   language: '',
   call_screen_enabled: false,
+  mobile_push_enabled: false,
   user_record: '',
   // Recording
   call_recording: 'inherit',
@@ -729,6 +730,20 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
               </div>
             </Field>
 
+            <SectionTitle>Push Notifications</SectionTitle>
+
+            <Field label="Mobile Push Notifications" hint="Keep callers waiting while the mobile app wakes up and registers.">
+              <div className="flex h-9 items-center gap-3">
+                <Toggle
+                  checked={form.mobile_push_enabled}
+                  onChange={setToggle('mobile_push_enabled')}
+                />
+                <span className="text-sm text-muted-foreground">
+                  {form.mobile_push_enabled ? 'Enabled' : 'Disabled'}
+                </span>
+              </div>
+            </Field>
+
           </div>
         )}
 
@@ -1349,8 +1364,10 @@ export default function Extensions() {
   const openCreate = () => {
     setEditId(null)
     originalRingGroupIdsRef.current = []
+    const isPushEnabled = currentTenant?.push_notifications_enabled || false
     setForm({
       ...EMPTY_FORM,
+      mobile_push_enabled: isPushEnabled,
       password: generatePassword(),
     })
     setFormError('')
@@ -1375,6 +1392,7 @@ export default function Extensions() {
     hold_music:                              d.hold_music || '',
     language:                                d.language || '',
     call_screen_enabled:                     d.call_screen_enabled || false,
+    mobile_push_enabled:                     d.mobile_push_enabled || false,
     user_record:                             d.user_record || '',
     call_recording:                          d.call_recording || 'inherit',
     reject_to_voicemail:                     d.reject_to_voicemail || false,
@@ -1454,6 +1472,7 @@ export default function Extensions() {
         hold_music:                              form.hold_music,
         language:                                form.language,
         call_screen_enabled:                     form.call_screen_enabled,
+        mobile_push_enabled:                     form.mobile_push_enabled,
         user_record:                             form.user_record,
         // Recording
         call_recording:                          form.call_recording,

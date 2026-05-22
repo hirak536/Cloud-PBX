@@ -94,6 +94,9 @@ export default function Tenants() {
   const [gateways, setGateways] = useState([])
   const [applyingRecording, setApplyingRecording] = useState(false)
   const [applyRecordingMsg, setApplyRecordingMsg] = useState('')
+  const [applyingPush, setApplyingPush] = useState(false)
+  const [applyPushMsg, setApplyPushMsg] = useState('')
+  const [shouldApplyToAll, setShouldApplyToAll] = useState(false)
 
   useEffect(() => {
     if (!currentTenant?.tenant_uuid) return
@@ -125,6 +128,31 @@ export default function Tenants() {
   const set = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
   const tog = (key) => () => setForm(p => ({ ...p, [key]: !p[key] }))
 
+  const handlePushToggle = () => {
+    const nextVal = !form.push_notifications_enabled
+    setForm(p => ({ ...p, push_notifications_enabled: nextVal }))
+    
+    if (nextVal) {
+      const applyAll = window.confirm(
+        "Enable Mobile Push Notifications for all existing extensions in this tenant as well?\n\n" +
+        "• Click OK to also enable push waiting on all existing extensions.\n" +
+        "• Click Cancel to only set it as the default for new extensions."
+      )
+      if (applyAll) {
+        setShouldApplyToAll(true)
+      }
+    } else {
+      const removeAll = window.confirm(
+        "Disable Mobile Push Notifications for all existing extensions in this tenant as well?\n\n" +
+        "• Click OK to also disable push waiting on all existing extensions.\n" +
+        "• Click Cancel to keep individual extension settings unchanged."
+      )
+      if (removeAll) {
+        setShouldApplyToAll(true)
+      }
+    }
+  }
+
   const handleSave = async () => {
     const timeout = parseInt(form.voicemail_timeout, 10)
     if (isNaN(timeout) || timeout < 10 || timeout > 3600) {
@@ -143,6 +171,12 @@ export default function Tenants() {
         default_gateway_priority: parseInt(form.default_gateway_priority, 10) || 10,
         offline_poll_timeout:     parseInt(form.offline_poll_timeout, 10) || 30,
       })
+
+      if (shouldApplyToAll) {
+        await tenantsApi.applyPushNotifications(currentTenant.tenant_uuid)
+        setShouldApplyToAll(false)
+      }
+
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     } catch (err) {
@@ -162,6 +196,20 @@ export default function Tenants() {
       setApplyRecordingMsg('Failed to apply recording setting.')
     } finally {
       setApplyingRecording(false)
+    }
+  }
+
+  const handleApplyPushNotifications = async () => {
+    setApplyingPush(true)
+    setApplyPushMsg('')
+    try {
+      const { data } = await tenantsApi.applyPushNotifications(currentTenant.tenant_uuid)
+      setApplyPushMsg(data.detail || 'Done.')
+      setTimeout(() => setApplyPushMsg(''), 4000)
+    } catch {
+      setApplyPushMsg('Failed to apply push setting.')
+    } finally {
+      setApplyingPush(false)
     }
   }
 
@@ -290,7 +338,7 @@ export default function Tenants() {
             <Section icon={Bell} title="Mobile Push Notifications">
               <Toggle
                 checked={form.push_notifications_enabled}
-                onChange={tog('push_notifications_enabled')}
+                onChange={handlePushToggle}
                 label="Enable Push Notifications"
                 description="Offline extensions will park with ringback and send a push webhook so the mobile app can wake up and register."
               />
@@ -302,6 +350,17 @@ export default function Tenants() {
                   </div>
                 </Field>
               )}
+              <div className="flex items-center gap-2 pt-1 border-t">
+                <Button variant="outline" size="sm" onClick={handleApplyPushNotifications} disabled={applyingPush}>
+                  {applyingPush ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bell className="h-3.5 w-3.5" />}
+                  Apply to all extensions
+                </Button>
+                {applyPushMsg && (
+                  <span className={cn('text-xs font-medium',
+                    applyPushMsg.toLowerCase().includes('fail') ? 'text-destructive' : 'text-green-600'
+                  )}>{applyPushMsg}</span>
+                )}
+              </div>
             </Section>
           </div>
 

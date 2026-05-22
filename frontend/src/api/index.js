@@ -249,6 +249,7 @@ export const tenants = {
   update: (id, data) => api.put(`/tenants/${id}/`, data),
   delete: (id) => api.delete(`/tenants/${id}/`),
   applyRecording: (id) => api.post(`/tenants/${id}/apply-recording/`),
+  applyPushNotifications: (id) => api.post(`/tenants/${id}/apply-push-notifications/`),
 }
 
 export const users = {
