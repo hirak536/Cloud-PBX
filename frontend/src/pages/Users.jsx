@@ -62,6 +62,7 @@ const EMPTY_UC_FORM = {
   extensionId: '',
   extensionPassword: '',
   didIds: [],
+  is_active: true,
 }
 
 function generatePassword() {
@@ -121,6 +122,7 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
       extensionId:  '',
       extensionPassword: '',
       didIds:       [],
+      is_active:    u.is_active ?? true,
     })
     setFormError('')
     setDialogOpen(true)
@@ -218,6 +220,8 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
       lastName:   form.lastName.trim(),
       username:   loggedInUser?.user_email || loggedInUser?.username || '',
       userid:     editUser.uuid,
+      userType:   form.userType,
+      is_active:  form.is_active,
       ...(extensionsPayload.length > 0 ? { extensions: extensionsPayload } : {}),
     } : {
       email:       form.email.trim(),
@@ -277,7 +281,7 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
             <TableHead>Email</TableHead>
             <TableHead>Type</TableHead>
             <TableHead>Extensions</TableHead>
-            <TableHead>City / State</TableHead>
+            <TableHead>Assigned DIDs</TableHead>
             <TableHead>Status</TableHead>
             <TableHead className="w-16"></TableHead>
           </TableRow></TableHeader>
@@ -313,8 +317,17 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
                             </div>
                           : <span className="text-xs text-muted-foreground">—</span>}
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {[u.city, u.state].filter(Boolean).join(', ') || '—'}
+                      <TableCell>
+                        {(() => {
+                          const dids = (u.extension || []).flatMap(ex => (ex.phones || []).map(p => p.phone)).filter(Boolean)
+                          return dids.length > 0
+                            ? <div className="flex flex-wrap gap-1">
+                                {dids.map(d => (
+                                  <Badge key={d} variant="outline" className="text-xs font-mono">{d}</Badge>
+                                ))}
+                              </div>
+                            : <span className="text-xs text-muted-foreground">—</span>
+                        })()}
                       </TableCell>
                       <TableCell>
                         <Badge variant={u.is_active ? 'success' : 'secondary'}>
@@ -410,6 +423,32 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
                 ))}
               </Select>
             </div>
+
+            {/* Active/Inactive toggle — only shown when editing */}
+            {editUser && (
+              <div className="flex items-center justify-between rounded-md border px-3 py-2">
+                <div>
+                  <Label className="cursor-pointer" htmlFor="uc-user-active">Status</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {form.is_active ? 'User is active' : 'User is inactive'}
+                  </p>
+                </div>
+                <button
+                  id="uc-user-active"
+                  type="button"
+                  role="switch"
+                  aria-checked={form.is_active}
+                  onClick={() => setForm(p => ({ ...p, is_active: !p.is_active }))}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2
+                    ${form.is_active ? 'bg-primary' : 'bg-muted-foreground/40'}`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200
+                      ${form.is_active ? 'translate-x-5' : 'translate-x-0'}`}
+                  />
+                </button>
+              </div>
+            )}
 
             {/* Password — only shown when adding a new user */}
             {!editUser && <div className="space-y-2.5">

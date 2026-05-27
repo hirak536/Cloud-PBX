@@ -76,6 +76,8 @@ const WEBHOOK_PRESETS = [
   { label: 'Other (custom URL)', value: '__other__' },
 ]
 
+const DEFAULT_WEBHOOK_URL = 'https://fsapi.ihsclients.com/company/webhook'
+
 const EMPTY = {
   tenant_name: '',
   tenant_code: '',
@@ -101,8 +103,10 @@ export default function TenantList() {
   const [deleting, setDeleting] = useState(null)
 
   // Webhook URL state
-  const [webhookPreset, setWebhookPreset] = useState('')
+  const [webhookPreset, setWebhookPreset] = useState(DEFAULT_WEBHOOK_URL)
   const [webhookCustom, setWebhookCustom] = useState('http://')
+  const [extraWebhookEnabled, setExtraWebhookEnabled] = useState(false)
+  const [extraWebhookUrl, setExtraWebhookUrl] = useState('')
 
   // Parking lots state (create only)
   const [parking, setParking] = useState(EMPTY_PARKING)
@@ -122,8 +126,10 @@ export default function TenantList() {
   const openCreate = () => {
     setEditId(null)
     setForm(EMPTY)
-    setWebhookPreset('')
+    setWebhookPreset(DEFAULT_WEBHOOK_URL)
     setWebhookCustom('http://')
+    setExtraWebhookEnabled(false)
+    setExtraWebhookUrl('')
     setParking(EMPTY_PARKING)
     setFormError('')
     setDialogOpen(true)
@@ -138,6 +144,8 @@ export default function TenantList() {
     })
     setWebhookPreset('')
     setWebhookCustom('http://')
+    setExtraWebhookEnabled(false)
+    setExtraWebhookUrl('')
     setParking(EMPTY_PARKING)
     setFormError('')
     setDialogOpen(true)
@@ -145,8 +153,11 @@ export default function TenantList() {
 
   // Resolve the actual webhook URL from preset + custom input
   const resolvedWebhookUrl = () => {
-    if (!webhookPreset || webhookPreset === '__other__') return webhookCustom.trim() === 'http://' ? '' : webhookCustom.trim()
-    return webhookPreset
+    const primary = (!webhookPreset || webhookPreset === '__other__')
+      ? (webhookCustom.trim() === 'http://' ? '' : webhookCustom.trim())
+      : webhookPreset
+    const extra = extraWebhookEnabled ? extraWebhookUrl.trim() : ''
+    return [primary, extra].filter(Boolean).join(',')
   }
 
   const handleSave = async () => {
@@ -371,6 +382,31 @@ export default function TenantList() {
                       placeholder="https://server-a.com/webhook, https://server-b.com/webhook"
                       className="mt-1.5"
                     />
+                  )}
+                  {extraWebhookEnabled ? (
+                    <div className="mt-1.5 flex gap-1.5">
+                      <Input
+                        value={extraWebhookUrl}
+                        onChange={e => setExtraWebhookUrl(e.target.value)}
+                        placeholder="https://another-server.com/webhook"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => { setExtraWebhookEnabled(false); setExtraWebhookUrl('') }}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setExtraWebhookEnabled(true)}
+                      className="mt-1.5 text-xs font-medium text-primary hover:underline"
+                    >
+                      + Add another URL
+                    </button>
                   )}
                   <p className="text-xs text-muted-foreground">
                     An API key will be auto-generated and POSTed here when the tenant is created. Separate multiple URLs with commas to fan out to all of them.
