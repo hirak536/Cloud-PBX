@@ -309,10 +309,11 @@ export const users = {
   delete: (id) => api.delete(`/users/${id}/`),
 }
 
-const UC_API_TOKEN = 'django-secure-p=bnajkpqq2_(l3)1$$vaf($jq#uw7qdysxi3$one3p$=i2x-_'
+const UC_API_TOKEN = import.meta.env.VITE_UC_API_TOKEN
+const UC_API_BASE_URL = import.meta.env.VITE_UC_API_BASE_URL || 'https://fsapi.ihsclients.com'
 
 const ucAxios = axios.create({
-  baseURL: 'http://172.31.199.20:8000',
+  baseURL: UC_API_BASE_URL,
   headers: { Authorization: `Bearer ${UC_API_TOKEN}` },
 })
 
