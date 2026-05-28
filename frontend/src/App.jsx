@@ -5,6 +5,7 @@ import { useSelector } from 'react-redux'
 import { selectAuth } from '@/store'
 import LiveProvider from '@/providers/LiveProvider'
 import AppLayout from '@/components/AppLayout'
+import IdleLogout from '@/components/IdleLogout'
 import Login from '@/pages/Login'
 
 const Dashboard        = lazy(() => import('@/pages/Dashboard'))
@@ -67,6 +68,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <LiveProvider />
+      <IdleLogout />
       <Toaster position="top-right" richColors closeButton />
       <Routes>
         <Route path="/login" element={<Login />} />

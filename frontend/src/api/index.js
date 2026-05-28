@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { store } from '@/store'
+import { setTokens, clearAuth } from '@/store/slices/authSlice'
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -7,65 +8,113 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-function getPersistedSlice(key) {
+const REFRESH_LOCK_KEY = 'auth:refresh-lock'
+const REFRESH_LOCK_TTL_MS = 10_000
+const authChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('auth') : null
+
+if (authChannel) {
+  authChannel.onmessage = (e) => {
+    const msg = e.data || {}
+    if (msg.type === 'logout') {
+      try { store.dispatch(clearAuth()) } catch {}
+      if (window.location.pathname !== '/login') window.location.href = '/login'
+    } else if (msg.type === 'tokens' && msg.access) {
+      store.dispatch(setTokens({ access: msg.access, refresh: msg.refresh }))
+    }
+  }
+}
+
+export function broadcastLogout() {
+  try { authChannel?.postMessage({ type: 'logout' }) } catch {}
+}
+
+function acquireRefreshLock() {
   try {
-    const outer = localStorage.getItem(`persist:${key}`)
-    if (!outer) return null
-    const parsed = JSON.parse(outer)
-    // redux-persist double-serializes each field — parse each value
-    return Object.fromEntries(
-      Object.entries(parsed).map(([k, v]) => {
-        try { return [k, JSON.parse(v)] } catch { return [k, v] }
-      })
-    )
-  } catch { return null }
+    const now = Date.now()
+    const raw = localStorage.getItem(REFRESH_LOCK_KEY)
+    if (raw) {
+      const ts = parseInt(raw, 10)
+      if (!Number.isNaN(ts) && now - ts < REFRESH_LOCK_TTL_MS) return false
+    }
+    localStorage.setItem(REFRESH_LOCK_KEY, String(now))
+    return true
+  } catch { return true }
+}
+
+function releaseRefreshLock() {
+  try { localStorage.removeItem(REFRESH_LOCK_KEY) } catch {}
+}
+
+function waitForNewAccessToken(prevAccess, timeoutMs = REFRESH_LOCK_TTL_MS) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now()
+    const tick = () => {
+      const current = store.getState().auth?.accessToken
+      if (current && current !== prevAccess) return resolve(current)
+      if (Date.now() - started > timeoutMs) return reject(new Error('refresh-wait-timeout'))
+      setTimeout(tick, 150)
+    }
+    tick()
+  })
 }
 
 // Attach JWT token and active tenant
 api.interceptors.request.use((config) => {
   try {
-    const token = getPersistedSlice('auth')?.accessToken
+    // Prefer live Redux state — keeps in sync with cross-tab BroadcastChannel updates
+    const token = store.getState().auth?.accessToken
     if (token) config.headers.Authorization = `Bearer ${token}`
-    // Read tenant from Redux store directly (always current, no localStorage lag)
     const tenantUuid = store.getState().tenant?.currentTenant?.tenant_uuid
-    // Allow callers to opt out of tenant scoping by passing params: { tenant: null }
     const skipTenant = config.params && 'tenant' in config.params && config.params.tenant === null
     if (tenantUuid && !skipTenant) config.params = { tenant: tenantUuid, ...config.params }
   } catch {}
   return config
 })
 
-// Auto-refresh on 401 — single in-flight refresh promise prevents race condition
+// Auto-refresh on 401 — single in-flight promise within a tab, localStorage lock across tabs
 let _refreshPromise = null
 
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
-    const original = err.config
-    const isAuthEndpoint = original.url?.includes('/auth/login/') ||
-                           original.url?.includes('/auth/refresh/') ||
-                           original.url?.includes('/auth/forgot-password/')
+    const original = err.config || {}
+    const url = original.url || ''
+    const isAuthEndpoint = url.includes('/auth/login/') ||
+                           url.includes('/auth/refresh/') ||
+                           url.includes('/auth/forgot-password/')
     if (err.response?.status === 401 && !original._retry && !isAuthEndpoint) {
       original._retry = true
+      const prevAccess = store.getState().auth?.accessToken
       try {
-        // If a refresh is already in flight, wait for it instead of firing another
         if (!_refreshPromise) {
-          const refresh = getPersistedSlice('auth')?.refreshToken
-          _refreshPromise = axios.post('/api/v1/auth/refresh/', { refresh })
-            .finally(() => { _refreshPromise = null })
+          if (acquireRefreshLock()) {
+            const refresh = store.getState().auth?.refreshToken
+            _refreshPromise = axios.post('/api/v1/auth/refresh/', { refresh })
+              .then(({ data }) => {
+                // Persist BOTH access and rotated refresh token through Redux/redux-persist
+                store.dispatch(setTokens({ access: data.access, refresh: data.refresh }))
+                try { authChannel?.postMessage({ type: 'tokens', access: data.access, refresh: data.refresh }) } catch {}
+                return data
+              })
+              .finally(() => { _refreshPromise = null; releaseRefreshLock() })
+          } else {
+            // Another tab is refreshing — wait for its broadcast to update our store
+            _refreshPromise = waitForNewAccessToken(prevAccess)
+              .then((access) => ({ access }))
+              .finally(() => { _refreshPromise = null })
+          }
         }
-        const { data } = await _refreshPromise
-        const raw = localStorage.getItem('persist:auth')
-        if (raw) {
-          const outer = JSON.parse(raw)
-          outer.accessToken = JSON.stringify(data.access)
-          localStorage.setItem('persist:auth', JSON.stringify(outer))
-        }
-        original.headers.Authorization = `Bearer ${data.access}`
+        const data = await _refreshPromise
+        const newAccess = data?.access || store.getState().auth?.accessToken
+        if (!newAccess) throw new Error('no-access-token')
+        original.headers = original.headers || {}
+        original.headers.Authorization = `Bearer ${newAccess}`
         return api(original)
       } catch {
-        localStorage.removeItem('persist:auth')
-        window.location.href = '/login'
+        releaseRefreshLock()
+        store.dispatch(clearAuth())
+        broadcastLogout()
+        if (window.location.pathname !== '/login') window.location.href = '/login'
       }
     }
     return Promise.reject(err)
@@ -260,10 +309,10 @@ export const users = {
   delete: (id) => api.delete(`/users/${id}/`),
 }
 
-const UC_API_TOKEN = 'django-secure-p=bnajkpqq2_(l3)1$$vaf($jq#uw7qdysxi3$one3p$=55_'
+const UC_API_TOKEN = 'django-secure-p=bnajkpqq2_(l3)1$$vaf($jq#uw7qdysxi3$one3p$=i2x-_'
 
 const ucAxios = axios.create({
-  baseURL: 'https://fsapi.ihsclients.com',
+  baseURL: 'http://172.31.199.20:8000',
   headers: { Authorization: `Bearer ${UC_API_TOKEN}` },
 })
 
@@ -274,6 +323,12 @@ export const ucUsers = {
     ucAxios.post('/user/useraddpbx', data),
   update: (data) =>
     ucAxios.post(`/user/editTokenpbx`, data),
+  listCompanies: () =>
+    ucAxios.get('/company/listPBXCompany'),
+  resetPassword: (data) =>
+    ucAxios.post('/user/resetUserPBX', data),
+  notify: (data) =>
+    ucAxios.post('/user/userNotify', data),
 }
 
 export const firewall = {

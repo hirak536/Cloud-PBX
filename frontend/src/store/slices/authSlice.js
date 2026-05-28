@@ -1,5 +1,5 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit'
-import { auth as authApi } from '@/api'
+import { auth as authApi, broadcastLogout } from '@/api'
 import axios from 'axios'
 
 export const loginThunk = createAsyncThunk('auth/login', async ({ username, password }, { rejectWithValue }) => {
@@ -18,6 +18,7 @@ export const loginThunk = createAsyncThunk('auth/login', async ({ username, pass
 export const logoutThunk = createAsyncThunk('auth/logout', async (_, { getState }) => {
   const { refreshToken } = getState().auth
   try { if (refreshToken) await authApi.logout(refreshToken) } catch {}
+  try { broadcastLogout() } catch {}
 })
 
 const authSlice = createSlice({
@@ -33,6 +34,11 @@ const authSlice = createSlice({
   reducers: {
     setUser: (state, action) => { state.user = action.payload },
     setAccessToken: (state, action) => { state.accessToken = action.payload },
+    setTokens: (state, action) => {
+      const { access, refresh } = action.payload || {}
+      if (access) state.accessToken = access
+      if (refresh) state.refreshToken = refresh
+    },
     clearAuth: (state) => {
       state.user = null
       state.accessToken = null
@@ -63,5 +69,5 @@ const authSlice = createSlice({
   },
 })
 
-export const { setUser, setAccessToken, clearAuth } = authSlice.actions
+export const { setUser, setAccessToken, setTokens, clearAuth } = authSlice.actions
 export default authSlice.reducer

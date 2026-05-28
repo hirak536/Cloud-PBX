@@ -88,6 +88,108 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
   const [dids, setDids]               = useState([])
   const [loadingOpts, setLoadingOpts] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
+  const [voiceEnabled, setVoiceEnabled] = useState(null) // null = unknown (still loading)
+  const [company, setCompany] = useState(null)
+
+  const [resetDialogOpen, setResetDialogOpen] = useState(false)
+  const [resetTarget, setResetTarget] = useState(null)
+  const [resetPassword, setResetPassword] = useState('')
+  const [resetShowPassword, setResetShowPassword] = useState(false)
+  const [resetError, setResetError] = useState('')
+  const [resetSubmitting, setResetSubmitting] = useState(false)
+  const [resetSuccess, setResetSuccess] = useState('')
+  const [notifySubmitting, setNotifySubmitting] = useState(false)
+  const [resetMethod, setResetMethod] = useState('manual') // 'manual' | 'email'
+  const [resetMustChange, setResetMustChange] = useState(false)
+
+  const sendPasswordEmail = async () => {
+    if (!resetTarget) return
+    setNotifySubmitting(true)
+    setResetError('')
+    try {
+      await ucUsersApi.notify({ userid: resetTarget.id })
+      setResetDialogOpen(false)
+      setResetSuccess(`Password email sent to ${resetTarget.email}.`)
+      setTimeout(() => setResetSuccess(''), 4000)
+    } catch (err) {
+      const d = err?.response?.data
+      setResetError(typeof d === 'string' ? d : d?.message || 'Failed to send password email.')
+    } finally {
+      setNotifySubmitting(false)
+    }
+  }
+
+  const openResetPassword = (u) => {
+    setResetTarget(u)
+    setResetPassword('')
+    setResetShowPassword(false)
+    setResetError('')
+    setResetMethod('manual')
+    setResetMustChange(false)
+    setResetDialogOpen(true)
+  }
+
+  const passwordStrength = (pw) => {
+    if (!pw) return { score: 0, label: '', color: '' }
+    let score = 0
+    if (pw.length >= 8) score++
+    if (pw.length >= 12) score++
+    if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) score++
+    if (/\d/.test(pw)) score++
+    if (/[^A-Za-z0-9]/.test(pw)) score++
+    const map = [
+      { label: 'Too short', color: 'bg-destructive' },
+      { label: 'Weak',      color: 'bg-destructive' },
+      { label: 'Fair',      color: 'bg-amber-500' },
+      { label: 'Good',      color: 'bg-amber-500' },
+      { label: 'Strong',    color: 'bg-emerald-500' },
+      { label: 'Very strong', color: 'bg-emerald-500' },
+    ]
+    return { score, ...map[Math.min(score, 5)] }
+  }
+
+  const submitResetPassword = async () => {
+    if (!resetPassword.trim()) { setResetError('Password is required.'); return }
+    if (!resetMustChange) {
+      // Strict policy when user is NOT forced to change at next login
+      const pw = resetPassword
+      if (pw.length < 8 || !/[A-Z]/.test(pw) || !/[a-z]/.test(pw) || !/\d/.test(pw) || !/[^A-Za-z0-9]/.test(pw)) {
+        setResetError('Password must be at least 8 characters and include uppercase, lowercase, number, and symbol.')
+        return
+      }
+    }
+    setResetSubmitting(true)
+    setResetError('')
+    try {
+      await ucUsersApi.resetPassword({
+        email:        resetTarget.email,
+        password:     resetPassword,
+        username:     loggedInUser?.user_email || loggedInUser?.username || '',
+        newuserlogin: resetMustChange,
+      })
+      setResetDialogOpen(false)
+      setResetSuccess(`Password reset for ${resetTarget.email}.`)
+      setTimeout(() => setResetSuccess(''), 4000)
+    } catch (err) {
+      const d = err?.response?.data
+      setResetError(typeof d === 'string' ? d : d?.message || 'Failed to reset password.')
+    } finally {
+      setResetSubmitting(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!tenantUuid) return
+    setVoiceEnabled(null)
+    setCompany(null)
+    ucUsersApi.listCompanies()
+      .then(({ data }) => {
+        const c = (data?.success ?? []).find(c => c.tenant_id === tenantUuid)
+        setCompany(c || null)
+        setVoiceEnabled(c ? !!c.voiceenable : false)
+      })
+      .catch(() => setVoiceEnabled(false))
+  }, [tenantUuid])
 
   const PAGE_SIZE = 20
 
@@ -205,15 +307,31 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
     const selectedExt = extensions.find(e => String(e.id ?? e.extension_uuid) === String(form.extensionId))
     const selectedDids = dids.filter(d => form.didIds.includes(d.destination_uuid))
 
-    const extensionsPayload = selectedExt ? [{
-      extname:  selectedExt.sip_username || `${selectedExt.extension}-${tenantCode}`,
-      password: form.extensionPassword || selectedExt.password || '',
-      phones: selectedDids.map((d, i) => ({
-        phone:      d.destination_number,
-        label:      d.destination_name || d.destination_number,
-        is_primary: i === 0,
-      })),
-    }] : []
+    const phonesPayload = selectedDids.map((d, i) => ({
+      phone:      d.destination_number,
+      label:      d.destination_name || d.destination_number,
+      is_primary: i === 0,
+    }))
+
+    let extensionsPayload = []
+    // When deactivating a UC user, omit extension + phones entirely
+    const deactivating = editUser && form.is_active === false
+    if (deactivating) {
+      extensionsPayload = []
+    } else if (!voiceEnabled) {
+      // Voice disabled for this company — send dummy extension carrying the selected DIDs as phones
+      extensionsPayload = [{
+        extname:  `dummy-${tenantCode}`,
+        password: generatePassword(),
+        phones:   phonesPayload,
+      }]
+    } else if (selectedExt) {
+      extensionsPayload = [{
+        extname:  selectedExt.sip_username || `${selectedExt.extension}-${tenantCode}`,
+        password: form.extensionPassword || selectedExt.password || '',
+        phones:   phonesPayload,
+      }]
+    }
 
     const payload = editUser ? {
       firstName:  form.firstName.trim(),
@@ -264,13 +382,33 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {company ? (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-xs">
+            <span className="text-muted-foreground">Modules:</span>
+            <Badge variant={company.voiceenable ? 'success' : 'secondary'}>
+              Voice: {company.voiceenable ? 'Active' : 'Inactive'}
+            </Badge>
+            <Badge variant={company.smsenable ? 'success' : 'secondary'}>
+              SMS: {company.smsenable ? 'Active' : 'Inactive'}
+            </Badge>
+            <Badge variant={company.faxenable ? 'success' : 'secondary'}>
+              Fax: {company.faxenable ? 'Active' : 'Inactive'}
+            </Badge>
+          </div>
+        ) : <div />}
         <Button size="sm" onClick={openAddUser}><Plus className="h-4 w-4" />Add User</Button>
       </div>
 
       {error && (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
+        </div>
+      )}
+
+      {resetSuccess && (
+        <div className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-primary">
+          {resetSuccess}
         </div>
       )}
 
@@ -335,15 +473,26 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          title="Edit user"
-                          onClick={() => openEditUser(u)}
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            title="Reset password"
+                            onClick={() => openResetPassword(u)}
+                          >
+                            <KeyRound className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            title="Edit user"
+                            onClick={() => openEditUser(u)}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -376,6 +525,26 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
           </DialogHeader>
 
           <div className="px-6 py-5 space-y-4 max-h-[70vh] overflow-y-auto">
+            {/* Autofill decoys — keep at top, hidden from view */}
+            <input type="text" name="username" autoComplete="username" style={{ display: 'none' }} tabIndex={-1} aria-hidden="true" />
+            <input type="password" name="password" autoComplete="current-password" style={{ display: 'none' }} tabIndex={-1} aria-hidden="true" />
+
+            {/* Active modules for this company */}
+            {company && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs">
+                <span className="text-muted-foreground">Modules:</span>
+                <Badge variant={company.voiceenable ? 'success' : 'secondary'}>
+                  Voice: {company.voiceenable ? 'Active' : 'Inactive'}
+                </Badge>
+                <Badge variant={company.smsenable ? 'success' : 'secondary'}>
+                  SMS: {company.smsenable ? 'Active' : 'Inactive'}
+                </Badge>
+                <Badge variant={company.faxenable ? 'success' : 'secondary'}>
+                  Fax: {company.faxenable ? 'Active' : 'Inactive'}
+                </Badge>
+              </div>
+            )}
+
             {formError && (
               <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {formError}
@@ -386,6 +555,8 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
               <div className="space-y-1.5">
                 <Label>First Name <span className="text-destructive">*</span></Label>
                 <Input
+                  name="uc-fname"
+                  autoComplete="off"
                   placeholder="Enter first name"
                   value={form.firstName}
                   onChange={e => setForm(p => ({ ...p, firstName: e.target.value }))}
@@ -394,6 +565,8 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
               <div className="space-y-1.5">
                 <Label>Last Name <span className="text-destructive">*</span></Label>
                 <Input
+                  name="uc-lname"
+                  autoComplete="off"
                   placeholder="Enter last name"
                   value={form.lastName}
                   onChange={e => setForm(p => ({ ...p, lastName: e.target.value }))}
@@ -405,6 +578,8 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
               <Label>Email <span className="text-destructive">*</span></Label>
               <Input
                 type="email"
+                name="uc-email"
+                autoComplete="off"
                 placeholder="Enter email"
                 value={form.email}
                 onChange={e => setForm(p => ({ ...p, email: e.target.value }))}
@@ -481,6 +656,8 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
                 <div className="relative">
                   <Input
                     type={showPassword ? 'text' : 'password'}
+                    name="uc-new-password"
+                    autoComplete="new-password"
                     placeholder="Enter password"
                     value={form.password}
                     onChange={e => setForm(p => ({ ...p, password: e.target.value }))}
@@ -497,8 +674,13 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
               )}
             </div>}
 
-            {/* Extension picker */}
-            <div className="space-y-1.5">
+            {/* Extension picker — hidden when company has voice disabled */}
+            {voiceEnabled === false && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                Extension selection is unavailable because the Voice module is not active for this company.
+              </div>
+            )}
+            {voiceEnabled && <div className="space-y-1.5">
               <Label>Select Extension</Label>
               {loadingOpts
                 ? <Skeleton className="h-9 w-full" />
@@ -517,7 +699,7 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
                       ))}
                     </Select>
                   )}
-            </div>
+            </div>}
 
             {/* DID multi-select */}
             <div className="space-y-1.5">
@@ -560,6 +742,164 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
               {editUser ? 'Save Changes' : 'Submit'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reset password dialog */}
+      <Dialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
+        <DialogContent className="w-[95vw] max-w-md p-0 gap-0">
+          <DialogHeader className="px-6 py-4 border-b">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                <KeyRound className="h-4 w-4 text-primary" />
+              </div>
+              <div className="min-w-0">
+                <DialogTitle>Reset Password</DialogTitle>
+                {resetTarget && (
+                  <p className="text-xs text-muted-foreground truncate mt-0.5">
+                    {resetTarget.firstName} {resetTarget.lastName} · {resetTarget.email}
+                  </p>
+                )}
+              </div>
+            </div>
+            <DialogClose onClose={() => setResetDialogOpen(false)} />
+          </DialogHeader>
+
+          <div className="px-6 py-5 space-y-4">
+            {resetError && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {resetError}
+              </div>
+            )}
+
+            {/* Method picker */}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setResetMethod('manual')}
+                className={`group flex flex-col items-start gap-1.5 rounded-lg border px-3 py-2.5 text-left transition-colors
+                  ${resetMethod === 'manual'
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                    : 'border-border hover:bg-muted/50'}`}
+              >
+                <div className="flex w-full items-center justify-between">
+                  <KeyRound className={`h-4 w-4 ${resetMethod === 'manual' ? 'text-primary' : 'text-muted-foreground'}`} />
+                  {resetMethod === 'manual' && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-sm font-medium">Set Manually</span>
+                <span className="text-[11px] text-muted-foreground leading-tight">Type a new password yourself.</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setResetMethod('email')}
+                className={`group flex flex-col items-start gap-1.5 rounded-lg border px-3 py-2.5 text-left transition-colors
+                  ${resetMethod === 'email'
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                    : 'border-border hover:bg-muted/50'}`}
+              >
+                <div className="flex w-full items-center justify-between">
+                  <Mail className={`h-4 w-4 ${resetMethod === 'email' ? 'text-primary' : 'text-muted-foreground'}`} />
+                  {resetMethod === 'email' && <Check className="h-3.5 w-3.5 text-primary" />}
+                </div>
+                <span className="text-sm font-medium">Send via Email</span>
+                <span className="text-[11px] text-muted-foreground leading-tight">Notify the user with a password email.</span>
+              </button>
+            </div>
+
+            {resetMethod === 'manual' ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label>New Password <span className="text-destructive">*</span></Label>
+                  <button
+                    type="button"
+                    onClick={() => { setResetPassword(generatePassword()); setResetShowPassword(true) }}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+                  >
+                    <Wand2 className="h-3 w-3" /> Generate
+                  </button>
+                </div>
+                <div className="relative">
+                  <Input
+                    type={resetShowPassword ? 'text' : 'password'}
+                    name="uc-reset-password"
+                    autoComplete="new-password"
+                    placeholder="Enter new password"
+                    value={resetPassword}
+                    onChange={e => setResetPassword(e.target.value)}
+                    className="pr-10 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setResetShowPassword(v => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {resetShowPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                {resetPassword && (() => {
+                  const s = passwordStrength(resetPassword)
+                  return (
+                    <div className="space-y-1">
+                      <div className="flex h-1 gap-1">
+                        {[0, 1, 2, 3, 4].map(i => (
+                          <div
+                            key={i}
+                            className={`flex-1 rounded-full transition-colors ${i < s.score ? s.color : 'bg-muted'}`}
+                          />
+                        ))}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">Strength: <span className="font-medium text-foreground">{s.label}</span></p>
+                    </div>
+                  )
+                })()}
+
+                <label className="flex items-start gap-2.5 rounded-md border px-3 py-2 cursor-pointer hover:bg-muted/40 select-none">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 mt-0.5 shrink-0 rounded border-input accent-primary"
+                    checked={resetMustChange}
+                    onChange={e => setResetMustChange(e.target.checked)}
+                  />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">User must change password at next login</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      {resetMustChange
+                        ? 'Any password is allowed — the user will be required to set a new one.'
+                        : 'Password must be at least 8 characters with uppercase, lowercase, number, and symbol.'}
+                    </p>
+                  </div>
+                </label>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2.5 rounded-lg border border-primary/20 bg-primary/5 px-3.5 py-3">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                  <Mail className="h-3.5 w-3.5 text-primary" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-primary">Email the password</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    A password email will be sent to <span className="font-medium text-foreground break-all">{resetTarget?.email}</span>.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="px-6 py-3 border-t gap-2">
+            <Button variant="outline" onClick={() => setResetDialogOpen(false)}>Cancel</Button>
+            {resetMethod === 'manual' ? (
+              <Button onClick={submitResetPassword} disabled={resetSubmitting || !resetPassword.trim()}>
+                {resetSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                <KeyRound className="h-4 w-4" />
+                Reset Password
+              </Button>
+            ) : (
+              <Button onClick={sendPasswordEmail} disabled={notifySubmitting}>
+                {notifySubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+                Send Email
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
