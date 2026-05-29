@@ -1670,7 +1670,13 @@ export default function Extensions() {
                       <TableCell>
                         <ExtStatusBadge
                           enabled={row.enabled !== false}
-                          status={extSnapshotReceived ? (extStatuses[row.extension] || 'offline') : extStatuses[row.extension]}
+                          status={(() => {
+                            // Look up by full sip_username ("1001-TENANT") so the same
+                            // extension number in another tenant doesn't share a status.
+                            const key = row.sip_username || row.extension
+                            const s = extStatuses[key]
+                            return extSnapshotReceived ? (s || 'offline') : s
+                          })()}
                         />
                       </TableCell>
                       <TableCell>

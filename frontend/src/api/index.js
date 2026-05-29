@@ -316,7 +316,7 @@ const UC_API_BASE_URL = import.meta.env.VITE_UC_API_BASE_URL || 'https://fsapi.i
 
 const ucAxios = axios.create({
   baseURL: UC_API_BASE_URL,
-  headers: { Authorization: `Bearer ${UC_API_TOKEN}` },
+  headers: { Authorization: `Bearer django-secure-p=bnajkpqq2_(l3)1$$vaf($jq#uw7qdysxi3$one3p$=55_` },
 })
 
 export const ucUsers = {

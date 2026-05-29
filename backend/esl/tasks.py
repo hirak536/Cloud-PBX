@@ -213,11 +213,36 @@ def _set_status(status_map: dict, ext: str, new_status: str):
         status_map[ext] = new_status
 
 
+def _normalize_sip_username(value: str):
+    """
+    Normalize a FreeSWITCH reg_user / channel identity to the ``extension-tenantcode``
+    sip_username form, so statuses never collapse across tenants.
+
+    Handles: "1001-IHS", "1001-IHS@domain.com", "1001@domain.com", "1001".
+    Returns the local part (everything before the first '@'), or None if it doesn't
+    look like an extension/sip_username.
+    """
+    if not value:
+        return None
+    # Strip domain part; keep the "extension-tenantcode" local part intact.
+    local = str(value).split('@')[0]
+    bare = local.split('-')[0]
+    # Only treat it as an extension if the leading segment is a plausible ext number.
+    if bare.isdigit() and 2 <= len(bare) <= 10:
+        return local
+    return None
+
+
 def _build_extension_status_map() -> dict:
     """
-    Build a {extension_number: status} map by combining:
+    Build a {sip_username: status} map by combining:
       - show registrations as json  → online
       - show channels as json       → ringing / in_use
+
+    The map is keyed by the full ``extension-tenantcode`` sip_username (NOT the bare
+    extension number) so the same extension number in different tenants — e.g.
+    "1001-IHS" vs "1001-ACME" — keeps independent statuses and never bleeds across
+    tenants.
 
     Status priority: ringing > in_use > online
     Extensions absent from all data sources are simply not included in the map;
@@ -233,8 +258,8 @@ def _build_extension_status_map() -> dict:
     try:
         raw_regs = esl.show_registrations()
         for row in _normalize_json_rows(raw_regs):
-            ext = _extract_extension(row.get('reg_user', ''))
-            _set_status(status_map, ext, 'online')
+            sip_user = _normalize_sip_username(row.get('reg_user', ''))
+            _set_status(status_map, sip_user, 'online')
     except Exception as e:
         logger.warning(f"_build_extension_status_map: registrations fetch failed: {e}")
 
@@ -246,21 +271,21 @@ def _build_extension_status_map() -> dict:
             dest   = row.get('dest', '')
             cid    = row.get('cid_num', '')
 
-            # Use _extract_extension to handle "1001-TENANT" and plain "1001" formats.
-            # _looks_like_extension fails for tenant-suffixed destinations like "1001-IHS".
-            dest_ext = _extract_extension(dest) if dest else None
-            cid_ext  = _extract_extension(cid)  if cid  else None
+            # Key by the full "1001-TENANT" sip_username so cross-tenant statuses
+            # stay separate.
+            dest_user = _normalize_sip_username(dest) if dest else None
+            cid_user  = _normalize_sip_username(cid)  if cid  else None
 
             if 'RING' in callstate:
                 # The destination extension is ringing
-                if dest_ext:
-                    _set_status(status_map, dest_ext, 'ringing')
+                if dest_user:
+                    _set_status(status_map, dest_user, 'ringing')
             elif 'ACTIVE' in callstate or 'EXECUTE' in callstate:
                 # Both legs are in use
-                if dest_ext:
-                    _set_status(status_map, dest_ext, 'in_use')
-                if cid_ext:
-                    _set_status(status_map, cid_ext, 'in_use')
+                if dest_user:
+                    _set_status(status_map, dest_user, 'in_use')
+                if cid_user:
+                    _set_status(status_map, cid_user, 'in_use')
     except Exception as e:
         logger.warning(f"_build_extension_status_map: channels fetch failed: {e}")
 
