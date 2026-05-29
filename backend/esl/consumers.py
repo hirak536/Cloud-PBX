@@ -207,7 +207,7 @@ class ExtensionStatusConsumer(AsyncWebsocketConsumer):
                     lambda: set(
                         Extension.objects.filter(
                             tenant__tenant_code=tenant_code, enabled=True
-                        ).values_list('extension', flat=True)
+                        ).values_list('sip_username', flat=True)
                     )
                 )()
                 status_map = {k: v for k, v in status_map.items() if k in tenant_exts}
@@ -230,7 +230,7 @@ class ExtensionStatusConsumer(AsyncWebsocketConsumer):
                     lambda: set(
                         Extension.objects.filter(
                             tenant__tenant_code=tenant_code, enabled=True
-                        ).values_list('extension', flat=True)
+                        ).values_list('sip_username', flat=True)
                     )
                 )()
                 payload = {
@@ -427,7 +427,7 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
                     lambda: set(
                         Extension.objects.filter(
                             tenant__tenant_code=tenant_code, enabled=True
-                        ).values_list('extension', flat=True)
+                        ).values_list('sip_username', flat=True)
                     )
                 )()
                 status_map = {k: v for k, v in status_map.items() if k in tenant_exts}
@@ -448,7 +448,7 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
                     lambda: set(
                         Extension.objects.filter(
                             tenant__tenant_code=tenant_code, enabled=True
-                        ).values_list('extension', flat=True)
+                        ).values_list('sip_username', flat=True)
                     )
                 )()
                 payload = {

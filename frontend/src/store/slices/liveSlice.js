@@ -11,7 +11,7 @@ const liveSlice = createSlice({
     wsConnected: false,
     activeCalls: [],
     registrations: [],
-    extStatuses: {},          // { '1001': 'online' | 'offline' | 'ringing' | 'in_use' }
+    extStatuses: {},          // { '1001-TENANT': 'online' | 'offline' | 'ringing' | 'in_use' } — keyed by sip_username
     extSnapshotReceived: false,
     systemMetrics: null,
     fsStatus: null,
