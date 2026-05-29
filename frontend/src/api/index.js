@@ -273,6 +273,8 @@ export const freeswitch = {
   registrations: () => api.get('/freeswitch/registrations/'),
   allRegistrations: () => api.get('/freeswitch/registrations/', { params: { tenant: null } }),
   deregister: (call_id, profile = 'internal', tenant_code = '') => api.post('/freeswitch/deregister/', { call_id, profile, tenant_code }),
+  reboot: (call_id, profile = 'internal', tenant_code = '') => api.post('/freeswitch/reboot/', { call_id, profile, tenant_code }),
+  peerHistory: (user, days = 5) => api.get('/freeswitch/peer-history/', { params: { user, days } }),
   sofia: () => api.get('/freeswitch/sofia/'),
   dbStats: () => api.get('/freeswitch/db-stats/'),
   log: (params) => api.get('/freeswitch/log/', { params }),

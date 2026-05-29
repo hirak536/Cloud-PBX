@@ -238,6 +238,14 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'esl.tasks.push_active_calls_update',
         'schedule': 5.0,
     },
+    'poll-peer-states-every-10s': {
+        'task': 'esl.tasks.poll_peer_states',
+        'schedule': 10.0,
+    },
+    'cleanup-peer-state-history-daily': {
+        'task': 'esl.tasks.cleanup_peer_state_history',
+        'schedule': crontab(hour=3, minute=15),
+    },
 }
 
 # Django REST Framework

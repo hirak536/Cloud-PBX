@@ -289,12 +289,16 @@ class FSChannelsView(APIView):
 class FSRegistrationsView(APIView):
     """
     GET /api/v1/freeswitch/registrations/
-    Returns SIP registrations as a normalized list, filtered to the current tenant.
-    Superusers/staff see all registrations.
+    Returns one row per Extension in the tenant — registered or not — joined
+    with live data from sofia (IP, port, contact, user-agent, ping, registered
+    since) and the current state from PeerStateHistory.
+    Superusers/staff see all extensions in the selected tenant.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from apps.extensions.models import Extension
+        from .models import PeerStateHistory
         try:
             esl = get_esl_client()
             raw = esl.show_registrations()
@@ -302,26 +306,54 @@ class FSRegistrationsView(APIView):
             tenant_code = _tenant_code_for_request(request)
             if tenant_code:
                 rows = [r for r in rows if _reg_belongs_to_tenant(r, tenant_code)]
+
+            reg_by_user = {}
+            for row in rows:
+                user = row.get('reg_user') or row.get('user', '')
+                if user and user not in reg_by_user:
+                    reg_by_user[user] = row
+
+            ext_qs = Extension.objects.filter(enabled=True).select_related('tenant')
+            if tenant_code:
+                ext_qs = ext_qs.filter(tenant__tenant_code=tenant_code)
+            extensions = list(ext_qs)
+
+            sip_usernames = [e.sip_username for e in extensions if e.sip_username]
+            current_state = {
+                row.extension: row.state
+                for row in PeerStateHistory.objects.filter(
+                    extension__in=sip_usernames, ended_at__isnull=True
+                )
+            }
+
             now = int(time.time())
             registrations = []
-            for row in rows:
-                # Convert absolute epoch expiry to remaining seconds
+            for ext in extensions:
+                row = reg_by_user.get(ext.sip_username, {})
                 exp_raw = row.get('expires', '')
                 try:
-                    remaining = int(exp_raw) - now
-                    expires = str(max(0, remaining))
+                    expires = str(max(0, int(exp_raw) - now))
                 except (ValueError, TypeError):
                     expires = exp_raw
                 registrations.append({
-                    'user':         row.get('reg_user') or row.get('user', ''),
-                    'realm':        row.get('realm', ''),
-                    'network_ip':   row.get('network_ip', ''),
-                    'network_port': row.get('network_port', ''),
-                    'user_agent':   row.get('user_agent', ''),
-                    'url':          row.get('url', ''),
-                    'call_id':      row.get('call_id', ''),
-                    'profile':      row.get('profile', 'internal'),
-                    'expires':      expires,
+                    'user':             ext.sip_username,
+                    'extension':        ext.extension,
+                    'extension_name':   ext.directory_full_name or ext.effective_caller_id_name or '',
+                    'realm':            row.get('realm', ''),
+                    'network_ip':       row.get('network_ip', ''),
+                    'network_port':     row.get('network_port', ''),
+                    'user_agent':       row.get('user_agent', ''),
+                    'url':              row.get('url', ''),
+                    'full_contact':     row.get('full_contact', ''),
+                    'call_id':          row.get('call_id', ''),
+                    'profile':          row.get('profile', 'internal'),
+                    'expires':          expires,
+                    'ping_ms':          row.get('ping_ms'),
+                    'registered_since': row.get('registered_since'),
+                    'state':            current_state.get(
+                        ext.sip_username,
+                        'available' if row else 'offline',
+                    ),
                 })
             return Response({'registrations': registrations})
         except Exception as e:
@@ -330,6 +362,81 @@ class FSRegistrationsView(APIView):
                 {'error': str(e)},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+
+
+class FSPeerHistoryView(APIView):
+    """
+    GET /api/v1/freeswitch/peer-history/?user=<sip_username>&days=5
+    Returns the state-transition history for one peer over the last N days.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from datetime import timedelta
+        from django.utils import timezone
+        from .models import PeerStateHistory
+
+        sip_username = (request.query_params.get('user') or '').strip()
+        if not sip_username:
+            return Response({'error': 'user is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Tenant-scope check for non-superusers
+        tenant_code = _tenant_code_for_request(request)
+        if tenant_code and not sip_username.endswith(f'-{tenant_code}'):
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            days = int(request.query_params.get('days', '5'))
+        except ValueError:
+            days = 5
+        days = max(1, min(days, 30))
+
+        since = timezone.now() - timedelta(days=days)
+        rows = PeerStateHistory.objects.filter(
+            extension=sip_username,
+            started_at__gte=since,
+        ).order_by('started_at')
+
+        history = [
+            {
+                'state':      row.state,
+                'started_at': row.started_at.isoformat(),
+                'ended_at':   row.ended_at.isoformat() if row.ended_at else None,
+            }
+            for row in rows
+        ]
+        return Response({'user': sip_username, 'days': days, 'history': history})
+
+
+class FSRebootView(APIView):
+    """
+    POST /api/v1/freeswitch/reboot/
+    Send SIP NOTIFY check-sync to reboot a desk phone.
+    Body: { "call_id": "...", "profile": "internal", "tenant_code": "..." (superuser only) }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        call_id = request.data.get('call_id', '').strip()
+        profile = request.data.get('profile', 'internal').strip() or 'internal'
+        if not call_id:
+            return Response({'error': 'call_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        tenant_code = _tenant_code_for_request(request)
+        if not tenant_code:
+            tenant_code = request.data.get('tenant_code', '').strip()
+        if not tenant_code:
+            return Response({'error': 'tenant_code is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            esl = get_esl_client()
+            raw = esl.show_registrations()
+            rows = [r for r in _normalize_json_rows(raw) if _reg_belongs_to_tenant(r, tenant_code)]
+            if not any(r.get('call_id') == call_id for r in rows):
+                return Response({'error': 'Registration not found.'}, status=status.HTTP_404_NOT_FOUND)
+            result = esl.reboot_peer(call_id, profile)
+            return Response({'result': result})
+        except Exception as e:
+            logger.error(f"FSRebootView error: {e}")
+            return Response({'error': str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 class FSDeregisterView(APIView):

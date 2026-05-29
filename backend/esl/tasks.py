@@ -292,6 +292,130 @@ def push_extension_status_update():
         logger.error(f"push_extension_status_update error: {e}")
 
 
+def _compute_peer_states() -> dict:
+    """Build {sip_username: state} for every Extension in the DB.
+
+    States: offline | available | ringing | inuse | ringinuse | unknown.
+    sip_username is the ``extension-tenantcode`` form, matching reg_user.
+    On ESL failure all peers become ``unknown``.
+    """
+    from .client import get_esl_client
+    from .views import _normalize_json_rows
+    from apps.extensions.models import Extension
+
+    states: dict = {}
+    extensions = list(
+        Extension.objects.filter(enabled=True).values_list('sip_username', 'tenant__tenant_code')
+    )
+
+    try:
+        esl = get_esl_client()
+        raw_regs = esl.show_registrations()
+        registered_users = {
+            row.get('reg_user') for row in _normalize_json_rows(raw_regs) if row.get('reg_user')
+        }
+
+        raw_channels = esl.show_channels()
+        ringing = set()
+        active = set()
+        for row in _normalize_json_rows(raw_channels):
+            callstate = (row.get('callstate') or row.get('state') or '').upper()
+            # Match channels to peers by destination (dest) or caller id (cid_num).
+            for field in ('dest', 'cid_num'):
+                user = str(row.get(field) or '')
+                if not user:
+                    continue
+                if 'RING' in callstate or 'EARLY' in callstate:
+                    ringing.add(user)
+                elif 'ACTIVE' in callstate or 'EXECUTE' in callstate or 'EXCHANGE' in callstate:
+                    active.add(user)
+
+        for sip_username, _tcode in extensions:
+            if not sip_username:
+                continue
+            if sip_username not in registered_users:
+                states[sip_username] = 'offline'
+                continue
+            is_ringing = sip_username in ringing
+            is_active = sip_username in active
+            if is_ringing and is_active:
+                states[sip_username] = 'ringinuse'
+            elif is_active:
+                states[sip_username] = 'inuse'
+            elif is_ringing:
+                states[sip_username] = 'ringing'
+            else:
+                states[sip_username] = 'available'
+        return states
+    except Exception as e:
+        logger.warning(f"_compute_peer_states: ESL unreachable: {e}")
+        return {sip_username: 'unknown' for sip_username, _ in extensions if sip_username}
+
+
+@shared_task
+def poll_peer_states():
+    """Snapshot current peer states; write a new history row when state changes.
+
+    Scheduled every 10 seconds via Celery Beat.
+    """
+    from django.utils import timezone
+    from .models import PeerStateHistory
+    from apps.extensions.models import Extension
+
+    states = _compute_peer_states()
+    if not states:
+        return 0
+
+    tenant_code_by_user = dict(
+        Extension.objects.filter(sip_username__in=states.keys())
+        .values_list('sip_username', 'tenant__tenant_code')
+    )
+
+    # Pull the currently-open row for each extension we know about.
+    open_rows = {
+        row.extension: row
+        for row in PeerStateHistory.objects.filter(
+            extension__in=states.keys(), ended_at__isnull=True
+        )
+    }
+
+    now = timezone.now()
+    changed = 0
+    new_rows = []
+    for ext, new_state in states.items():
+        current = open_rows.get(ext)
+        if current and current.state == new_state:
+            continue
+        if current:
+            current.ended_at = now
+            current.save(update_fields=['ended_at'])
+        new_rows.append(PeerStateHistory(
+            extension=ext,
+            tenant_code=tenant_code_by_user.get(ext) or '',
+            state=new_state,
+            started_at=now,
+        ))
+        changed += 1
+
+    if new_rows:
+        PeerStateHistory.objects.bulk_create(new_rows)
+    return changed
+
+
+@shared_task
+def cleanup_peer_state_history(days: int = 7):
+    """Prune peer state history older than ``days`` days."""
+    from datetime import timedelta
+    from django.utils import timezone
+    from .models import PeerStateHistory
+
+    cutoff = timezone.now() - timedelta(days=days)
+    deleted, _ = PeerStateHistory.objects.filter(
+        ended_at__isnull=False, ended_at__lt=cutoff
+    ).delete()
+    return deleted
+
+
 @shared_task
 def push_db_status_update():
     """Quick DB health check (SELECT 1) and broadcast latency."""

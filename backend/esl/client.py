@@ -106,6 +106,7 @@ class FreeSwitchESL:
         parse 'sofia status profile internal reg' which returns all registrations,
         then normalise into the same JSON rows format.
         """
+        import time
         profiles = ['internal', 'external']
         rows = []
         seen = set()
@@ -125,19 +126,33 @@ class FreeSwitchESL:
                         row['realm'] = user_realm.split('@')[1] if '@' in user_realm else ''
                     elif line.startswith('Contact:'):
                         contact = line.split(':', 1)[1].strip()
+                        row['full_contact'] = contact
                         m = re.search(r'sip:([^@]+@[^;>]+)', contact)
                         row['url'] = f'sofia/{profile}/{m.group(0)}' if m else contact
-                        row['user_agent'] = ''
+                        row.setdefault('user_agent', '')
                     elif line.startswith('Agent:'):
                         row['user_agent'] = line.split(':', 1)[1].strip()
                     elif line.startswith('IP:'):
                         row['network_ip'] = line.split(':', 1)[1].strip()
                     elif line.startswith('Port:'):
                         row['network_port'] = line.split(':', 1)[1].strip()
+                    elif line.startswith('Ping-Time:'):
+                        # e.g. "Ping-Time: 12.345" (milliseconds)
+                        val = line.split(':', 1)[1].strip()
+                        try:
+                            row['ping_ms'] = int(round(float(val)))
+                        except (TypeError, ValueError):
+                            pass
+                    elif line.startswith('Reg-Time:'):
+                        # epoch seconds since the device registered
+                        val = line.split(':', 1)[1].strip()
+                        try:
+                            row['registered_since'] = int(val)
+                        except (TypeError, ValueError):
+                            pass
                     elif line.startswith('Status:') and 'EXP(' in line:
                         m = re.search(r'EXPSECS\((\d+)\)', line)
                         if m:
-                            import time
                             row['expires'] = str(int(time.time()) + int(m.group(1)))
                 if row.get('reg_user'):
                     row['profile'] = profile
@@ -148,7 +163,16 @@ class FreeSwitchESL:
         return json.dumps({'rows': rows})
 
     def flush_registration(self, call_id: str, profile: str = 'internal') -> str:
-        """De-register a SIP device by its Call-ID."""
+        """De-register a SIP device by its Call-ID (no reboot)."""
+        return self.api(f'sofia profile {profile} flush_inbound_reg {call_id}')
+
+    def reboot_peer(self, call_id: str, profile: str = 'internal') -> str:
+        """Reboot a desk phone via SIP NOTIFY check-sync.
+
+        FreeSWITCH triggers a check-sync reboot as a side effect of
+        flush_inbound_reg <call-id> reboot. The device re-registers
+        after rebooting.
+        """
         return self.api(f'sofia profile {profile} flush_inbound_reg {call_id} reboot')
 
     def show_calls_count(self) -> str:
