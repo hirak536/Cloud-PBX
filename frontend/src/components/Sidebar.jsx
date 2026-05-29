@@ -69,7 +69,7 @@ const navGroups = [
     label: 'Monitoring',
     items: [
       { path: '/active-calls', label: 'Active Calls', icon: Activity },
-      { path: '/operator-panel', label: 'Operator Panel', icon: MonitorPlay },
+      { path: '/registrations', label: 'Peer Status', icon: MonitorPlay },
     ],
   },
   {
@@ -84,7 +84,6 @@ const navGroups = [
       { path: '/outbound-routes', label: 'Outbound Routes', icon: PhoneOutgoing, role: 'superuser' },
       { path: '/firewall', label: 'Firewall', icon: ShieldAlert, role: 'superuser' },
       { path: '/global-active-calls', label: 'All Active Calls', icon: PhoneCall, role: 'superuser' },
-      { path: '/registrations', label: 'Registrations', icon: PhoneForwarded, role: 'superuser' },
       { path: '/freeswitch', label: 'FreeSWITCH', icon: Cpu, role: 'superuser' },
       { path: '/freeswitch-log', label: 'FreeSWITCH Log', icon: ScrollText, role: 'superuser' },
       { path: '/api-keys', label: 'API Keys', icon: Key, role: 'superuser' },

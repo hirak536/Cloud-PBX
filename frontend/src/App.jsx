@@ -22,7 +22,6 @@ const Fax              = lazy(() => import('@/pages/Fax'))
 const Devices          = lazy(() => import('@/pages/Devices'))
 const Dialplans        = lazy(() => import('@/pages/Dialplans'))
 const ActiveCalls      = lazy(() => import('@/pages/ActiveCalls'))
-const OperatorPanel    = lazy(() => import('@/pages/OperatorPanel'))
 const FreeSWITCH       = lazy(() => import('@/pages/FreeSWITCH'))
 const Domains          = lazy(() => import('@/pages/Domains'))
 const Tenants          = lazy(() => import('@/pages/Tenants'))
@@ -105,7 +104,7 @@ export default function App() {
           <Route path="media-files"        element={<Suspense fallback={<PageLoader />}><MediaFiles /></Suspense>} />
           <Route path="call-recordings"    element={<Suspense fallback={<PageLoader />}><CallRecordings /></Suspense>} />
           <Route path="active-calls"       element={<Suspense fallback={<PageLoader />}><ActiveCalls /></Suspense>} />
-          <Route path="operator-panel"     element={<Suspense fallback={<PageLoader />}><OperatorPanel /></Suspense>} />
+          <Route path="operator-panel"     element={<Navigate to="/registrations" replace />} />
           <Route path="freeswitch"         element={<Suspense fallback={<PageLoader />}><FreeSWITCH /></Suspense>} />
           <Route path="domains"            element={<Suspense fallback={<PageLoader />}><Domains /></Suspense>} />
           <Route path="tenants"            element={<Suspense fallback={<PageLoader />}><Tenants /></Suspense>} />
