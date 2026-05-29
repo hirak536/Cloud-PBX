@@ -238,7 +238,7 @@ function TargetPicker({ value, onChange, data, loading }) {
                 {vms.map(v => (
                   <ResultBtn key={v.voicemail_uuid || v.id} onClick={() => pick('voicemail', v.voicemail_uuid || v.id)}>
                     <span className="font-mono font-bold text-purple-500 w-10 shrink-0">{v.voicemail_id}</span>
-                    <span className="text-sm truncate text-muted-foreground">{v.description || ''}</span>
+                    <span className="text-sm truncate text-muted-foreground">{v.voicemail_name || ''}</span>
                   </ResultBtn>
                 ))}
               </Section>

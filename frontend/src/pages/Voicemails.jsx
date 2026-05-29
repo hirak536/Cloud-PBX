@@ -21,7 +21,7 @@ const GREETING_LABELS = {
 const EMPTY = {
   extension: '', password: '', name: '', enabled: true,
   voicemail_greeting: 'auto_with_instructions', tts_greeting_text: '',
-  voicemail_mail_to: '', voicemail_on_new_message: 'nothing', voicemail_file: 'attach',
+  voicemail_mail_to: '',
 }
 
 export default function Voicemails() {
@@ -60,13 +60,11 @@ export default function Voicemails() {
     setForm({
       extension: r.voicemail_id || r.extension || '',
       password: r.voicemail_password || r.password || '',
-      name: r.voicemail_description || r.name || '',
+      name: r.voicemail_name || '',
       enabled: r.voicemail_enabled !== false,
       voicemail_greeting: r.voicemail_greeting || 'auto_with_instructions',
       tts_greeting_text: r.tts_greeting_text || '',
       voicemail_mail_to: r.voicemail_mail_to || '',
-      voicemail_on_new_message: r.voicemail_on_new_message || 'nothing',
-      voicemail_file: r.voicemail_file || 'attach',
     })
     setFormError(''); setNameFile(null); setUploadMsg(''); setDialogOpen(true)
   }
@@ -78,7 +76,7 @@ export default function Voicemails() {
       const payload = {
         voicemail_id: form.extension,
         voicemail_password: form.password,
-        voicemail_description: form.name,
+        voicemail_name: form.name,
         voicemail_enabled: form.enabled,
         voicemail_greeting: form.voicemail_greeting,
         tts_greeting_text: form.tts_greeting_text,
@@ -144,7 +142,7 @@ export default function Voicemails() {
                 return (
                   <TableRow key={id}>
                     <TableCell className="font-mono font-medium">{r.voicemail_id || r.extension}</TableCell>
-                    <TableCell>{r.voicemail_description || r.name || '—'}</TableCell>
+                    <TableCell>{r.voicemail_name || '—'}</TableCell>
                     <TableCell><Badge variant={r.voicemail_enabled !== false ? 'success' : 'secondary'}>{r.voicemail_enabled !== false ? 'Active' : 'Disabled'}</Badge></TableCell>
                     <TableCell className="text-sm text-muted-foreground">{GREETING_LABELS[r.voicemail_greeting] || r.voicemail_greeting || '—'}</TableCell>
                     <TableCell>

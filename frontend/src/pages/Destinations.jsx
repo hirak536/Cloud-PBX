@@ -84,7 +84,6 @@ const EMPTY = {
   fax_station_id: '',
   fax_header: '',
   fax_protocol: 't38_only',
-  fax_email_destinations: '',
   fax_store: false,
   fax_on_receive: '',
 }
@@ -126,7 +125,6 @@ function rowToForm(r) {
     fax_station_id:            r.fax_station_id || '',
     fax_header:                r.fax_header || '',
     fax_protocol:              r.fax_protocol || 't38_only',
-    fax_email_destinations:    r.fax_email_destinations || '',
     fax_store:                 !!r.fax_store,
     fax_on_receive:            r.fax_on_receive || '',
   }
@@ -309,7 +307,7 @@ function DestinationPicker({ action, onChange, data, loading }) {
                       <button key={v.voicemail_uuid || v.id} type="button" onClick={() => select('voicemail', v.voicemail_uuid || v.id)}
                         className="w-full flex items-center gap-3 mx-1 px-3 py-1.5 rounded-lg hover:bg-muted text-left transition-colors text-sm">
                         <span className="font-mono font-bold text-purple-500 w-10 shrink-0">{v.voicemail_id}</span>
-                        <span className="text-sm truncate text-muted-foreground">{v.description || ''}</span>
+                        <span className="text-sm truncate text-muted-foreground">{v.voicemail_name || ''}</span>
                       </button>
                     ))}
                   </div>
@@ -609,9 +607,10 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading }) {
       </Field>
 
       <SectionTitle>Delivery</SectionTitle>
-      <Field label="Email Destinations" hint="Comma-separated addresses to receive faxes">
-        <Input placeholder="fax@example.com, admin@example.com" value={form.fax_email_destinations} onChange={set('fax_email_destinations')} />
-      </Field>
+      <p className="text-xs text-muted-foreground -mt-1">
+        Email notifications are configured on the linked <span className="font-medium">Fax Box</span> (Fax page),
+        which supports multiple comma-separated addresses.
+      </p>
       <ToggleRow label="Store Received Faxes" checked={form.fax_store} onChange={v => setForm(p => ({ ...p, fax_store: v }))} />
     </div>
   )
@@ -920,7 +919,6 @@ export default function Destinations() {
         fax_station_id:            form.fax_station_id,
         fax_header:                form.fax_header,
         fax_protocol:              form.fax_protocol,
-        fax_email_destinations:    form.fax_email_destinations,
         fax_store:                 form.fax_store,
         fax_on_receive:            form.fax_on_receive,
       }

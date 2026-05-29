@@ -187,7 +187,7 @@ function buildLookup(data) {
     items.forEach(item => { lk[type][keyFn(item)] = labelFn(item) })
   }
   index('extension',    data.extensions,    i => i.extension_uuid,     i => ({ name: i.effective_caller_id_name ? `${i.extension} – ${i.effective_caller_id_name}` : i.extension, ext: i.extension }))
-  index('voicemail',    data.voicemails,     i => i.voicemail_id,       i => ({ name: i.voicemail_description || i.voicemail_id }))
+  index('voicemail',    data.voicemails,     i => i.voicemail_id,       i => ({ name: i.voicemail_name || i.voicemail_id }))
   index('ring_group',   data.ringGroups,     i => i.ring_group_uuid,    i => ({ name: i.ring_group_name, ext: i.ring_group_extension, timeout_type: i.ring_group_timeout_type, timeout_uuid: i.ring_group_timeout_target_uuid, timeout_ext_number: i.ring_group_timeout_external_number }))
   index('ivr_menu',     data.ivrMenus,       i => i.ivr_menu_uuid,      i => ({ name: i.ivr_menu_name, options: i.options || [] }))
   index('conference',   data.conferences,    i => i.conference_uuid,    i => ({ name: i.conference_name }))

@@ -288,7 +288,7 @@ export default function DestinationPicker({
                       <DestRow key={v.voicemail_uuid || v.id} isSelected={isSelected('voicemail', v.voicemail_uuid || v.id)}
                         onClick={() => select('voicemail', v.voicemail_uuid || v.id)}>
                         <span className="font-mono font-bold text-purple-500 shrink-0 mr-2">{v.voicemail_id}</span>
-                        <span className="text-sm truncate min-w-0 text-muted-foreground">{v.description || ''}</span>
+                        <span className="text-sm truncate min-w-0 text-muted-foreground">{v.voicemail_name || ''}</span>
                       </DestRow>
                     ))}
                   </div>

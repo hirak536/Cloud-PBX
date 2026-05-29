@@ -104,8 +104,8 @@ function FaxBoxDialog({ open, onClose, editBox }) {
             </div>
             <div className="space-y-1.5">
               <Label>Notification Email</Label>
-              <Input type="email" placeholder="fax@company.com" value={form.fax_email} onChange={sf('fax_email')} disabled={saving} />
-              <p className="text-xs text-muted-foreground">Inbound faxes will be emailed here as a PDF attachment.</p>
+              <Input type="text" placeholder="fax@company.com, alerts@company.com" value={form.fax_email} onChange={sf('fax_email')} disabled={saving} />
+              <p className="text-xs text-muted-foreground">Inbound faxes are emailed here as a PDF attachment. Separate multiple addresses with commas.</p>
             </div>
             <div className="space-y-1.5">
               <Label>Status</Label>

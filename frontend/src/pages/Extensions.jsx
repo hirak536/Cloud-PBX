@@ -797,7 +797,7 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                     <option key={vm.voicemail_uuid || vm.id} value={vm.voicemail_id}>
                       {vm.voicemail_id}
                       {vm.voicemail_id === form.extension ? ' (this extension)' : ''}
-                      {vm.description ? ` — ${vm.description}` : ''}
+                      {vm.voicemail_name ? ` — ${vm.voicemail_name}` : ''}
                     </option>
                   ))}
                 </Select>

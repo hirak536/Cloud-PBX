@@ -226,7 +226,13 @@ def send_fax_email(self, fax_file_uuid: str):
         return
 
     fax = ff.fax
-    if not fax or not fax.fax_email:
+    # fax_email may hold one or more comma/semicolon-separated addresses.
+    recipients = [
+        addr.strip()
+        for addr in re.split(r'[,;]', fax.fax_email or '')
+        if addr.strip()
+    ] if fax else []
+    if not fax or not recipients:
         logger.info('send_fax_email: no fax_email configured for fax box — skipping %s', fax_file_uuid)
         return
 
@@ -284,7 +290,7 @@ def send_fax_email(self, fax_file_uuid: str):
             subject=subject,
             body=text_body,
             from_email=settings.EMAIL_HOST_USER,
-            to=[fax.fax_email],
+            to=recipients,
             reply_to=[reply_to] if reply_to else None,
             connection=smtp_connection,
         )
@@ -296,10 +302,10 @@ def send_fax_email(self, fax_file_uuid: str):
         attach_size = sum(len(a[1]) for a in email.attachments if isinstance(a[1], (bytes, bytearray)))
         logger.info(
             'send_fax_email: sending to %s for FaxFile %s — file=%s attachments=%d bytes=%d',
-            fax.fax_email, fax_file_uuid, file_path, len(email.attachments), attach_size,
+            ', '.join(recipients), fax_file_uuid, file_path, len(email.attachments), attach_size,
         )
         email.send(fail_silently=False)
-        logger.info('send_fax_email: SENT to %s for FaxFile %s', fax.fax_email, fax_file_uuid)
+        logger.info('send_fax_email: SENT to %s for FaxFile %s', ', '.join(recipients), fax_file_uuid)
 
     except Exception as exc:
         logger.error('send_fax_email: failed for %s: %s', fax_file_uuid, exc)
