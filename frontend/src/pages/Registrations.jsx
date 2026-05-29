@@ -8,7 +8,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose } from '@/components/ui/dialog'
-import { UserX, Loader2, Search, Power, Activity } from 'lucide-react'
+import { UserX, Loader2, Search, Power, Activity, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -118,6 +118,37 @@ export default function Registrations() {
   const [historyPeer, setHistoryPeer] = useState(null)
   const [history, setHistory] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [sortKey, setSortKey] = useState('peer')
+  const [sortDir, setSortDir] = useState('asc')
+
+  const toggleSort = (key) => {
+    if (sortKey === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortKey(key)
+      setSortDir('asc')
+    }
+  }
+
+  const SortHeader = ({ k, children, className }) => {
+    const active = sortKey === k
+    const Icon = !active ? ArrowUpDown : sortDir === 'asc' ? ArrowUp : ArrowDown
+    return (
+      <TableHead className={className}>
+        <button
+          type="button"
+          onClick={() => toggleSort(k)}
+          className={cn(
+            'inline-flex items-center gap-1 hover:text-foreground transition-colors',
+            active ? 'text-foreground' : 'text-muted-foreground'
+          )}
+        >
+          {children}
+          <Icon className="h-3 w-3" />
+        </button>
+      </TableHead>
+    )
+  }
 
   const loadExtensions = useCallback(async () => {
     setLoadingExts(true)
@@ -207,10 +238,31 @@ export default function Registrations() {
     }
   }
 
+  const sortAccessor = (row) => {
+    const { ext, reg } = row
+    const peer = ext.sip_username || ext.extension || ''
+    const stateKey = normalizeState(reg ? (extStatuses?.[peer] || 'online') : 'offline')
+    switch (sortKey) {
+      case 'peer':      return peer.toLowerCase()
+      case 'extension': return (ext.effective_caller_id_name || ext.description || '').toLowerCase()
+      case 'ip':        return reg?.network_ip || ''
+      case 'contact':   return reg?.url || ''
+      case 'port':      return reg?.network_port ? parseInt(reg.network_port) : -1
+      case 'phoneTime': return reg?.expires ? parseInt(reg.expires) : -1
+      case 'userAgent': return (reg?.user_agent || '').toLowerCase()
+      case 'latency':   return reg?.ping_ms != null ? Number(reg.ping_ms) : Number.POSITIVE_INFINITY
+      case 'state':     return stateKey
+      default:          return peer.toLowerCase()
+    }
+  }
+
   merged.sort((a, b) => {
-    const pa = (a.ext.sip_username || a.ext.extension || '').toLowerCase()
-    const pb = (b.ext.sip_username || b.ext.extension || '').toLowerCase()
-    return pa.localeCompare(pb)
+    const va = sortAccessor(a)
+    const vb = sortAccessor(b)
+    let cmp
+    if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb
+    else cmp = String(va).localeCompare(String(vb))
+    return sortDir === 'asc' ? cmp : -cmp
   })
 
   const q = search.trim().toLowerCase()
@@ -257,15 +309,15 @@ export default function Registrations() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Peer</TableHead>
-                <TableHead>Extension</TableHead>
-                <TableHead>IP Address</TableHead>
-                <TableHead>Full Contact</TableHead>
-                <TableHead>Port</TableHead>
-                <TableHead>Phone Time</TableHead>
-                <TableHead>User Agent</TableHead>
-                <TableHead>Latency</TableHead>
-                <TableHead>State</TableHead>
+                <SortHeader k="peer">Peer</SortHeader>
+                <SortHeader k="extension">Extension</SortHeader>
+                <SortHeader k="ip">IP Address</SortHeader>
+                <SortHeader k="contact">Full Contact</SortHeader>
+                <SortHeader k="port">Port</SortHeader>
+                <SortHeader k="phoneTime">Phone Time</SortHeader>
+                <SortHeader k="userAgent">User Agent</SortHeader>
+                <SortHeader k="latency">Latency</SortHeader>
+                <SortHeader k="state">State</SortHeader>
                 <TableHead className="w-28 text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
