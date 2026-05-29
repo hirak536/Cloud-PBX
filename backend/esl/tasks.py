@@ -247,6 +247,10 @@ def _build_extension_status_map() -> dict:
     Status priority: ringing > in_use > online
     Extensions absent from all data sources are simply not included in the map;
     the frontend treats missing keys as "Active" for enabled or "Disabled" for disabled.
+
+    Raises if the registrations fetch fails — callers must skip broadcasting in
+    that case rather than send a partial map (missing keys read as "offline" on
+    the client and would wipe out the last good snapshot).
     """
     from .client import get_esl_client
     from .views import _normalize_json_rows
@@ -255,13 +259,14 @@ def _build_extension_status_map() -> dict:
     status_map: dict = {}
 
     # ── Registrations → online ──────────────────────────────────────────────
-    try:
-        raw_regs = esl.show_registrations()
-        for row in _normalize_json_rows(raw_regs):
-            sip_user = _normalize_sip_username(row.get('reg_user', ''))
-            _set_status(status_map, sip_user, 'online')
-    except Exception as e:
-        logger.warning(f"_build_extension_status_map: registrations fetch failed: {e}")
+    # Registrations are the foundation of the map: without them every extension
+    # looks "offline". If this fetch fails we must NOT return a partial map (the
+    # frontend treats missing keys as offline and would wipe out a correct
+    # snapshot), so we let the exception propagate to the caller.
+    raw_regs = esl.show_registrations()
+    for row in _normalize_json_rows(raw_regs):
+        sip_user = _normalize_sip_username(row.get('reg_user', ''))
+        _set_status(status_map, sip_user, 'online')
 
     # ── Channels → ringing / in_use ─────────────────────────────────────────
     try:
@@ -302,6 +307,13 @@ def push_extension_status_update():
     """
     try:
         status_map = _build_extension_status_map()
+    except Exception as e:
+        # Could not read registrations from FreeSWITCH. Skip this broadcast so the
+        # last good snapshot already on each client is preserved — broadcasting an
+        # empty/partial map here would flip every extension to "offline".
+        logger.error(f"push_extension_status_update: skipped broadcast, status build failed: {e}")
+        return
+    try:
         async_to_sync(channel_layer.group_send)(
             'extension_status',
             {
@@ -314,7 +326,7 @@ def push_extension_status_update():
         )
         logger.debug(f"push_extension_status_update: broadcast {len(status_map)} extensions")
     except Exception as e:
-        logger.error(f"push_extension_status_update error: {e}")
+        logger.error(f"push_extension_status_update broadcast error: {e}")
 
 
 def _compute_peer_states() -> dict:
