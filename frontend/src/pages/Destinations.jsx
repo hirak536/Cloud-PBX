@@ -12,8 +12,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { Plus, Pencil, Trash2, Search, Loader2, X, ChevronDown, PhoneForwarded, PhoneOff, Layers, AlertCircle, CheckCircle2, Sparkles, History } from 'lucide-react'
+import { Plus, Pencil, Trash2, Search, Loader2, X, ChevronDown, PhoneForwarded, PhoneOff, Layers, AlertCircle, CheckCircle2, Sparkles, History, Download } from 'lucide-react'
 import { AffinityPanel } from './CustomDestinations'
+import * as XLSX from 'xlsx'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -600,16 +601,6 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading }) {
       </Field>
       <ToggleRow label="Enable Fax Receive" hint="Accept incoming faxes on this DID" checked={form.fax_receive} onChange={v => setForm(p => ({ ...p, fax_receive: v }))} />
 
-      <SectionTitle>Fax Identity</SectionTitle>
-      <Row>
-        <Field label="Station ID">
-          <Input placeholder="My Fax" value={form.fax_station_id} onChange={set('fax_station_id')} />
-        </Field>
-        <Field label="Fax Header">
-          <Input placeholder="Company Name" value={form.fax_header} onChange={set('fax_header')} />
-        </Field>
-      </Row>
-
       <SectionTitle>Protocol</SectionTitle>
       <Field label="Fax Protocol">
         <Select value={form.fax_protocol} onChange={set('fax_protocol')}>
@@ -622,9 +613,6 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading }) {
         <Input placeholder="fax@example.com, admin@example.com" value={form.fax_email_destinations} onChange={set('fax_email_destinations')} />
       </Field>
       <ToggleRow label="Store Received Faxes" checked={form.fax_store} onChange={v => setForm(p => ({ ...p, fax_store: v }))} />
-      <Field label="On Receive Action" hint="Extension or dialplan action after fax received">
-        <Input placeholder="hangup" value={form.fax_on_receive} onChange={set('fax_on_receive')} />
-      </Field>
     </div>
   )
 
@@ -852,6 +840,7 @@ export default function Destinations() {
   const [deleting, setDeleting]   = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [affinityOpen, setAffinityOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   useEffect(() => {
     const h = () => setAffinityOpen(true)
@@ -948,6 +937,45 @@ export default function Destinations() {
     } finally { setSaving(false) }
   }
 
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      // Page through the API until every row is collected — the backend's default
+      // pagination caps page_size at 25 and ignores larger values, so we must loop.
+      const list = []
+      let pageNum = 1
+      for (;;) {
+        const params = { page: pageNum, page_size: 100 }
+        if (debouncedSearch) params.search = debouncedSearch
+        const { data } = await api.list(params)
+        if (Array.isArray(data)) { list.push(...data); break }
+        list.push(...(data.results || []))
+        if (!data.next) break
+        pageNum += 1
+      }
+      const routingString = (actions) => (actions || [])
+        .map(a => {
+          const label = DEST_META[a.dest_type]?.label || a.dest_type || ''
+          return a.dest_label ? `${label}: ${a.dest_label}` : label
+        })
+        .filter(Boolean)
+        .join(' → ')
+      const sheetRows = list.map(r => ({
+        Number:      r.destination_number || '',
+        Name:        r.destination_name || '',
+        Routing:     routingString(r.actions),
+        Status:      r.destination_enabled !== false ? 'Active' : 'Disabled',
+        Description: r.destination_description || '',
+      }))
+      const ws = XLSX.utils.json_to_sheet(sheetRows)
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'DIDs')
+      XLSX.writeFile(wb, `dids-${new Date().toISOString().slice(0, 10)}.xlsx`)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const handleDelete = async (id) => {
     if (!confirm('Delete this DID?')) return
     setDeleting(id)
@@ -964,6 +992,10 @@ export default function Destinations() {
         </div>
         <Button variant="outline" size="sm" onClick={() => setBulkOpen(true)}>
           <Layers className="h-4 w-4 mr-1" />Bulk Add
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting} title="Export DIDs to Excel">
+          {exporting ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Download className="h-4 w-4 mr-1" />}
+          {exporting ? 'Exporting…' : 'Export'}
         </Button>
         <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />Define DID</Button>
       </div>
@@ -1058,7 +1090,7 @@ export default function Destinations() {
           </div>
 
           {/* Body */}
-          <div className="overflow-y-auto flex-1 px-6 py-4 space-y-1">
+          <div className="overflow-y-auto flex-1 min-h-0 px-6 py-4 space-y-1">
             {formError && (
               <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive mb-3">
                 {formError}

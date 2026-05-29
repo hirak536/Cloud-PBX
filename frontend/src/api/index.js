@@ -272,6 +272,7 @@ export const freeswitch = {
   calls: () => api.get('/freeswitch/calls/'),
   registrations: () => api.get('/freeswitch/registrations/'),
   allRegistrations: () => api.get('/freeswitch/registrations/', { params: { tenant: null } }),
+  extensionStatus: () => api.get('/freeswitch/extension-status/'),
   deregister: (call_id, profile = 'internal', tenant_code = '') => api.post('/freeswitch/deregister/', { call_id, profile, tenant_code }),
   reboot: (call_id, profile = 'internal', tenant_code = '') => api.post('/freeswitch/reboot/', { call_id, profile, tenant_code }),
   peerHistory: (user, days = 5) => api.get('/freeswitch/peer-history/', { params: { user, days } }),

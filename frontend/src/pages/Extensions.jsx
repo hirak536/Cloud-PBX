@@ -1,8 +1,8 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useSelector } from 'react-redux'
-import { selectLive, selectTenant } from '@/store'
-import { extensions as extensionsApi, voicemails as voicemailsApi, gateways as gatewaysApi, ringGroups as ringGroupsApi, destinations as destinationsApi, freeswitchCache } from '@/api'
+import { selectTenant } from '@/store'
+import { extensions as extensionsApi, voicemails as voicemailsApi, gateways as gatewaysApi, ringGroups as ringGroupsApi, destinations as destinationsApi, freeswitch as freeswitchApi, freeswitchCache } from '@/api'
 import DestinationPicker, { EMPTY_DEST } from '@/components/DestinationPicker'
 import { useDestinationData } from '@/hooks/useDestinationData'
 import { Button } from '@/components/ui/button'
@@ -17,8 +17,9 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import {
   Plus, Pencil, Trash2, Search, RefreshCw, Loader2,
-  RotateCcw, AlertCircle, CheckCircle2, ChevronDown, Check, Copy, Layers,
+  RotateCcw, AlertCircle, CheckCircle2, ChevronDown, Check, Copy, Layers, Download,
 } from 'lucide-react'
+import * as XLSX from 'xlsx'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -363,10 +364,17 @@ function stringToDest(str, destData) {
 
 // ── Forwarding row ────────────────────────────────────────────────────────────
 
-function ForwardRow({ label, enabled, onToggle, destination, onDestChange, disabled, destData, destLoading, extensionNumber }) {
+// `voicemail:self` is a bulk-add sentinel meaning "this extension's own voicemail box".
+// At create time it is rewritten to voicemail:<actual extension number> per row.
+const SELF_VOICEMAIL = 'voicemail:self'
+
+function ForwardRow({ label, enabled, onToggle, destination, onDestChange, disabled, destData, destLoading, extensionNumber, bulkMode }) {
   const destValue   = stringToDest(destination, destData)
   const handleChange = (dest) => onDestChange(destToString(dest, destData))
-  const isVoicemailSelf = extensionNumber && destination === `voicemail:${extensionNumber}`
+  // In bulk mode the per-extension number is unknown, so the button targets the SELF_VOICEMAIL sentinel.
+  const voicemailTarget = bulkMode ? SELF_VOICEMAIL : (extensionNumber ? `voicemail:${extensionNumber}` : null)
+  const isVoicemailSelf = voicemailTarget && destination === voicemailTarget
+  const showVoicemailBtn = bulkMode || !!extensionNumber
   return (
     <div className="grid grid-cols-[160px_1fr] gap-3 items-center px-3 py-2.5">
       <div className="flex items-center gap-2">
@@ -384,11 +392,11 @@ function ForwardRow({ label, enabled, onToggle, destination, onDestChange, disab
             placeholder="Select destination…"
           />
         </div>
-        {extensionNumber && (
+        {showVoicemailBtn && (
           <button
             type="button"
-            title="Set to voicemail of this extension"
-            onClick={() => onDestChange(`voicemail:${extensionNumber}`)}
+            title={bulkMode ? "Set to each extension's own voicemail box" : 'Set to voicemail of this extension'}
+            onClick={() => onDestChange(voicemailTarget)}
             className={cn(
               'shrink-0 text-xs px-2 py-1 rounded border transition-colors',
               isVoicemailSelf
@@ -406,7 +414,7 @@ function ForwardRow({ label, enabled, onToggle, destination, onDestChange, disab
 
 // ── Form body (tabbed) ────────────────────────────────────────────────────────
 
-function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ringGroupList, rgLoading, activeTab, setActiveTab }) {
+function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ringGroupList, rgLoading, activeTab, setActiveTab, bulkMode }) {
   const { destData, destLoading, loadDestData } = useDestinationData()
 
   useEffect(() => {
@@ -544,10 +552,10 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
   const hint = extHint()
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
 
-      <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-5">
         {formError && (
           <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
@@ -969,6 +977,7 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                 disabled={!form.call_forward_active}
                 destData={destData} destLoading={destLoading}
                 extensionNumber={form.extension}
+                bulkMode={bulkMode}
               />
               <ForwardRow
                 label="On No Answer"
@@ -979,6 +988,7 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                 disabled={!form.call_forward_active}
                 destData={destData} destLoading={destLoading}
                 extensionNumber={form.extension}
+                bulkMode={bulkMode}
               />
               <ForwardRow
                 label="On Busy"
@@ -989,6 +999,7 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                 disabled={!form.call_forward_active}
                 destData={destData} destLoading={destLoading}
                 extensionNumber={form.extension}
+                bulkMode={bulkMode}
               />
               <ForwardRow
                 label="Not Registered"
@@ -999,6 +1010,7 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                 disabled={!form.call_forward_active}
                 destData={destData} destLoading={destLoading}
                 extensionNumber={form.extension}
+                bulkMode={bulkMode}
               />
               <div className={cn('px-3 py-2.5', !form.call_forward_active && 'pointer-events-none')}>
                 <div className="flex items-center gap-2 mb-2">
@@ -1043,7 +1055,7 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
 
 // ── Bulk Add Extensions Dialog ───────────────────────────────────────────────
 
-function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant }) {
+function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant, ringGroupList, rgLoading, loadRingGroups }) {
   const [mode, setMode] = useState('range')
   const [rangeStart, setRangeStart] = useState('')
   const [rangeEnd, setRangeEnd] = useState('')
@@ -1053,15 +1065,30 @@ function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant }) {
   const [progress, setProgress] = useState(0)
   const [results, setResults] = useState([])
   const [error, setError] = useState('')
+  // Shared settings applied to every extension. The `extension`/`password` fields
+  // in this form are ignored — those come per-row from `preview`.
+  const [form, setForm] = useState(EMPTY_FORM)
+  const [activeTab, setActiveTab] = useState('configuration')
+  const [checkingAvail, setCheckingAvail] = useState(false)
 
   const reset = () => {
     setMode('range'); setRangeStart(''); setRangeEnd(''); setListText('')
     setPreview([]); setStep('input'); setProgress(0); setResults([]); setError('')
+    setForm(EMPTY_FORM); setActiveTab('configuration'); setCheckingAvail(false)
   }
 
   useEffect(() => { if (!open) reset() }, [open])
 
-  const buildPreview = () => {
+  // Load ring groups when the dialog opens so the shared "Call Group" picker is populated.
+  useEffect(() => { if (open && loadRingGroups) loadRingGroups() }, [open, loadRingGroups])
+
+  // Apply tenant push-notification default to shared settings on open.
+  useEffect(() => {
+    if (!open) return
+    setForm(f => ({ ...f, mobile_push_enabled: currentTenant?.push_notifications_enabled || false }))
+  }, [open, currentTenant])
+
+  const buildPreview = async () => {
     setError('')
     let exts = []
     if (mode === 'range') {
@@ -1077,24 +1104,91 @@ function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant }) {
       const bad = exts.filter(e => !/^\d{3,5}$/.test(e))
       if (bad.length) { setError(`Invalid (must be 3–5 digits): ${bad.slice(0, 5).join(', ')}`); return }
     }
-    setPreview(exts.map(ext => ({ ext, password: generatePassword() })))
-    setStep('preview')
+    // Dedupe while preserving order.
+    exts = [...new Set(exts)]
+
+    // Check which numbers already exist on this tenant by pulling the current
+    // extension list once (paging through) and flagging matches.
+    setCheckingAvail(true)
+    const existing = new Set()
+    try {
+      let pageNum = 1
+      for (;;) {
+        const { data } = await extensionsApi.list({ page: pageNum, page_size: 100 })
+        const list = Array.isArray(data) ? data : data.results || []
+        list.forEach(r => { if (r.extension) existing.add(String(r.extension)) })
+        if (Array.isArray(data) || !data.next) break
+        pageNum += 1
+      }
+    } catch { /* fall back to creating all — backend still rejects duplicates */ }
+    finally { setCheckingAvail(false) }
+
+    setPreview(exts.map(ext => ({ ext, password: generatePassword(), exists: existing.has(ext) })))
+    setStep('review')
   }
+
+  // Build the create payload for one extension by merging the shared settings
+  // with the per-row number + password. Mirrors the single-add handleSave payload.
+  const buildPayload = (ext, password) => {
+    // Rewrite the "this extension's own voicemail" sentinel to the actual per-row number.
+    const fwd = (v) => v === SELF_VOICEMAIL ? `voicemail:${ext}` : v
+    return {
+    extension:                               ext,
+    effective_caller_id_name:                form.effective_caller_id_name,
+    description:                             form.description,
+    password,
+    directory_full_name:                     form.directory_full_name,
+    directory_visible:                       form.directory_visible,
+    directory_exten_visible:                 form.directory_exten_visible,
+    sip_bypass_media:                        form.sip_bypass_media,
+    codec_preference:                        (form.sip_bypass_media === 'true' || form.sip_bypass_media === 'proxy') ? 'PCMU' : form.codec_preference,
+    absolute_codec_string:                   form.absolute_codec_string,
+    call_group:                              form.call_group,
+    hold_music:                              form.hold_music,
+    language:                                form.language,
+    call_screen_enabled:                     form.call_screen_enabled,
+    mobile_push_enabled:                     form.mobile_push_enabled,
+    user_record:                             form.user_record,
+    call_recording:                          form.call_recording,
+    voicemail_enabled:                       form.voicemail_enabled,
+    voicemail_id:                            form.voicemail_id,
+    voicemail_password:                      form.voicemail_password,
+    voicemail_mail_to:                       form.voicemail_mail_to,
+    voicemail_file:                          form.voicemail_file,
+    voicemail_local_after_email:             form.voicemail_local_after_email,
+    mwi_account:                             form.mwi_account,
+    outbound_did:                            form.outbound_did || null,
+    outbound_caller_id_number:               form.outbound_caller_id_number,
+    outbound_caller_id_name:                 form.outbound_caller_id_name,
+    outbound_route:                          form.outbound_route || null,
+    reject_to_voicemail:                     form.reject_to_voicemail,
+    call_forward_active:                     form.call_forward_active,
+    forward_all_enabled:                     form.forward_all_enabled,
+    forward_all_destination:                 fwd(form.forward_all_destination),
+    forward_no_answer_enabled:               form.forward_no_answer_enabled,
+    forward_no_answer_destination:           fwd(form.forward_no_answer_destination),
+    forward_busy_enabled:                    form.forward_busy_enabled,
+    forward_busy_destination:                fwd(form.forward_busy_destination),
+    forward_user_not_registered_enabled:     form.forward_user_not_registered_enabled,
+    forward_user_not_registered_destination: fwd(form.forward_user_not_registered_destination),
+    forward_on_condition_enabled:            form.forward_on_condition_enabled,
+    forward_on_condition:                    form.forward_on_condition,
+    forward_on_condition_destination:        fwd(form.forward_on_condition_destination),
+    enabled:                                 form.enabled,
+    }
+  }
+
+  // Only the numbers that don't already exist are created.
+  const toCreate = preview.filter(p => !p.exists)
+  const skipCount = preview.length - toCreate.length
 
   const handleCreate = async () => {
     setStep('creating'); setProgress(0)
     const res = []
-    for (let i = 0; i < preview.length; i++) {
-      const { ext, password } = preview[i]
+    for (let i = 0; i < toCreate.length; i++) {
+      const { ext, password } = toCreate[i]
       try {
-        await extensionsApi.create({
-          extension: ext, password,
-          effective_caller_id_name: '', description: '',
-          codec_preference: DEFAULT_CODECS,
-          voicemail_enabled: true, voicemail_file: 'attach',
-          voicemail_local_after_email: true,
-          enabled: true,
-        })
+        await extensionsApi.create(buildPayload(ext, password))
         res.push({ ext, status: 'ok' })
       } catch (err) {
         const d = err?.response?.data
@@ -1104,22 +1198,68 @@ function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant }) {
       setProgress(i + 1)
       setResults([...res])
     }
+
+    // Sync ring-group memberships for the shared Call Group selection across all created extensions.
+    const createdExts = res.filter(r => r.status === 'ok').map(r => r.ext)
+    if (form.ring_group_ids.length > 0 && createdExts.length > 0) {
+      for (const rgId of form.ring_group_ids) {
+        try {
+          const { data: rg } = await ringGroupsApi.get(rgId)
+          const destinations = rg.destinations || []
+          const existing = new Set(destinations.map(d => d.destination_number))
+          const additions = createdExts
+            .filter(ext => !existing.has(ext))
+            .map(ext => ({ destination_number: ext, destination_delay: 0, destination_timeout: 30 }))
+          if (additions.length > 0) {
+            await ringGroupsApi.update(rgId, { ...rg, destinations: [...destinations, ...additions] })
+          }
+        } catch (e) { console.error('Failed to add extensions to ring group', rgId, e) }
+      }
+    }
+
     setStep('done')
   }
 
   const ok  = results.filter(r => r.status === 'ok').length
   const bad = results.filter(r => r.status === 'error').length
+  const isWide = step === 'settings'
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
-      <DialogContent className="w-[95vw] max-w-lg max-h-[90vh] flex flex-col p-0 overflow-hidden">
-        <DialogHeader className="px-6 pt-5 pb-4 border-b">
+      <DialogContent className={cn('w-[95vw] flex flex-col p-0 overflow-hidden',
+        isWide ? 'max-w-3xl h-[90vh] sm:h-[82vh]' : 'max-w-lg max-h-[90vh]')}>
+        <DialogHeader className="px-6 pt-5 pb-4 border-b shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <Layers className="h-4 w-4 text-primary" /> Bulk Add Extensions
           </DialogTitle>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+        {/* Shared-settings step renders the full tabbed form, flush to the dialog edges */}
+        {step === 'settings' ? (
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+            <div className="px-6 pt-3 pb-2 border-b shrink-0">
+              <p className="text-sm text-muted-foreground">
+                These settings apply to all <span className="font-semibold text-foreground">{toCreate.length}</span> new extension{toCreate.length !== 1 ? 's' : ''}
+                {skipCount > 0 && <> (<span className="text-amber-600">{skipCount} already-existing skipped</span>)</>}.
+                Each gets its own number and auto-generated password. The <span className="font-medium">General</span> tab&apos;s
+                number/password/name fields are ignored here.
+              </p>
+            </div>
+            <ExtensionFormBody
+              form={form}
+              setForm={setForm}
+              editId={null}
+              currentTenant={currentTenant}
+              formError={error}
+              ringGroupList={ringGroupList}
+              rgLoading={rgLoading}
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              bulkMode
+            />
+          </div>
+        ) : (
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-4">
 
           {step === 'input' && (
             <>
@@ -1167,43 +1307,66 @@ function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant }) {
             </>
           )}
 
-          {step === 'preview' && (
+          {step === 'review' && (
             <>
-              <p className="text-sm text-muted-foreground">
-                {preview.length} extension{preview.length !== 1 ? 's' : ''} will be created with auto-generated passwords. You can edit individual extensions after creation.
-              </p>
+              <div className="flex items-center gap-3 text-sm">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/40 px-2.5 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                  <CheckCircle2 className="h-3 w-3" /> {toCreate.length} available
+                </span>
+                {skipCount > 0 && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 dark:bg-amber-950/40 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+                    <AlertCircle className="h-3 w-3" /> {skipCount} already in use — will be skipped
+                  </span>
+                )}
+              </div>
               <div className="rounded-xl border overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="border-b bg-muted/40">
                     <tr>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">Extension</th>
                       <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">SIP Username</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">Password</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">Status</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y max-h-64 overflow-y-auto">
-                    {preview.map(({ ext, password }) => (
-                      <tr key={ext}>
-                        <td className="px-3 py-1.5 font-mono font-bold text-blue-500">{ext}</td>
+                  <tbody className="divide-y">
+                    {preview.map(({ ext, exists }) => (
+                      <tr key={ext} className={cn(exists && 'bg-amber-500/5')}>
+                        <td className={cn('px-3 py-1.5 font-mono font-bold', exists ? 'text-muted-foreground line-through' : 'text-blue-500')}>{ext}</td>
                         <td className="px-3 py-1.5 font-mono text-xs text-muted-foreground">
                           {ext}{currentTenant?.tenant_code ? `-${currentTenant.tenant_code}` : ''}
                         </td>
-                        <td className="px-3 py-1.5 font-mono text-xs">{password}</td>
+                        <td className="px-3 py-1.5">
+                          {exists ? (
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600">
+                              <AlertCircle className="h-3 w-3" /> Already created
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                              <CheckCircle2 className="h-3 w-3" /> Available
+                            </span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              {toCreate.length === 0 && (
+                <div className="flex items-start gap-2 rounded-md border border-amber-300/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  All entered numbers already exist on this tenant. Nothing to create.
+                </div>
+              )}
             </>
           )}
 
           {step === 'creating' && (
             <div className="space-y-3">
-              <p className="text-sm text-muted-foreground">Creating {progress} / {preview.length}…</p>
+              <p className="text-sm text-muted-foreground">Creating {progress} / {toCreate.length}…</p>
               <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
                 <div
                   className="h-2 bg-primary transition-all duration-300 rounded-full"
-                  style={{ width: `${(progress / preview.length) * 100}%` }}
+                  style={{ width: `${toCreate.length ? (progress / toCreate.length) * 100 : 0}%` }}
                 />
               </div>
               <div className="max-h-48 overflow-y-auto space-y-1">
@@ -1226,7 +1389,7 @@ function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant }) {
               <div className={cn('flex items-center gap-2 rounded-lg px-4 py-3 text-sm font-medium',
                 bad === 0 ? 'bg-emerald-500/10 text-emerald-700 border border-emerald-200' : 'bg-amber-500/10 text-amber-700 border border-amber-200')}>
                 <CheckCircle2 className="h-4 w-4" />
-                {ok} created{bad > 0 ? `, ${bad} failed` : ' — all done!'}
+                {ok} created{bad > 0 ? `, ${bad} failed` : ''}{skipCount > 0 ? `, ${skipCount} skipped (already existed)` : (bad === 0 ? ' — all done!' : '')}
               </div>
               {bad > 0 && (
                 <div className="max-h-40 overflow-y-auto space-y-1">
@@ -1242,21 +1405,33 @@ function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant }) {
           )}
 
         </div>
+        )}
 
-        <div className="flex justify-between gap-2 px-6 py-4 border-t">
+        <div className="flex justify-between gap-2 px-6 py-4 border-t shrink-0">
           <Button variant="ghost" onClick={() => { onClose(); if (step === 'done') onDone() }}>
             {step === 'done' ? 'Close' : 'Cancel'}
           </Button>
           <div className="flex gap-2">
-            {step === 'preview' && (
-              <Button variant="outline" onClick={() => setStep('input')}>Back</Button>
+            {step === 'review' && (
+              <Button variant="outline" onClick={() => setStep('input')}>← Back</Button>
+            )}
+            {step === 'settings' && (
+              <Button variant="outline" onClick={() => setStep('review')}>← Back</Button>
             )}
             {step === 'input' && (
-              <Button onClick={buildPreview}>Preview →</Button>
+              <Button onClick={buildPreview} disabled={checkingAvail}>
+                {checkingAvail && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+                {checkingAvail ? 'Checking…' : 'Check Availability →'}
+              </Button>
             )}
-            {step === 'preview' && (
-              <Button onClick={handleCreate}>
-                Create {preview.length} Extension{preview.length !== 1 ? 's' : ''}
+            {step === 'review' && (
+              <Button onClick={() => setStep('settings')} disabled={toCreate.length === 0}>
+                Configure Settings →
+              </Button>
+            )}
+            {step === 'settings' && (
+              <Button onClick={handleCreate} disabled={toCreate.length === 0}>
+                Create {toCreate.length} Extension{toCreate.length !== 1 ? 's' : ''}
               </Button>
             )}
             {step === 'done' && ok > 0 && (
@@ -1323,10 +1498,15 @@ export default function Extensions() {
   const [form, setForm] = useState(EMPTY_FORM)
   const [formError, setFormError] = useState('')
   const [flushing, setFlushing] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [activeTab, setActiveTab] = useState('general')
   const [ringGroupList, setRingGroupList] = useState([])
   const [rgLoading, setRgLoading] = useState(false)
-  const { extStatuses, extSnapshotReceived } = useSelector(selectLive)
+  // Extension live status is fetched once on load (no live WS push). Keyed by
+  // sip_username ("1001-IHS"). `extStatusLoaded` distinguishes "not fetched yet"
+  // (show Connecting…) from "fetched, this ext idle" (show Offline).
+  const [extStatuses, setExtStatuses] = useState({})
+  const [extStatusLoaded, setExtStatusLoaded] = useState(false)
   const ringGroupsRef = useRef([])
   const originalRingGroupIdsRef = useRef([])
 
@@ -1356,6 +1536,15 @@ export default function Extensions() {
       setTotal(Array.isArray(data) ? list.length : data.count || 0)
     } finally {
       setLoading(false)
+    }
+    // Fetch current extension status once per load (no live push). Best-effort:
+    // if FreeSWITCH is unreachable, leave the badges in the "Connecting…" state.
+    try {
+      const { data } = await freeswitchApi.extensionStatus()
+      setExtStatuses(data?.extensions || {})
+      setExtStatusLoaded(true)
+    } catch {
+      /* keep previous status; do not flip everything to offline */
     }
   }, [page, search])
 
@@ -1581,6 +1770,43 @@ export default function Extensions() {
     finally { setDeleting(null) }
   }
 
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      // Page through the API until every row is collected — the backend's default
+      // pagination caps page_size at 25 and ignores larger values, so we must loop.
+      const list = []
+      let pageNum = 1
+      for (;;) {
+        const params = { page: pageNum, page_size: 100 }
+        if (search) params.search = search
+        const { data } = await extensionsApi.list(params)
+        if (Array.isArray(data)) { list.push(...data); break }
+        list.push(...(data.results || []))
+        if (!data.next) break
+        pageNum += 1
+      }
+      const sheetRows = list.map(r => ({
+        Extension:      r.extension || '',
+        Name:           r.effective_caller_id_name || '',
+        'SIP Username': r.sip_username || r.extension || '',
+        Description:    r.description || '',
+        Password:       r.password || '',
+        'Voicemail Enabled':    r.voicemail_enabled !== false ? 'Yes' : 'No',
+        'Voicemail Email':      r.voicemail_mail_to || '',
+        'Outbound Caller ID':   r.outbound_caller_id_number || '',
+        'Call Forward Active':  r.call_forward_active ? 'Yes' : 'No',
+        Enabled:        r.enabled !== false ? 'Yes' : 'No',
+      }))
+      const ws = XLSX.utils.json_to_sheet(sheetRows)
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'Extensions')
+      XLSX.writeFile(wb, `extensions-${new Date().toISOString().slice(0, 10)}.xlsx`)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const handleCopyPassword = (row) => {
     if (!row.password) return
     navigator.clipboard.writeText(row.password)
@@ -1620,6 +1846,10 @@ export default function Extensions() {
           <Layers className="h-4 w-4" />
           Bulk Add
         </Button>
+        <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting} title="Export extensions to Excel">
+          {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+          {exporting ? 'Exporting…' : 'Export'}
+        </Button>
         <Button size="sm" onClick={openCreate}>
           <Plus className="h-4 w-4" />
           Add Extension
@@ -1631,6 +1861,9 @@ export default function Extensions() {
         onClose={() => setBulkOpen(false)}
         onDone={() => { setBulkOpen(false); load() }}
         currentTenant={currentTenant}
+        ringGroupList={ringGroupList}
+        rgLoading={rgLoading}
+        loadRingGroups={loadRingGroups}
       />
 
       {/* Table */}
@@ -1675,7 +1908,7 @@ export default function Extensions() {
                             // extension number in another tenant doesn't share a status.
                             const key = row.sip_username || row.extension
                             const s = extStatuses[key]
-                            return extSnapshotReceived ? (s || 'offline') : s
+                            return extStatusLoaded ? (s || 'offline') : s
                           })()}
                         />
                       </TableCell>
@@ -1733,7 +1966,7 @@ export default function Extensions() {
           </DialogHeader>
 
           {/* TabBar + scrollable content together */}
-          <div className="flex-1 overflow-hidden flex flex-col">
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
             <ExtensionFormBody
               form={form}
               setForm={setForm}

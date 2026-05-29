@@ -364,6 +364,41 @@ class FSRegistrationsView(APIView):
             )
 
 
+class FSExtensionStatusView(APIView):
+    """
+    GET /api/v1/freeswitch/extension-status/
+    Returns the current extension status map keyed by sip_username
+    ("1001-IHS" → "online" | "ringing" | "in_use"). Extensions absent from the
+    map are idle/offline. Fetched on demand by the Extensions page on load —
+    there is no live push for this list.
+    Superusers/staff are scoped via the ?tenant=<uuid> query param.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .tasks import _build_extension_status_map
+        from apps.extensions.models import Extension
+        try:
+            status_map = _build_extension_status_map()
+        except Exception as e:
+            logger.error(f"FSExtensionStatusView error: {e}")
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        tenant_code = _tenant_code_for_request(request)
+        if tenant_code:
+            tenant_exts = set(
+                Extension.objects.filter(
+                    tenant__tenant_code=tenant_code, enabled=True
+                ).values_list('sip_username', flat=True)
+            )
+            status_map = {k: v for k, v in status_map.items() if k in tenant_exts}
+
+        return Response({'extensions': status_map})
+
+
 class FSPeerHistoryView(APIView):
     """
     GET /api/v1/freeswitch/peer-history/?user=<sip_username>&days=5
