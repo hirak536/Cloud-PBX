@@ -583,13 +583,16 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
     # Fax detection on a shared voice+fax DID.
     #
     # The inbound (DID) leg is only "answered" when a human picks up the
-    # bridged extension. A calling fax machine never triggers that, so an
-    # execute_on_answer trigger would never fire — the call just rings until
-    # the carrier CANCELs. Instead we pre_answer the inbound leg to establish
-    # early media, then start spandsp fax detection on that media (via
-    # execute_on_media) BEFORE the extension answers. If CNG is heard,
-    # execute_on_fax_detect transfers to rxfax; if a human answers, the bridge
-    # proceeds normally and rxfax's spandsp_stop_fax_detect cleans up.
+    # bridged extension, and a calling fax machine sends little/no CNG before
+    # the line is answered — so neither an execute_on_answer trigger nor
+    # early-media (pre_answer) detection reliably catches a fax-only sender;
+    # the call just rings until the carrier CANCELs.
+    #
+    # Instead we ANSWER the inbound leg up front and start spandsp fax
+    # detection on the real (post-answer) media, then ring/bridge the
+    # extension in parallel. If fax tone is heard, execute_on_fax_detect
+    # transfers to rxfax (which calls spandsp_stop_fax_detect first); if a
+    # human picks up, the bridge proceeds as a normal voice call.
     if dest.fax_id and dest.fax_receive and dest.dest_type != 'fax':
         fax_box = dest.fax
         tenant_code = fax_box.tenant.tenant_code if fax_box.tenant else None
@@ -598,14 +601,10 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
             cond, 'action', application='set',
             data=f'execute_on_fax_detect=transfer rxfax_{fax_box.fax_extension} XML {fax_ctx}',
         )
-        # Start fax detect as soon as media (including early media) is up.
-        etree.SubElement(
-            cond, 'action', application='set',
-            data='execute_on_media=spandsp_start_fax_detect',
-        )
-        # Establish early media on the inbound leg so spandsp has audio to
-        # listen to while the extension is still ringing.
-        etree.SubElement(cond, 'action', application='pre_answer')
+        # Answer the inbound leg so spandsp has live media to listen to while
+        # the extension rings, then start fax detection inline.
+        etree.SubElement(cond, 'action', application='answer')
+        etree.SubElement(cond, 'action', application='spandsp_start_fax_detect')
 
     # Optional call enhancements
     if dest.destination_cid_name_prefix:
