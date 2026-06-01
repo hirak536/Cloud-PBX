@@ -716,6 +716,9 @@ class ClientFaxQuickSendView(APIView):
             except RuntimeError as e:
                 return Response({'error': f'PDF conversion failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        cid_name = fax.fax_caller_id_name or fax.fax_name
+        cid_number = sender_number or fax.fax_caller_id_number or fax.fax_extension
+
         ff = FaxFile.objects.create(
             fax=fax,
             tenant=tenant,
@@ -725,12 +728,11 @@ class ClientFaxQuickSendView(APIView):
             fax_file_path=file_path,
             fax_file_status='pending',
             fax_file_destination_number=destination_number,
-            fax_file_caller_id_number=sender_number or fax.fax_caller_id_number,
+            fax_file_caller_id_name=cid_name,
+            fax_file_caller_id_number=cid_number,
             fax_file_date=dj_tz.now(),
         )
 
-        cid_name = fax.fax_caller_id_name or fax.fax_name
-        cid_number = sender_number or fax.fax_caller_id_number or fax.fax_extension
         originate_vars = (
             f'origination_caller_id_name={cid_name},'
             f'origination_caller_id_number={cid_number},'

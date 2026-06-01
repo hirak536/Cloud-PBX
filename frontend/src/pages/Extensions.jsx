@@ -43,6 +43,9 @@ const TABS = [
   { id: 'forwarding',    label: 'Forwarding' },
 ]
 
+// Bulk add shares every tab except General (number/password/name are per-row).
+const BULK_TABS = TABS.filter(t => t.id !== 'general')
+
 const EMPTY_FORM = {
   // General
   extension: '',
@@ -551,9 +554,13 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
   }
   const hint = extHint()
 
+  // In bulk mode the General tab (number/password/name) is per-row, not shared,
+  // so it's hidden — the wizard walks the remaining shared-settings tabs.
+  const visibleTabs = bulkMode ? TABS.filter(t => t.id !== 'general') : TABS
+
   return (
     <div className="flex flex-col h-full min-h-0">
-      <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
+      <TabBar tabs={visibleTabs} active={activeTab} onChange={setActiveTab} />
 
       <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-5">
         {formError && (
@@ -1223,6 +1230,8 @@ function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant, ringGro
   const ok  = results.filter(r => r.status === 'ok').length
   const bad = results.filter(r => r.status === 'error').length
   const isWide = step === 'settings'
+  // Current position within the shared-settings tab wizard.
+  const bulkTabIdx = Math.max(0, BULK_TABS.findIndex(t => t.id === activeTab))
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
@@ -1411,12 +1420,26 @@ function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant, ringGro
           <Button variant="ghost" onClick={() => { onClose(); if (step === 'done') onDone() }}>
             {step === 'done' ? 'Close' : 'Cancel'}
           </Button>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-3">
+            {step === 'settings' && (
+              <span className="text-xs text-muted-foreground">
+                Step {bulkTabIdx + 1} of {BULK_TABS.length}
+              </span>
+            )}
+            <div className="flex gap-2">
             {step === 'review' && (
               <Button variant="outline" onClick={() => setStep('input')}>← Back</Button>
             )}
+            {/* In the settings wizard, Back walks tabs and steps out to review on the first tab. */}
             {step === 'settings' && (
-              <Button variant="outline" onClick={() => setStep('review')}>← Back</Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (bulkTabIdx > 0) setActiveTab(BULK_TABS[bulkTabIdx - 1].id)
+                  else setStep('review')
+                }}>
+                ← Back
+              </Button>
             )}
             {step === 'input' && (
               <Button onClick={buildPreview} disabled={checkingAvail}>
@@ -1425,18 +1448,26 @@ function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant, ringGro
               </Button>
             )}
             {step === 'review' && (
-              <Button onClick={() => setStep('settings')} disabled={toCreate.length === 0}>
+              <Button onClick={() => { setActiveTab(BULK_TABS[0].id); setStep('settings') }} disabled={toCreate.length === 0}>
                 Configure Settings →
               </Button>
             )}
+            {/* Walk the shared-settings tabs with Next; only the final tab creates. */}
             {step === 'settings' && (
-              <Button onClick={handleCreate} disabled={toCreate.length === 0}>
-                Create {toCreate.length} Extension{toCreate.length !== 1 ? 's' : ''}
-              </Button>
+              bulkTabIdx < BULK_TABS.length - 1 ? (
+                <Button onClick={() => setActiveTab(BULK_TABS[bulkTabIdx + 1].id)}>
+                  Next →
+                </Button>
+              ) : (
+                <Button onClick={handleCreate} disabled={toCreate.length === 0}>
+                  Create {toCreate.length} Extension{toCreate.length !== 1 ? 's' : ''}
+                </Button>
+              )
             )}
             {step === 'done' && ok > 0 && (
               <Button onClick={() => { onClose(); onDone() }}>Done</Button>
             )}
+            </div>
           </div>
         </div>
       </DialogContent>

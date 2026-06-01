@@ -376,6 +376,7 @@ class FaxQuickSendView(APIView):
             direction='outbound',
             fax_file_status='pending',
             fax_file_destination_number=destination_number,
+            fax_file_caller_id_name=caller_id_name,
             fax_file_caller_id_number=caller_id_number,
             fax_file_date=timezone.now(),
         )

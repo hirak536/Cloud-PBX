@@ -580,8 +580,16 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
     # Capture the original DID for the fax webhook
     etree.SubElement(cond, 'action', application='set', data='fax_did_number=${destination_number}')
 
-    # Fax detection on answered call: start spandsp after the bridge answers so the
-    # channel is fully established. execute_on_fax_detect fires if CNG is heard.
+    # Fax detection on a shared voice+fax DID.
+    #
+    # The inbound (DID) leg is only "answered" when a human picks up the
+    # bridged extension. A calling fax machine never triggers that, so an
+    # execute_on_answer trigger would never fire — the call just rings until
+    # the carrier CANCELs. Instead we pre_answer the inbound leg to establish
+    # early media, then start spandsp fax detection on that media (via
+    # execute_on_media) BEFORE the extension answers. If CNG is heard,
+    # execute_on_fax_detect transfers to rxfax; if a human answers, the bridge
+    # proceeds normally and rxfax's spandsp_stop_fax_detect cleans up.
     if dest.fax_id and dest.fax_receive and dest.dest_type != 'fax':
         fax_box = dest.fax
         tenant_code = fax_box.tenant.tenant_code if fax_box.tenant else None
@@ -590,10 +598,14 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
             cond, 'action', application='set',
             data=f'execute_on_fax_detect=transfer rxfax_{fax_box.fax_extension} XML {fax_ctx}',
         )
+        # Start fax detect as soon as media (including early media) is up.
         etree.SubElement(
             cond, 'action', application='set',
-            data='execute_on_answer=spandsp_start_fax_detect',
+            data='execute_on_media=spandsp_start_fax_detect',
         )
+        # Establish early media on the inbound leg so spandsp has audio to
+        # listen to while the extension is still ringing.
+        etree.SubElement(cond, 'action', application='pre_answer')
 
     # Optional call enhancements
     if dest.destination_cid_name_prefix:
