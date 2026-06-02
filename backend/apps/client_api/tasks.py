@@ -55,15 +55,16 @@ def fire_webhook_event(self, tenant_id, event, object_id, inline_data=None):
         return
 
     payload = _build_payload(event, tenant.tenant_code, tenant.tenant_uuid, object_id, inline_data)
-    payload_bytes = json.dumps(payload, default=str).encode('utf-8')
 
     for api_key in keys:
-        delivery = WebhookDelivery.objects.create(
-            api_key=api_key,
-            event=event,
-            payload=payload,
-        )
-        _deliver_webhook.delay(str(delivery.id))
+        for url in api_key.webhook_urls:
+            delivery = WebhookDelivery.objects.create(
+                api_key=api_key,
+                url=url,
+                event=event,
+                payload=payload,
+            )
+            _deliver_webhook.delay(str(delivery.id))
 
 
 @shared_task(bind=True, name='client_api.deliver_webhook', max_retries=MAX_ATTEMPTS - 1)
@@ -76,9 +77,10 @@ def _deliver_webhook(self, delivery_id):
         return
 
     api_key = delivery.api_key
-    if not api_key.is_active or not api_key.webhook_url:
+    url = delivery.url
+    if not api_key.is_active or not url:
         delivery.status = WebhookDelivery.STATUS_FAILED
-        delivery.last_error = 'API key inactive or no webhook_url.'
+        delivery.last_error = 'API key inactive or no webhook URL.'
         delivery.save(update_fields=['status', 'last_error'])
         return
 
@@ -99,11 +101,11 @@ def _deliver_webhook(self, delivery_id):
     delivery.attempts += 1
     logger.info(
         'Webhook delivery %s attempt %d: event=%s url=%s',
-        delivery_id, delivery.attempts, delivery.event, api_key.webhook_url,
+        delivery_id, delivery.attempts, delivery.event, url,
     )
     try:
         resp = requests.post(
-            api_key.webhook_url,
+            url,
             data=payload_bytes,
             headers=headers,
             timeout=10,
@@ -115,21 +117,21 @@ def _deliver_webhook(self, delivery_id):
             delivery.save(update_fields=['status', 'attempts', 'last_response_code', 'delivered_at'])
             logger.info(
                 'Webhook delivery %s succeeded: event=%s url=%s status=%d',
-                delivery_id, delivery.event, api_key.webhook_url, resp.status_code,
+                delivery_id, delivery.event, url, resp.status_code,
             )
             return
         else:
             delivery.last_error = f'HTTP {resp.status_code}'
             logger.warning(
                 'Webhook delivery %s failed: event=%s url=%s status=%d',
-                delivery_id, delivery.event, api_key.webhook_url, resp.status_code,
+                delivery_id, delivery.event, url, resp.status_code,
             )
     except requests.RequestException as exc:
         delivery.last_error = str(exc)
         delivery.last_response_code = None
         logger.warning(
             'Webhook delivery %s error: event=%s url=%s error=%s',
-            delivery_id, delivery.event, api_key.webhook_url, exc,
+            delivery_id, delivery.event, url, exc,
         )
 
     delivery.save(update_fields=['status', 'attempts', 'last_response_code', 'last_error'])

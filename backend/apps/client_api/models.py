@@ -19,9 +19,14 @@ class TenantAPIKey(models.Model):
     expires_at = models.DateField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
 
-    # Webhook config
-    webhook_url = models.URLField(max_length=512, blank=True)
+    # Webhook config — accepts one URL or multiple URLs separated by commas; all receive events.
+    webhook_url = models.TextField(blank=True, default='')
     webhook_secret = models.CharField(max_length=256, blank=True)
+
+    @property
+    def webhook_urls(self):
+        """Return configured webhook URL(s) as a clean list."""
+        return [u.strip() for u in (self.webhook_url or '').split(',') if u.strip()]
 
     # Key stored as SHA-256 hash; plaintext shown only once on generation
     key_hash = models.CharField(max_length=64, unique=True, db_index=True)
@@ -124,6 +129,7 @@ class WebhookDelivery(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     api_key = models.ForeignKey(TenantAPIKey, on_delete=models.CASCADE, related_name='deliveries')
+    url = models.TextField(blank=True, default='')
     event = models.CharField(max_length=64)
     payload = models.JSONField()
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)

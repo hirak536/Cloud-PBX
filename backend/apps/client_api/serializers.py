@@ -142,7 +142,7 @@ class ClientCDRSerializer(serializers.ModelSerializer):
             'INVALID_CALL_REFERENCE', 'INCOMPATIBLE_DESTINATION', 'INTERWORKING',
             'CRASH', 'SYSTEM_SHUTDOWN', 'LOSE_RACE', 'MANAGER_REQUEST',
             'USER_CHALLENGE', 'MEDIA_TIMEOUT', 'PICKED_OFF',
-            'PROGRESS_TIMEOUT', 'GATEWAY_DOWN',
+            'PROGRESS_TIMEOUT', 'GATEWAY_DOWN', 'NORMAL_TEMPORARY_FAILURE',
         ):
             return 'FAILED'
 

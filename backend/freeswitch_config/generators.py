@@ -599,21 +599,31 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
     #     as a regular voice call.
     # The tradeoff is that voice callers wait FAX_DETECT_WINDOW_MS after answer
     # before the phone starts ringing.
-    FAX_DETECT_WINDOW_MS = 4000
     if dest.fax_id and dest.fax_receive and dest.dest_type != 'fax':
         fax_box = dest.fax
         tenant_code = fax_box.tenant.tenant_code if fax_box.tenant else None
         fax_ctx = f'default-{tenant_code}' if tenant_code else 'public'
+        # Shared voice+fax detection:
+        # 1. Answer the inbound leg immediately so the fax machine gets live
+        #    media and starts T.30 negotiation (produces detectable tone).
+        # 2. Start spandsp fax detection.
+        # 3. Sleep for a detection window — execute_on_fax_detect fires
+        #    asynchronously mid-sleep if fax tone is heard, transferring to
+        #    rxfax BEFORE the sleep completes (extension never rings).
+        # 4. After the window, stop detection and let the call fall through
+        #    to the routing actions below, which ring the extension normally.
+        # Voice callers wait FAX_DETECT_WINDOW_MS before the phone rings.
+        # Do NOT call spandsp_stop_fax_detect before the routing actions —
+        # that races against a late-firing execute_on_fax_detect and can
+        # cancel detection just as the tone is being confirmed.
+        FAX_DETECT_WINDOW_MS = 4000
         etree.SubElement(
             cond, 'action', application='set',
             data=f'execute_on_fax_detect=transfer rxfax_{fax_box.fax_extension} XML {fax_ctx}',
         )
-        # Answer so spandsp has live media, detect for a bounded window, then
-        # stop detection before the call falls through to ring the extension.
         etree.SubElement(cond, 'action', application='answer')
         etree.SubElement(cond, 'action', application='spandsp_start_fax_detect')
         etree.SubElement(cond, 'action', application='sleep', data=str(FAX_DETECT_WINDOW_MS))
-        etree.SubElement(cond, 'action', application='spandsp_stop_fax_detect')
 
     # Optional call enhancements
     if dest.destination_cid_name_prefix:
