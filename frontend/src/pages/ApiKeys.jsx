@@ -8,7 +8,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Plus, Pencil, Trash2, Loader2, Key, Eye, EyeOff, Copy, Check } from 'lucide-react'
+import { Plus, Pencil, Trash2, Loader2, Key, Eye, EyeOff, Copy, Check, X } from 'lucide-react'
 
 const EMPTY = {
   tenant: '',
@@ -16,6 +16,11 @@ const EMPTY = {
   expires_at: '',
   webhook_url: '',
   webhook_secret: '',
+}
+
+function urlsToList(csv) {
+  const urls = (csv || '').split(',').map(u => u.trim()).filter(Boolean)
+  return urls.length ? urls : ['']
 }
 
 export default function ApiKeys() {
@@ -32,6 +37,7 @@ export default function ApiKeys() {
   const [newKey, setNewKey] = useState(null)
   const [copied, setCopied] = useState(false)
   const [showSecret, setShowSecret] = useState(false)
+  const [webhookUrls, setWebhookUrls] = useState([''])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -54,6 +60,7 @@ export default function ApiKeys() {
   const openCreate = () => {
     setEditId(null)
     setForm(EMPTY)
+    setWebhookUrls([''])
     setFormError('')
     setShowSecret(false)
     setDialogOpen(true)
@@ -69,6 +76,7 @@ export default function ApiKeys() {
       webhook_secret: '',
       is_active: r.is_active,
     })
+    setWebhookUrls(urlsToList(r.webhook_url))
     setFormError('')
     setShowSecret(false)
     setDialogOpen(true)
@@ -77,16 +85,17 @@ export default function ApiKeys() {
   const handleSave = async () => {
     if (!form.tenant && !editId) { setFormError('Tenant is required.'); return }
     if (!form.label) { setFormError('Label is required.'); return }
+    const joinedUrls = webhookUrls.map(u => u.trim()).filter(Boolean).join(',')
     setSaving(true); setFormError('')
     try {
       if (editId) {
-        const payload = { label: form.label, expires_at: form.expires_at || null, webhook_url: form.webhook_url }
+        const payload = { label: form.label, expires_at: form.expires_at || null, webhook_url: joinedUrls }
         if (form.webhook_secret) payload.webhook_secret = form.webhook_secret
         await clientApiKeys.update(editId, payload)
         setDialogOpen(false)
         load()
       } else {
-        const payload = { ...form, expires_at: form.expires_at || null }
+        const payload = { ...form, webhook_url: joinedUrls, expires_at: form.expires_at || null }
         const { data } = await clientApiKeys.create(payload)
         setDialogOpen(false)
         load()
@@ -239,8 +248,36 @@ export default function ApiKeys() {
               <Input type="date" value={form.expires_at} onChange={f('expires_at')} />
             </div>
             <div className="space-y-1.5">
-              <Label>Webhook URL</Label>
-              <Input placeholder="https://yourserver.com/webhook" value={form.webhook_url} onChange={f('webhook_url')} />
+              <div className="flex items-center justify-between">
+                <Label>Webhook URLs</Label>
+                <button
+                  type="button"
+                  className="text-xs text-primary hover:underline flex items-center gap-1"
+                  onClick={() => setWebhookUrls(u => [...u, ''])}
+                >
+                  <Plus className="h-3 w-3" /> Add URL
+                </button>
+              </div>
+              <div className="space-y-2">
+                {webhookUrls.map((url, i) => (
+                  <div key={i} className="flex gap-1.5">
+                    <Input
+                      placeholder="https://yourserver.com/webhook"
+                      value={url}
+                      onChange={e => setWebhookUrls(u => u.map((v, j) => j === i ? e.target.value : v))}
+                    />
+                    {webhookUrls.length > 1 && (
+                      <button
+                        type="button"
+                        className="text-muted-foreground hover:text-destructive shrink-0"
+                        onClick={() => setWebhookUrls(u => u.filter((_, j) => j !== i))}
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label>{editId ? 'Webhook Secret (leave blank to keep unchanged)' : 'Webhook Secret'}</Label>

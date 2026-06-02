@@ -33,7 +33,7 @@ class WebhookDeliveryAdmin(admin.ModelAdmin):
     list_filter = ['status', 'event', 'api_key__tenant']
     search_fields = ['event', 'api_key__label', 'api_key__tenant__tenant_code', 'last_error']
     ordering = ['-created_at']
-    readonly_fields = ['id', 'api_key', 'event', 'payload', 'status', 'attempts', 'last_response_code', 'last_error', 'created_at', 'delivered_at']
+    readonly_fields = ['id', 'api_key', 'url', 'event', 'payload', 'status', 'attempts', 'last_response_code', 'last_error', 'created_at', 'delivered_at']
     actions = ['retry_delivery']
 
     def status_badge(self, obj):
