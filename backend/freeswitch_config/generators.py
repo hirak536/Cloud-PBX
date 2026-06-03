@@ -1583,7 +1583,8 @@ def _resolve_cf_dest(cf, when, domain_name, ctx, preload=None):
     return [('hangup', 'NORMAL_CLEARING')]
 
 
-def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', caller_id_name=''):
+def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', caller_id_name='',
+                          requested_context=''):
     """
     Generate dialplan XML for FreeSWITCH.
 
@@ -1591,6 +1592,14 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
       1. public  context — auto-generated from Destination records (inbound DIDs)
       2. any     context — manual Dialplan records (admin-managed raw XML)
       3. default context — auto-generated from Extension records (local routing)
+
+    ``requested_context`` is the ``Caller-Context`` FreeSWITCH sent. FreeSWITCH
+    only ever consumes the single context it asked for, so we prune all other
+    contexts from the final response. This keeps the payload small — a full
+    multi-tenant dialplan exceeds mod_xml_curl's ~1 MB hard limit, which causes
+    FreeSWITCH to discard the ENTIRE response and fail every call. We always
+    keep ``public`` as well, since inbound carrier calls arrive via the external
+    profile in the public context regardless of which context was requested.
     """
     from apps.dialplans.models import Dialplan
     from apps.destinations.models import Destination
@@ -2062,6 +2071,17 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
         get_or_create_context(ctx_name).append(
             _call_parking_slot_to_dialplan_xml(slot_obj, slot_domain_name, tenant_code)
         )
+
+    # ── Prune to only the requested context (+ public) ───────────────────
+    # FreeSWITCH consumes a single context per dialplan fetch. Returning every
+    # context bloats the response past mod_xml_curl's ~1 MB limit, which makes
+    # FreeSWITCH discard the whole thing and 404 the call. Keep only what the
+    # request needs.
+    if requested_context:
+        keep = {requested_context, 'public'}
+        for ctx in list(section.findall('context')):
+            if ctx.get('name') not in keep:
+                section.remove(ctx)
 
     if not len(section):
         return not_found_xml()

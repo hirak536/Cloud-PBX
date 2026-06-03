@@ -63,10 +63,16 @@ class XmlCurlView(View):
                 destination = request.POST.get('Caller-Destination-Number', '')
                 caller_id = request.POST.get('Caller-Caller-ID-Number', '')
                 caller_name = request.POST.get('Caller-Caller-ID-Name', '')
-                cache_key = f'dialplan:xml:{domain}'
+                # FreeSWITCH only consumes the context it asked for. Scope the
+                # generated dialplan to that context so the response stays well
+                # under mod_xml_curl's ~1 MB cap (an unscoped multi-tenant
+                # dialplan exceeds it and FreeSWITCH discards the whole reply).
+                req_context = request.POST.get('Caller-Context', '')
+                cache_key = f'dialplan:xml:{domain}:{req_context}'
                 xml = cache.get(cache_key)
                 if xml is None:
-                    xml = generate_dialplan_xml(domain, destination, caller_id, caller_name)
+                    xml = generate_dialplan_xml(domain, destination, caller_id, caller_name,
+                                                requested_context=req_context)
                     try:
                         cache.set(cache_key, xml, timeout=3600)
                     except Exception:
