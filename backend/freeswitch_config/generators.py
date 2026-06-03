@@ -1593,13 +1593,16 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
       2. any     context — manual Dialplan records (admin-managed raw XML)
       3. default context — auto-generated from Extension records (local routing)
 
-    ``requested_context`` is the ``Caller-Context`` FreeSWITCH sent. FreeSWITCH
-    only ever consumes the single context it asked for, so we prune all other
-    contexts from the final response. This keeps the payload small — a full
-    multi-tenant dialplan exceeds mod_xml_curl's ~1 MB hard limit, which causes
-    FreeSWITCH to discard the ENTIRE response and fail every call. We always
-    keep ``public`` as well, since inbound carrier calls arrive via the external
-    profile in the public context regardless of which context was requested.
+    ``requested_context`` is the context(s) the call needs — a single string or
+    a list. It should include both the ``Caller-Context`` FreeSWITCH sent AND
+    the channel's ``user_context`` (default-<tenant>), because profiles such as
+    ``webrtc`` enter via a static context (``public``) while authenticated calls
+    actually route in their per-tenant context. We prune all other contexts from
+    the response. This keeps the payload small — a full multi-tenant dialplan
+    exceeds mod_xml_curl's ~1 MB hard limit, which causes FreeSWITCH to discard
+    the ENTIRE response and fail every call. ``public`` is always kept, since
+    inbound carrier calls arrive there via the external profile regardless of
+    which context was requested.
     """
     from apps.dialplans.models import Dialplan
     from apps.destinations.models import Destination
@@ -2078,7 +2081,15 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
     # FreeSWITCH discard the whole thing and 404 the call. Keep only what the
     # request needs.
     if requested_context:
-        keep = {requested_context, 'public'}
+        # Accept a single context string or a list of contexts to keep.
+        if isinstance(requested_context, str):
+            requested = {requested_context}
+        else:
+            requested = {c for c in requested_context if c}
+        # Always keep 'public' — inbound carrier calls arrive there via the
+        # external profile, and webrtc/other profiles enter via 'public' before
+        # routing into the caller's per-tenant context.
+        keep = requested | {'public'}
         for ctx in list(section.findall('context')):
             if ctx.get('name') not in keep:
                 section.remove(ctx)

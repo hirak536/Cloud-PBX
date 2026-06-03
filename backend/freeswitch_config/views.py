@@ -68,11 +68,18 @@ class XmlCurlView(View):
                 # under mod_xml_curl's ~1 MB cap (an unscoped multi-tenant
                 # dialplan exceeds it and FreeSWITCH discards the whole reply).
                 req_context = request.POST.get('Caller-Context', '')
-                cache_key = f'dialplan:xml:{domain}:{req_context}'
+                # Some profiles (e.g. webrtc) enter via a static context like
+                # 'public', but authenticated calls actually route in the user's
+                # per-tenant context (variable_user_context = default-<tenant>).
+                # Keep BOTH so the call can reach tenant routing — otherwise
+                # WebRTC/public-entry calls lose their extension/outbound routes.
+                user_context = request.POST.get('variable_user_context', '')
+                keep_contexts = [c for c in (req_context, user_context) if c]
+                cache_key = f'dialplan:xml:{domain}:{":".join(keep_contexts)}'
                 xml = cache.get(cache_key)
                 if xml is None:
                     xml = generate_dialplan_xml(domain, destination, caller_id, caller_name,
-                                                requested_context=req_context)
+                                                requested_context=keep_contexts)
                     try:
                         cache.set(cache_key, xml, timeout=3600)
                     except Exception:
