@@ -660,19 +660,24 @@ class ClientFaxQuickSendView(APIView):
         import os, re as _re
         from django.utils import timezone as dj_tz
         from apps.fax.utils import pdf_to_tiff
-        from apps.fax.views import _resolve_gateway
+        from apps.fax.views import _resolve_gateway, _normalize_destination
 
         tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
         fax_uuid = request.data.get('fax_uuid', '').strip()
-        destination_number = (request.data.get('destination_number') or '').strip()
+        destination_raw = (request.data.get('destination_number') or '').strip()
         file_obj = request.FILES.get('file')
         gateway_input = request.data.get('gateway', '').strip()
         sender_number = request.data.get('sender_number', '').strip()
 
         if not fax_uuid:
             raise ValidationError({'fax_uuid': 'This field is required.'})
-        if not destination_number:
+        if not destination_raw:
             raise ValidationError({'destination_number': 'This field is required.'})
+        # Normalize to E.164 (+1XXXXXXXXXX) — the gateway rejects bare 10-digit
+        # numbers with UNALLOCATED_NUMBER.
+        destination_number, dest_err = _normalize_destination(destination_raw)
+        if dest_err:
+            raise ValidationError({'destination_number': dest_err})
         if not file_obj:
             raise ValidationError({'file': 'A PDF or TIFF file is required.'})
 
