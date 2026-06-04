@@ -594,6 +594,10 @@ class ClientFaxFileView(APIView):
         from rest_framework.pagination import PageNumberPagination
         tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
         qs = FaxFile.objects.filter(tenant=tenant).order_by('-fax_file_date')
+        # Filter to a specific fax box (?fax=<fax_uuid>).
+        fax_filter = request.query_params.get('fax')
+        if fax_filter:
+            qs = qs.filter(fax_id=fax_filter)
         status_filter = request.query_params.get('status')
         if status_filter:
             qs = qs.filter(fax_file_status=status_filter)
@@ -612,8 +616,11 @@ class ClientFaxFileView(APIView):
                 Q(fax_file_destination_number__icontains=search) |
                 Q(fax_file_name__icontains=search)
             )
-        # Compute counts on the unfiltered tenant queryset
+        # Counts ignore status/direction/search/destination filters but respect
+        # the fax box filter so the summary matches the selected box.
         all_qs = FaxFile.objects.filter(tenant=tenant)
+        if fax_filter:
+            all_qs = all_qs.filter(fax_id=fax_filter)
         summary = {
             'total':    all_qs.count(),
             'pending':  all_qs.filter(fax_file_status='pending').count(),

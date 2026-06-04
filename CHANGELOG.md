@@ -16,6 +16,7 @@ Newest entries on top.
 - Inline fax box management and email editing on the Destinations page
 - Super Admins can now delete fax boxes
 - Fax box selection scoped per tenant
+- Client API: filter fax files by fax box (`?fax=<fax_uuid>`); summary counts respect the filter
 
 ### FreeSWITCH / Calls
 - Added support for local IP connections within FreeSWITCH
