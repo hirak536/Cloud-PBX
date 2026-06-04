@@ -538,15 +538,27 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+
+        # Optional tenant scoping via ?tenant=<uuid>, applied on top of the
+        # role-based queryset. Lets the Users page list only the selected
+        # tenant's users.
+        tenant_filter = self.request.query_params.get('tenant')
+
         if user.is_superuser:
-            return User.objects.select_related('tenant', 'domain').prefetch_related(
+            qs = User.objects.select_related('tenant', 'domain').prefetch_related(
                 'user_groups__group', 'admin_tenants'
             ).order_by('domain', 'username')
+            if tenant_filter:
+                qs = qs.filter(tenant_id=tenant_filter)
+            return qs
 
         if check_permission(user, 'domain_admin') and user.domain_id:
-            return User.objects.filter(domain_id=user.domain_id).select_related(
+            qs = User.objects.filter(domain_id=user.domain_id).select_related(
                 'tenant', 'domain'
             ).prefetch_related('user_groups__group', 'admin_tenants').order_by('username')
+            if tenant_filter:
+                qs = qs.filter(tenant_id=tenant_filter)
+            return qs
 
         # Regular users — return only themselves.
         return User.objects.filter(pk=user.pk).select_related('tenant', 'domain').prefetch_related(

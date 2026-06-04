@@ -960,11 +960,15 @@ export default function Users() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await api.list(debouncedSearch ? { search: debouncedSearch } : {})
+      // Scope the PBX user list to the active tenant.
+      const params = {}
+      if (debouncedSearch) params.search = debouncedSearch
+      if (currentTenant?.tenant_uuid) params.tenant = currentTenant.tenant_uuid
+      const { data } = await api.list(params)
       const all = Array.isArray(data) ? data : data.results || []
       setRows(all.filter(u => !u.is_superuser))
     } finally { setLoading(false) }
-  }, [debouncedSearch])
+  }, [debouncedSearch, currentTenant?.tenant_uuid])
 
   useEffect(() => { load() }, [load])
 
