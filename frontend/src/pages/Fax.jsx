@@ -151,10 +151,10 @@ function FaxBoxDialog({ open, onClose, editBox }) {
 // ─── FaxBoxes tab ────────────────────────────────────────────────────────────
 
 function FaxBoxes() {
-  // Only admins/superusers may create, edit, or delete fax boxes. Standard
-  // Fax box management lives in the DIDs page now. This tab is a read-only
-  // reference list (rendered only for superusers by the parent).
+  // Fax box create/edit lives in the DIDs page now, so this tab does not manage
+  // boxes. Superusers may still delete a box from this reference list.
   const canManage = false
+  const canDelete = roleOf(useSelector(selectAuth).user) === 'superuser'
   const [boxes, setBoxes]     = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch]   = useState('')
@@ -218,14 +218,14 @@ function FaxBoxes() {
                 <TableHead>Email</TableHead>
                 <TableHead>Caller ID</TableHead>
                 <TableHead>Status</TableHead>
-                {canManage && <TableHead className="w-24 text-right">Actions</TableHead>}
+                {(canManage || canDelete) && <TableHead className="w-24 text-right">Actions</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading
                 ? [...Array(4)].map((_, i) => (
                     <TableRow key={i}>
-                      {[...Array(canManage ? 6 : 5)].map((_, j) => (
+                      {[...Array((canManage || canDelete) ? 6 : 5)].map((_, j) => (
                         <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
                       ))}
                     </TableRow>
@@ -233,7 +233,7 @@ function FaxBoxes() {
                 : boxes.length === 0
                   ? (
                     <TableRow>
-                      <TableCell colSpan={canManage ? 6 : 5} className="py-16 text-center text-sm text-muted-foreground">
+                      <TableCell colSpan={(canManage || canDelete) ? 6 : 5} className="py-16 text-center text-sm text-muted-foreground">
                         {canManage
                           ? <>No fax boxes yet. Click <strong>New Fax Box</strong> to create one.</>
                           : 'No fax boxes available.'}
@@ -255,18 +255,22 @@ function FaxBoxes() {
                           {b.fax_enabled ? 'Enabled' : 'Disabled'}
                         </Badge>
                       </TableCell>
-                      {canManage && (
+                      {(canManage || canDelete) && (
                         <TableCell>
                           <div className="flex justify-end gap-1">
-                            <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit" onClick={() => openEdit(b)}>
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" title="Delete"
-                              disabled={deleting === b.fax_uuid} onClick={() => handleDelete(b)}>
-                              {deleting === b.fax_uuid
-                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                : <Trash2 className="h-3.5 w-3.5" />}
-                            </Button>
+                            {canManage && (
+                              <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit" onClick={() => openEdit(b)}>
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                            {canDelete && (
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" title="Delete"
+                                disabled={deleting === b.fax_uuid} onClick={() => handleDelete(b)}>
+                                {deleting === b.fax_uuid
+                                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  : <Trash2 className="h-3.5 w-3.5" />}
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                       )}
