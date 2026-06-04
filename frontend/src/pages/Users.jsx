@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useSelector } from 'react-redux'
 import { selectTenant, selectAuth } from '@/store'
 import { roleOf, creatableRoles, GRANTABLE_PAGES, GRANTABLE_PATHS } from '@/lib/permissions'
-import { users as api, tenants as tenantsApi, auth as authApi, ucUsers as ucUsersApi, extensions as extensionsApi, destinations as didsApi } from '@/api'
+import { users as api, tenants as tenantsApi, auth as authApi, ucUsers as ucUsersApi, extensions as extensionsApi, destinations as didsApi, fax as faxApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -37,6 +37,8 @@ const EMPTY_FORM = {
   role: 'user',
   admin_tenant_uuids: [],
   allowed_pages: [],
+  // [] = all fax boxes (no restriction); non-empty = only those fax box UUIDs.
+  allowed_fax_uuids: [],
 }
 
 function buildUsername(first, last) {
@@ -940,6 +942,8 @@ export default function Users() {
   const [loading, setLoading]      = useState(true)
   const [search, setSearch]        = useState('')
   const [allTenants, setAllTenants] = useState([])
+  const [faxBoxes, setFaxBoxes]     = useState([])
+  const [faxScope, setFaxScope]     = useState('all')  // 'all' | 'selected'
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId]        = useState(null)
   const [form, setForm]            = useState(EMPTY_FORM)
@@ -968,11 +972,19 @@ export default function Users() {
     }).catch(() => {})
   }, [])
 
+  // Fax boxes for the per-user fax-box picker (tenant-scoped by the backend).
+  useEffect(() => {
+    faxApi.list({ page_size: 500 }).then(({ data }) => {
+      setFaxBoxes(Array.isArray(data) ? data : data.results || [])
+    }).catch(() => {})
+  }, [currentTenant?.tenant_uuid])
+
   const f = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
 
   const openCreate = () => {
     setEditId(null)
     setForm({ ...EMPTY_FORM, role: allowedRoles[0] || 'user' })
+    setFaxScope('all')
     setFormError('')
     setDialogOpen(true)
   }
@@ -992,7 +1004,9 @@ export default function Users() {
       role: roleFromUser(r),
       admin_tenant_uuids: (r.admin_tenants || []).map(t => t.tenant_uuid),
       allowed_pages: Array.isArray(r.allowed_pages) ? r.allowed_pages : [],
+      allowed_fax_uuids: Array.isArray(r.allowed_fax_uuids) ? r.allowed_fax_uuids : [],
     })
+    setFaxScope((r.allowed_fax_uuids || []).length > 0 ? 'selected' : 'all')
     setFormError('')
     setDialogOpen(true)
   }
@@ -1022,6 +1036,15 @@ export default function Users() {
     }))
   }
 
+  const toggleFaxBox = (uuid) => {
+    setForm(p => ({
+      ...p,
+      allowed_fax_uuids: p.allowed_fax_uuids.includes(uuid)
+        ? p.allowed_fax_uuids.filter(x => x !== uuid)
+        : [...p.allowed_fax_uuids, uuid],
+    }))
+  }
+
   const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
   const handleSave = async () => {
@@ -1030,6 +1053,15 @@ export default function Users() {
     if (!EMAIL_RE.test(form.user_email)) { setFormError('Enter a valid email address.'); return }
     if (form.role === 'admin' && form.admin_tenant_uuids.length === 0) {
       setFormError('Select at least one tenant for Admin role.')
+      return
+    }
+    if (
+      form.role === 'user' &&
+      form.allowed_pages.includes('fax') &&
+      faxScope === 'selected' &&
+      form.allowed_fax_uuids.length === 0
+    ) {
+      setFormError('Select at least one fax box, or choose "All fax boxes".')
       return
     }
 
@@ -1045,6 +1077,12 @@ export default function Users() {
       admin_tenant_uuids: form.role === 'admin' ? form.admin_tenant_uuids : [],
       // Per-user page grants only apply to standard users; clear for admin/superuser.
       allowed_pages: form.role === 'user' ? form.allowed_pages : [],
+      // Fax-box scoping only applies to a standard user who has the Fax page granted
+      // and explicitly chose to restrict to selected boxes. Otherwise [] = all boxes.
+      allowed_fax_uuids:
+        form.role === 'user' && form.allowed_pages.includes('fax') && faxScope === 'selected'
+          ? form.allowed_fax_uuids
+          : [],
     }
 
     if (!editId) {
@@ -1217,7 +1255,7 @@ export default function Users() {
             <DialogClose onClose={() => setDialogOpen(false)} />
           </DialogHeader>
 
-          <div className="px-6 py-5 space-y-5">
+          <div className="px-6 py-5 space-y-5 max-h-[70vh] overflow-y-auto">
           {formError && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {formError}
@@ -1379,6 +1417,66 @@ export default function Users() {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {form.role === 'user' && form.allowed_pages.includes('fax') && (
+              <div className="space-y-1.5">
+                <Label>Fax Box Access</Label>
+                <p className="text-xs text-muted-foreground">
+                  Limit which fax boxes this user can see. Leave as <span className="font-medium text-foreground">All fax boxes</span> for no restriction.
+                </p>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2.5 rounded-md border px-3 py-2 cursor-pointer hover:bg-muted/40 select-none">
+                    <input
+                      type="radio"
+                      name="fax-scope"
+                      className="h-4 w-4 accent-primary"
+                      checked={faxScope === 'all'}
+                      onChange={() => { setFaxScope('all'); setForm(p => ({ ...p, allowed_fax_uuids: [] })) }}
+                    />
+                    <span className="text-sm font-medium">All fax boxes</span>
+                  </label>
+                  <label className="flex items-center gap-2.5 rounded-md border px-3 py-2 cursor-pointer hover:bg-muted/40 select-none">
+                    <input
+                      type="radio"
+                      name="fax-scope"
+                      className="h-4 w-4 accent-primary"
+                      checked={faxScope === 'selected'}
+                      onChange={() => setFaxScope('selected')}
+                    />
+                    <span className="text-sm font-medium">Only selected fax boxes</span>
+                  </label>
+                </div>
+                {faxScope === 'selected' && (
+                  faxBoxes.length === 0
+                    ? <p className="text-sm text-muted-foreground">No fax boxes available for this tenant.</p>
+                    : (
+                      <div className="border rounded-md max-h-44 overflow-y-auto divide-y">
+                        {faxBoxes.map(b => {
+                          const checked = form.allowed_fax_uuids.includes(b.fax_uuid)
+                          return (
+                            <label
+                              key={b.fax_uuid}
+                              className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/50 select-none"
+                            >
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 shrink-0 rounded border-input accent-primary"
+                                checked={checked}
+                                onChange={() => toggleFaxBox(b.fax_uuid)}
+                              />
+                              <span className="text-sm">{b.fax_name}</span>
+                              {b.fax_extension && (
+                                <span className="text-xs text-muted-foreground font-mono">{b.fax_extension}</span>
+                              )}
+                              {checked && <Check className="h-3.5 w-3.5 text-primary ml-auto shrink-0" />}
+                            </label>
+                          )
+                        })}
+                      </div>
+                    )
+                )}
               </div>
             )}
 

@@ -69,6 +69,13 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
             return FaxListSerializer
         return FaxSerializer
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        scope = self.request.user.fax_box_scope()
+        if scope is not None:
+            qs = qs.filter(fax_uuid__in=scope)
+        return qs
+
     @action(detail=True, methods=['post'], url_path='send')
     def send_fax(self, request, pk=None):
         """
@@ -216,6 +223,16 @@ class FaxFileViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
     search_fields = ['fax_file_name', 'fax_file_destination_number', 'fax_file_caller_id_number']
     ordering_fields = ['fax_file_date', 'insert_date']
     cache_timeout = 0  # Disable caching — quick-send writes bypass the mixin invalidation
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        # Restrict files to the user's allowed fax boxes (None = no restriction).
+        # download() bypasses get_permissions but still goes through get_queryset
+        # via get_object, so per-box scoping is enforced there too.
+        scope = getattr(self.request.user, 'fax_box_scope', lambda: None)()
+        if scope is not None:
+            qs = qs.filter(fax_id__in=scope)
+        return qs
 
     def get_permissions(self):
         # The download action performs its own JWT token validation via ?token= query param

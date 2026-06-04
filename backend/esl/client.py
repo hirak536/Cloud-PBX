@@ -107,7 +107,21 @@ class FreeSwitchESL:
         then normalise into the same JSON rows format.
         """
         import time
-        profiles = ['internal', 'external']
+        # Enumerate all enabled SIP profiles from the DB rather than a hardcoded
+        # list — WebRTC devices register on the 'webrtc' profile, which was
+        # previously omitted, so they never showed as online in the frontend.
+        try:
+            from apps.sip_profiles.models import SipProfile
+            profiles = list(
+                SipProfile.objects.filter(sip_profile_enabled=True)
+                .values_list('sip_profile_name', flat=True)
+            )
+        except Exception:
+            profiles = []
+        # Always include the core profiles as a fallback if the DB lookup is empty.
+        for default_profile in ('internal', 'external', 'webrtc'):
+            if default_profile not in profiles:
+                profiles.append(default_profile)
         rows = []
         seen = set()
         for profile in profiles:

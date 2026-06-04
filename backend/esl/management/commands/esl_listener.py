@@ -556,16 +556,32 @@ def _is_mobile_agent(agent: str) -> bool:
 def _get_registered_agents(sip_id: str, domain_name: str) -> list:
     """Return a list of user-agents for all active registrations of this SIP ID."""
     agents = []
+    import re
+    # Check every enabled profile — WebRTC devices register on the 'webrtc'
+    # profile, not 'internal', so a hardcoded profile would miss them.
     try:
-        raw = _esl_api(f'sofia status profile internal reg')
-        import re
-        for block in re.split(r'\n(?=Call-ID:)', raw):
-            if f'User: {sip_id}@{domain_name}' in block or f'User: {sip_id}@' in block:
-                for line in block.splitlines():
-                    if line.strip().startswith('Agent:'):
-                        agents.append(line.split(':', 1)[1].strip())
-    except Exception as exc:
-        logger.error('Failed to parse registered agents: %s', exc)
+        from apps.sip_profiles.models import SipProfile
+        profiles = list(
+            SipProfile.objects.filter(sip_profile_enabled=True)
+            .values_list('sip_profile_name', flat=True)
+        )
+    except Exception:
+        profiles = []
+    for default_profile in ('internal', 'external', 'webrtc'):
+        if default_profile not in profiles:
+            profiles.append(default_profile)
+    for profile in profiles:
+        try:
+            raw = _esl_api(f'sofia status profile {profile} reg')
+            if not raw or 'Invalid Profile' in raw:
+                continue
+            for block in re.split(r'\n(?=Call-ID:)', raw):
+                if f'User: {sip_id}@{domain_name}' in block or f'User: {sip_id}@' in block:
+                    for line in block.splitlines():
+                        if line.strip().startswith('Agent:'):
+                            agents.append(line.split(':', 1)[1].strip())
+        except Exception as exc:
+            logger.error('Failed to parse registered agents for profile %s: %s', profile, exc)
     return agents
 
 

@@ -385,6 +385,10 @@ class User(AbstractBaseUser):
     # and superusers get full role-based access regardless of this list.
     # Empty list = no extra pages granted; null/absent = treated as empty.
     allowed_pages = models.JSONField(default=list, blank=True)
+    # Per-user fax-box scoping. List of Fax box UUIDs (as strings) this user may
+    # see. Empty list = NO restriction (all fax boxes in their tenant). Only
+    # consulted for standard (non-staff) users; admins/superusers see all.
+    allowed_fax_uuids = models.JSONField(default=list, blank=True)
     insert_date = models.DateTimeField(auto_now_add=True, null=True)
     insert_user = models.UUIDField(null=True, blank=True)
     update_date = models.DateTimeField(auto_now=True, null=True)
@@ -420,6 +424,15 @@ class User(AbstractBaseUser):
                 permission_assigned=True,
             ).values_list('permission_name', flat=True)
         )
+
+    def fax_box_scope(self):
+        """Return the list of Fax box UUIDs this user is restricted to, or None
+        for no restriction. Admins/superusers and an empty list both mean None
+        (see all fax boxes in their tenant)."""
+        if self.is_staff or self.is_superuser:
+            return None
+        uuids = self.allowed_fax_uuids or []
+        return [str(u) for u in uuids] if uuids else None
 
 
 class UserGroup(models.Model):

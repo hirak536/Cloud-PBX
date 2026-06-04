@@ -273,6 +273,7 @@ class UserSerializer(serializers.ModelSerializer):
             'must_change_password',
             'admin_tenants',
             'allowed_pages',
+            'allowed_fax_uuids',
             'user_groups',
             'insert_date',
             'update_date',
@@ -329,6 +330,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             'must_change_password',
             'admin_tenant_uuids',
             'allowed_pages',
+            'allowed_fax_uuids',
         ]
         read_only_fields = ['user_uuid']
         # Disable auto-generated UniqueTogetherValidator for (tenant, username).
@@ -408,6 +410,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             'must_change_password',
             'admin_tenant_uuids',
             'allowed_pages',
+            'allowed_fax_uuids',
         ]
         read_only_fields = ['user_uuid']
         validators = []
@@ -593,6 +596,7 @@ class MeSerializer(serializers.ModelSerializer):
             'user_groups',
             'permissions',
             'allowed_pages',
+            'allowed_fax_uuids',
             'insert_date',
             'update_date',
         ]
