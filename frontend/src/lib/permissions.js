@@ -1,0 +1,107 @@
+// ── Page-based permissions ────────────────────────────────────────────────────
+// Single source of truth for what each role may see/do.
+// Role tiers (highest → lowest): superuser ⊃ admin ⊃ user.
+
+export function roleOf(user) {
+  if (user?.is_superuser) return 'superuser'
+  if (user?.is_staff) return 'admin'
+  return 'user'
+}
+
+// True if a user of `role` is allowed an item tagged with `requiredRole`.
+// Untagged items (requiredRole falsy) are visible to everyone.
+export function hasRole(role, requiredRole) {
+  if (!requiredRole) return true
+  if (requiredRole === 'superuser') return role === 'superuser'
+  if (requiredRole === 'admin') return role === 'superuser' || role === 'admin'
+  return true
+}
+
+// Minimum role required to access a given route path.
+// Paths not listed are open to any authenticated user.
+// Keep this in sync with the Sidebar nav `role` tags.
+export const PAGE_ROLES = {
+  'tenants':            'admin',
+  'audit-log':          'admin',
+  'super-users':        'superuser',
+  'tenant-list':        'superuser',
+  'domains':            'superuser',
+  'gateways':           'superuser',
+  'outbound-routes':    'superuser',
+  'firewall':           'superuser',
+  'global-active-calls':'superuser',
+  'freeswitch':         'superuser',
+  'freeswitch-log':     'superuser',
+  'api-keys':           'superuser',
+  'system-log':         'superuser',
+  'admin-cdr':          'superuser',
+  'admin-inventory':    'superuser',
+}
+
+// Which UC/PBX user roles a given role is allowed to create.
+// superuser → can create admins + users; admin → users only.
+export function creatableRoles(role) {
+  if (role === 'superuser') return ['superuser', 'admin', 'user']
+  if (role === 'admin') return ['user']
+  return []
+}
+
+// ── Per-user page grants ───────────────────────────────────────────────────────
+// Standard ('user') accounts only see pages explicitly granted to them via the
+// user's `allowed_pages` list. Admins/superusers ignore this list and get full
+// role-based access. The Dashboard is always available to everyone.
+//
+// GRANTABLE_PAGES is the catalog an admin can assign from — it is exactly the set
+// of pages NOT gated behind an admin/superuser role (i.e. not in PAGE_ROLES),
+// minus the always-on Dashboard. Each entry's `path` (without leading slash) is
+// what gets stored in allowed_pages. Keep labels/groups in sync with the Sidebar.
+export const GRANTABLE_PAGES = [
+  { group: 'Call Management', items: [
+    { path: 'extensions',          label: 'Extensions' },
+    { path: 'ring-groups',         label: 'Ring Groups' },
+    { path: 'ivr-menus',           label: 'IVR Menus' },
+    { path: 'call-flows',          label: 'Call Flows' },
+    { path: 'destinations',        label: 'DIDs' },
+    { path: 'custom-destinations', label: 'Custom Destinations' },
+    { path: 'working-hours',       label: 'Working Hours' },
+    { path: 'call-centers',        label: 'Call Centers' },
+  ]},
+  { group: 'Communication', items: [
+    { path: 'voicemails',          label: 'Voicemails' },
+    { path: 'voicemail-inbox',     label: 'Voicemail Inbox' },
+    { path: 'conferences',         label: 'Conferences' },
+    { path: 'call-parking',        label: 'Call Parking' },
+    { path: 'fax',                 label: 'Fax' },
+  ]},
+  { group: 'System', items: [
+    { path: 'media-files',         label: 'Media Files' },
+    { path: 'dialplans',           label: 'Dialplans' },
+    { path: 'devices',             label: 'Devices' },
+  ]},
+  { group: 'Reports', items: [
+    { path: 'cdr',                 label: 'Call Detail Records' },
+    { path: 'call-recordings',     label: 'Call Recordings' },
+    { path: 'stats-report',        label: 'Stats Report' },
+  ]},
+  { group: 'Monitoring', items: [
+    { path: 'active-calls',        label: 'Active Calls' },
+    { path: 'registrations',       label: 'Peer Status' },
+  ]},
+]
+
+// Flat list of all grantable page paths.
+export const GRANTABLE_PATHS = GRANTABLE_PAGES.flatMap(g => g.items.map(i => i.path))
+
+// True if `user` may access the route identified by `page` (path without slash).
+// - Role-gated pages (in PAGE_ROLES) use the role tier check.
+// - For standard users, other pages require an explicit grant in allowed_pages.
+// - Admins/superusers always pass non-role-gated pages.
+export function canAccessPage(user, page) {
+  const role = roleOf(user)
+  const required = PAGE_ROLES[page]
+  if (required) return hasRole(role, required)
+  if (role !== 'user') return true
+  // Standard user: only granted pages (Dashboard handled by caller / always-on).
+  const granted = Array.isArray(user?.allowed_pages) ? user.allowed_pages : []
+  return granted.includes(page)
+}

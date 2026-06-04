@@ -2,6 +2,7 @@ import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
 import { useSelector } from 'react-redux'
 import { selectTenant, selectAuth } from '@/store'
+import { roleOf, creatableRoles, GRANTABLE_PAGES, GRANTABLE_PATHS } from '@/lib/permissions'
 import { users as api, tenants as tenantsApi, auth as authApi, ucUsers as ucUsersApi, extensions as extensionsApi, destinations as didsApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -35,6 +36,7 @@ const EMPTY_FORM = {
   user_enabled: true,
   role: 'user',
   admin_tenant_uuids: [],
+  allowed_pages: [],
 }
 
 function buildUsername(first, last) {
@@ -70,8 +72,18 @@ function generatePassword() {
   return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
 }
 
+// Which UC user types a PBX role may create. UC types are named differently
+// (superadmin/admin/user) from PBX roles (superuser/admin/user).
+function creatableUcTypes(role) {
+  if (role === 'superuser') return ['superadmin', 'admin', 'user']
+  if (role === 'admin') return ['user']
+  return []
+}
+
 function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
   const { user: loggedInUser }      = useSelector(selectAuth)
+  const myRole                      = roleOf(loggedInUser)
+  const allowedUcTypes              = creatableUcTypes(myRole)
   const [rows, setRows]             = useState([])
   const [loading, setLoading]       = useState(false)
   const [error, setError]           = useState('')
@@ -269,7 +281,7 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
 
   const openAddUser = async () => {
     setEditUser(null)
-    setForm(EMPTY_UC_FORM)
+    setForm({ ...EMPTY_UC_FORM, userType: allowedUcTypes.length === 1 ? allowedUcTypes[0] : '' })
     setFormError('')
     setDialogOpen(true)
     setLoadingOpts(true)
@@ -590,13 +602,20 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
               <Label>User Type <span className="text-destructive">*</span></Label>
               <Select
                 value={form.userType}
+                disabled={!editUser && allowedUcTypes.length <= 1}
                 onChange={e => setForm(p => ({ ...p, userType: e.target.value }))}
               >
                 <option value="">Select user type</option>
-                {UC_USER_TYPES.map(t => (
+                {/* Editing shows all types; creating only those this user may assign. */}
+                {(editUser ? UC_USER_TYPES : UC_USER_TYPES.filter(t => allowedUcTypes.includes(t.value))).map(t => (
                   <option key={t.value} value={t.value}>{t.label}</option>
                 ))}
               </Select>
+              {!editUser && allowedUcTypes.length <= 1 && (
+                <p className="text-xs text-muted-foreground">
+                  You can only create standard users. Contact a super admin to create admins.
+                </p>
+              )}
             </div>
 
             {/* Active/Inactive toggle — only shown when editing */}
@@ -911,6 +930,10 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
 
 export default function Users() {
   const { currentTenant } = useSelector(selectTenant)
+  const { user: loggedInUser } = useSelector(selectAuth)
+  const myRole = roleOf(loggedInUser)
+  // Roles the logged-in user is allowed to create (superuser → all; admin → user only).
+  const allowedRoles = creatableRoles(myRole)
 
   const [activeTab, setActiveTab]  = useState('uc')
   const [rows, setRows]            = useState([])
@@ -949,7 +972,7 @@ export default function Users() {
 
   const openCreate = () => {
     setEditId(null)
-    setForm(EMPTY_FORM)
+    setForm({ ...EMPTY_FORM, role: allowedRoles[0] || 'user' })
     setFormError('')
     setDialogOpen(true)
   }
@@ -968,6 +991,7 @@ export default function Users() {
       user_enabled: r.user_enabled !== false,
       role: roleFromUser(r),
       admin_tenant_uuids: (r.admin_tenants || []).map(t => t.tenant_uuid),
+      allowed_pages: Array.isArray(r.allowed_pages) ? r.allowed_pages : [],
     })
     setFormError('')
     setDialogOpen(true)
@@ -979,6 +1003,22 @@ export default function Users() {
       admin_tenant_uuids: p.admin_tenant_uuids.includes(uuid)
         ? p.admin_tenant_uuids.filter(id => id !== uuid)
         : [...p.admin_tenant_uuids, uuid],
+    }))
+  }
+
+  const togglePage = (path) => {
+    setForm(p => ({
+      ...p,
+      allowed_pages: p.allowed_pages.includes(path)
+        ? p.allowed_pages.filter(x => x !== path)
+        : [...p.allowed_pages, path],
+    }))
+  }
+
+  const toggleAllPages = () => {
+    setForm(p => ({
+      ...p,
+      allowed_pages: p.allowed_pages.length === GRANTABLE_PATHS.length ? [] : [...GRANTABLE_PATHS],
     }))
   }
 
@@ -1003,6 +1043,8 @@ export default function Users() {
       is_superuser: form.role === 'superuser',
       is_staff: form.role === 'superuser' || form.role === 'admin',
       admin_tenant_uuids: form.role === 'admin' ? form.admin_tenant_uuids : [],
+      // Per-user page grants only apply to standard users; clear for admin/superuser.
+      allowed_pages: form.role === 'user' ? form.allowed_pages : [],
     }
 
     if (!editId) {
@@ -1240,12 +1282,20 @@ export default function Users() {
               <Label>Role <span className="text-destructive">*</span></Label>
               <Select
                 value={form.role}
+                disabled={!editId && allowedRoles.length <= 1}
                 onChange={(e) => setForm(p => ({ ...p, role: e.target.value, admin_tenant_uuids: [] }))}
               >
-                {ROLES.map(r => (
+                {/* When editing, show every role so the saved value renders.
+                    When creating, only show roles this user may assign. */}
+                {(editId ? ROLES : ROLES.filter(r => allowedRoles.includes(r.value))).map(r => (
                   <option key={r.value} value={r.value}>{r.label} — {r.description}</option>
                 ))}
               </Select>
+              {!editId && allowedRoles.length <= 1 && (
+                <p className="text-xs text-muted-foreground">
+                  You can only create standard users. Contact a super admin to create admins.
+                </p>
+              )}
             </div>
 
             {form.role === 'superuser' && (
@@ -1284,6 +1334,51 @@ export default function Users() {
                       })}
                     </div>
                   )}
+              </div>
+            )}
+
+            {form.role === 'user' && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label>Page Access</Label>
+                  <button
+                    type="button"
+                    onClick={toggleAllPages}
+                    className="text-[11px] font-medium text-primary hover:underline"
+                  >
+                    {form.allowed_pages.length === GRANTABLE_PATHS.length ? 'Clear all' : 'Select all'}
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Choose which pages this user can see. The Dashboard is always available.
+                </p>
+                <div className="border rounded-md max-h-60 overflow-y-auto divide-y">
+                  {GRANTABLE_PAGES.map(group => (
+                    <div key={group.group}>
+                      <div className="px-3 py-1.5 bg-muted/40 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                        {group.group}
+                      </div>
+                      {group.items.map(item => {
+                        const checked = form.allowed_pages.includes(item.path)
+                        return (
+                          <label
+                            key={item.path}
+                            className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/50 select-none"
+                          >
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 shrink-0 rounded border-input accent-primary"
+                              checked={checked}
+                              onChange={() => togglePage(item.path)}
+                            />
+                            <span className="text-sm">{item.label}</span>
+                            {checked && <Check className="h-3.5 w-3.5 text-primary ml-auto shrink-0" />}
+                          </label>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 

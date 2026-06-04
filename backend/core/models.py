@@ -381,6 +381,10 @@ class User(AbstractBaseUser):
     )
     full_name = models.CharField(max_length=256, blank=True, default='')
     must_change_password = models.BooleanField(default=False)
+    # Per-user page grants. Only consulted for standard (non-staff) users; admins
+    # and superusers get full role-based access regardless of this list.
+    # Empty list = no extra pages granted; null/absent = treated as empty.
+    allowed_pages = models.JSONField(default=list, blank=True)
     insert_date = models.DateTimeField(auto_now_add=True, null=True)
     insert_user = models.UUIDField(null=True, blank=True)
     update_date = models.DateTimeField(auto_now=True, null=True)

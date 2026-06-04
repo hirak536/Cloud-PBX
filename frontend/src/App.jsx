@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { useSelector } from 'react-redux'
 import { selectAuth } from '@/store'
+import { canAccessPage } from '@/lib/permissions'
 import LiveProvider from '@/providers/LiveProvider'
 import AppLayout from '@/components/AppLayout'
 import IdleLogout from '@/components/IdleLogout'
@@ -63,6 +64,25 @@ function RequireAuth({ children }) {
   return children
 }
 
+// Guards a route by role tier AND per-user page grants. Blocks direct URL access
+// for users who lack access and bounces them back to the dashboard.
+function RequirePage({ page, children }) {
+  const { user } = useSelector(selectAuth)
+  if (!canAccessPage(user, page)) {
+    return <Navigate to="/" replace />
+  }
+  return children
+}
+
+// Wrap a lazy page element with a Suspense fallback and a page-access guard.
+function page(name, Element) {
+  return (
+    <RequirePage page={name}>
+      <Suspense fallback={<PageLoader />}><Element /></Suspense>
+    </RequirePage>
+  )
+}
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -83,44 +103,44 @@ export default function App() {
           }
         >
           <Route index element={<Suspense fallback={<PageLoader />}><Dashboard /></Suspense>} />
-          <Route path="extensions"         element={<Suspense fallback={<PageLoader />}><Extensions /></Suspense>} />
-          <Route path="ring-groups"        element={<Suspense fallback={<PageLoader />}><RingGroups /></Suspense>} />
-          <Route path="ivr-menus"          element={<Suspense fallback={<PageLoader />}><IvrMenus /></Suspense>} />
-          <Route path="call-flows"         element={<Suspense fallback={<PageLoader />}><CallFlows /></Suspense>} />
-          <Route path="destinations"       element={<Suspense fallback={<PageLoader />}><Destinations /></Suspense>} />
-          <Route path="working-hours"      element={<Suspense fallback={<PageLoader />}><WorkingHours /></Suspense>} />
-          <Route path="custom-destinations" element={<Suspense fallback={<PageLoader />}><CustomDestinations /></Suspense>} />
-          <Route path="call-centers"       element={<Suspense fallback={<PageLoader />}><CallCenters /></Suspense>} />
-          <Route path="voicemails"         element={<Suspense fallback={<PageLoader />}><Voicemails /></Suspense>} />
-          <Route path="voicemail-inbox"    element={<Suspense fallback={<PageLoader />}><VoicemailInbox /></Suspense>} />
-          <Route path="conferences"        element={<Suspense fallback={<PageLoader />}><Conferences /></Suspense>} />
-          <Route path="call-parking"       element={<Suspense fallback={<PageLoader />}><CallParking /></Suspense>} />
-          <Route path="fax"                element={<Suspense fallback={<PageLoader />}><Fax /></Suspense>} />
-          <Route path="gateways"           element={<Suspense fallback={<PageLoader />}><Gateways /></Suspense>} />
-          <Route path="outbound-routes"    element={<Suspense fallback={<PageLoader />}><OutboundRoutes /></Suspense>} />
-          <Route path="dialplans"          element={<Suspense fallback={<PageLoader />}><Dialplans /></Suspense>} />
-          <Route path="devices"            element={<Suspense fallback={<PageLoader />}><Devices /></Suspense>} />
-          <Route path="cdr"                element={<Suspense fallback={<PageLoader />}><Cdr /></Suspense>} />
-          <Route path="media-files"        element={<Suspense fallback={<PageLoader />}><MediaFiles /></Suspense>} />
-          <Route path="call-recordings"    element={<Suspense fallback={<PageLoader />}><CallRecordings /></Suspense>} />
-          <Route path="active-calls"       element={<Suspense fallback={<PageLoader />}><ActiveCalls /></Suspense>} />
+          <Route path="extensions"         element={page('extensions', Extensions)} />
+          <Route path="ring-groups"        element={page('ring-groups', RingGroups)} />
+          <Route path="ivr-menus"          element={page('ivr-menus', IvrMenus)} />
+          <Route path="call-flows"         element={page('call-flows', CallFlows)} />
+          <Route path="destinations"       element={page('destinations', Destinations)} />
+          <Route path="working-hours"      element={page('working-hours', WorkingHours)} />
+          <Route path="custom-destinations" element={page('custom-destinations', CustomDestinations)} />
+          <Route path="call-centers"       element={page('call-centers', CallCenters)} />
+          <Route path="voicemails"         element={page('voicemails', Voicemails)} />
+          <Route path="voicemail-inbox"    element={page('voicemail-inbox', VoicemailInbox)} />
+          <Route path="conferences"        element={page('conferences', Conferences)} />
+          <Route path="call-parking"       element={page('call-parking', CallParking)} />
+          <Route path="fax"                element={page('fax', Fax)} />
+          <Route path="gateways"           element={page('gateways', Gateways)} />
+          <Route path="outbound-routes"    element={page('outbound-routes', OutboundRoutes)} />
+          <Route path="dialplans"          element={page('dialplans', Dialplans)} />
+          <Route path="devices"            element={page('devices', Devices)} />
+          <Route path="cdr"                element={page('cdr', Cdr)} />
+          <Route path="media-files"        element={page('media-files', MediaFiles)} />
+          <Route path="call-recordings"    element={page('call-recordings', CallRecordings)} />
+          <Route path="active-calls"       element={page('active-calls', ActiveCalls)} />
           <Route path="operator-panel"     element={<Navigate to="/registrations" replace />} />
-          <Route path="freeswitch"         element={<Suspense fallback={<PageLoader />}><FreeSWITCH /></Suspense>} />
-          <Route path="domains"            element={<Suspense fallback={<PageLoader />}><Domains /></Suspense>} />
-          <Route path="tenants"            element={<Suspense fallback={<PageLoader />}><Tenants /></Suspense>} />
-          <Route path="tenant-list"        element={<Suspense fallback={<PageLoader />}><TenantList /></Suspense>} />
-          <Route path="users"              element={<Suspense fallback={<PageLoader />}><Users /></Suspense>} />
-          <Route path="firewall"           element={<Suspense fallback={<PageLoader />}><Firewall /></Suspense>} />
-          <Route path="freeswitch-log"     element={<Suspense fallback={<PageLoader />}><FreeSwitchLog /></Suspense>} />
-          <Route path="api-keys"           element={<Suspense fallback={<PageLoader />}><ApiKeys /></Suspense>} />
-          <Route path="audit-log"          element={<Suspense fallback={<PageLoader />}><AuditLog /></Suspense>} />
-          <Route path="registrations"      element={<Suspense fallback={<PageLoader />}><Registrations /></Suspense>} />
-          <Route path="global-active-calls" element={<Suspense fallback={<PageLoader />}><GlobalActiveCalls /></Suspense>} />
-          <Route path="system-log"         element={<Suspense fallback={<PageLoader />}><SystemLog /></Suspense>} />
-          <Route path="admin-cdr"          element={<Suspense fallback={<PageLoader />}><AdminCdr /></Suspense>} />
-          <Route path="admin-inventory"    element={<Suspense fallback={<PageLoader />}><AdminInventory /></Suspense>} />
-          <Route path="super-users"        element={<Suspense fallback={<PageLoader />}><SuperUsers /></Suspense>} />
-          <Route path="stats-report"       element={<Suspense fallback={<PageLoader />}><StatsReport /></Suspense>} />
+          <Route path="freeswitch"         element={page('freeswitch', FreeSWITCH)} />
+          <Route path="domains"            element={page('domains', Domains)} />
+          <Route path="tenants"            element={page('tenants', Tenants)} />
+          <Route path="tenant-list"        element={page('tenant-list', TenantList)} />
+          <Route path="users"              element={page('users', Users)} />
+          <Route path="firewall"           element={page('firewall', Firewall)} />
+          <Route path="freeswitch-log"     element={page('freeswitch-log', FreeSwitchLog)} />
+          <Route path="api-keys"           element={page('api-keys', ApiKeys)} />
+          <Route path="audit-log"          element={page('audit-log', AuditLog)} />
+          <Route path="registrations"      element={page('registrations', Registrations)} />
+          <Route path="global-active-calls" element={page('global-active-calls', GlobalActiveCalls)} />
+          <Route path="system-log"         element={page('system-log', SystemLog)} />
+          <Route path="admin-cdr"          element={page('admin-cdr', AdminCdr)} />
+          <Route path="admin-inventory"    element={page('admin-inventory', AdminInventory)} />
+          <Route path="super-users"        element={page('super-users', SuperUsers)} />
+          <Route path="stats-report"       element={page('stats-report', StatsReport)} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

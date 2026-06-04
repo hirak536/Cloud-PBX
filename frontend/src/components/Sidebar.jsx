@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useSelector, useDispatch } from 'react-redux'
 import { selectAuth, selectTenant } from '@/store'
+import { canAccessPage } from '@/lib/permissions'
 import { setCurrentTenant, fetchTenantsThunk } from '@/store/slices/tenantSlice'
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -297,26 +298,17 @@ function NavItem({ item, collapsed }) {
   )
 }
 
-// ── Role helpers ──────────────────────────────────────────────────────────────
-
-function useRole() {
-  const { user } = useSelector(selectAuth)
-  if (user?.is_superuser) return 'superuser'
-  if (user?.is_staff) return 'admin'
-  return 'user'
-}
-
-function canSee(itemRole, role) {
-  if (!itemRole) return true
-  if (itemRole === 'superuser') return role === 'superuser'
-  if (itemRole === 'admin') return role === 'superuser' || role === 'admin'
-  return true
-}
-
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 export default function Sidebar({ collapsed }) {
-  const role = useRole()
+  const { user } = useSelector(selectAuth)
+
+  // A nav item is visible if it's the always-on Dashboard, or the user can
+  // access its page (role tier + per-user grants).
+  const canSeeItem = (item) => {
+    if (item.path === '/') return true
+    return canAccessPage(user, item.path.replace(/^\//, ''))
+  }
 
   return (
     <aside
@@ -355,7 +347,7 @@ export default function Sidebar({ collapsed }) {
         collapsed ? 'space-y-0' : 'space-y-4'
       )}>
         {navGroups.map((group) => {
-          const items = group.items.filter((item) => canSee(item.role, role))
+          const items = group.items.filter(canSeeItem)
           if (!items.length) return null
           return <NavGroup key={group.label} group={{ ...group, items }} collapsed={collapsed} />
         })}
