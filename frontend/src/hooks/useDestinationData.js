@@ -64,5 +64,12 @@ export function useDestinationData({ withConferences = false, withFaxBoxes = fal
     } finally { setDestLoading(false) }
   }, [withConferences, withFaxBoxes])
 
-  return { destData, destLoading, loadDestData }
+  // Re-fetch only the fax box list (e.g. after creating/editing a box inline).
+  const reloadFaxBoxes = useCallback(async () => {
+    if (!withFaxBoxes) return
+    const res = await faxApi.list({ page_size: 500 })
+    setDestData(prev => ({ ...prev, fax_boxes: norm(res) }))
+  }, [withFaxBoxes])
+
+  return { destData, destLoading, loadDestData, reloadFaxBoxes }
 }

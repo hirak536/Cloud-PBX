@@ -243,6 +243,7 @@ export const fax = {
   get: (id) => api.get(`/fax/${id}/`),
   create: (data) => api.post('/fax/', data),
   update: (id, data) => api.put(`/fax/${id}/`, data),
+  patch: (id, data) => api.patch(`/fax/${id}/`, data),
   delete: (id) => api.delete(`/fax/${id}/`),
   send: (id, formData) => api.post(`/fax/${id}/send/`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
   quickSend: (formData) => api.post('/fax/quick-send/', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),

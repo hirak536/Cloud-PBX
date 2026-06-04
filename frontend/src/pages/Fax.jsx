@@ -152,8 +152,9 @@ function FaxBoxDialog({ open, onClose, editBox }) {
 
 function FaxBoxes() {
   // Only admins/superusers may create, edit, or delete fax boxes. Standard
-  // users get a read-only list.
-  const canManage = roleOf(useSelector(selectAuth).user) !== 'user'
+  // Fax box management lives in the DIDs page now. This tab is a read-only
+  // reference list (rendered only for superusers by the parent).
+  const canManage = false
   const [boxes, setBoxes]     = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch]   = useState('')
@@ -615,13 +616,15 @@ function FaxHistory() {
 
 // ─── Page ────────────────────────────────────────────────────────────────────
 
-const TABS = [
-  { id: 'boxes',   label: 'Fax Boxes',   icon: Inbox },
-  { id: 'history', label: 'Fax History', icon: ArrowDownLeft },
-]
-
 export default function Fax() {
-  const [tab, setTab] = useState('boxes')
+  // Fax box management now lives in the DIDs page. Here the Fax Boxes tab is a
+  // read-only reference for superusers only; everyone else sees only History.
+  const isSuperuser = roleOf(useSelector(selectAuth).user) === 'superuser'
+  const TABS = [
+    ...(isSuperuser ? [{ id: 'boxes', label: 'Fax Boxes', icon: Inbox }] : []),
+    { id: 'history', label: 'Fax History', icon: ArrowDownLeft },
+  ]
+  const [tab, setTab] = useState(isSuperuser ? 'boxes' : 'history')
 
   return (
     <div className="space-y-4">

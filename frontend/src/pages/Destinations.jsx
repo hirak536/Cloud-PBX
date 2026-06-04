@@ -1,7 +1,8 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { destinations as api } from '@/api'
+import { destinations as api, fax as faxApi } from '@/api'
 import { useDestinationData } from '@/hooks/useDestinationData'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -432,9 +433,155 @@ function SectionTitle({ children }) {
   return <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mt-5 mb-2 first:mt-0">{children}</p>
 }
 
+// ── Inline Fax Box form ──────────────────────────────────────────────────────
+// Lets a fax box be created or edited directly from the DID dialog's Fax tab.
+// Mirrors the (simplified) Fax page box form: the single Name drives both
+// fax_name and fax_caller_id_name; no forward number.
+
+const FAX_BOX_EMPTY = {
+  fax_name: '', fax_extension: '', fax_email: '',
+  fax_caller_id_number: '', fax_description: '', fax_enabled: true,
+}
+
+function FaxBoxFormDialog({ open, editBox, didNumber, dids, onClose }) {
+  const [form, setForm] = useState(FAX_BOX_EMPTY)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setError('')
+    if (editBox) {
+      setForm({
+        fax_name:             editBox.fax_name || editBox.fax_caller_id_name || '',
+        // One box per number: extension is the DID number.
+        fax_extension:        didNumber || editBox.fax_extension || '',
+        fax_email:            editBox.fax_email || '',
+        fax_caller_id_number: editBox.fax_caller_id_number || '',
+        fax_description:      editBox.fax_description || '',
+        fax_enabled:          editBox.fax_enabled !== false,
+      })
+    } else {
+      setForm({ ...FAX_BOX_EMPTY, fax_extension: didNumber || '' })
+    }
+  }, [open, editBox, didNumber])
+
+  const sf = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
+
+  const handleSave = async () => {
+    if (!form.fax_name.trim())      { setError('Name is required.');      return }
+    if (!form.fax_extension.trim()) { setError('Enter the DID number first — the fax box is tied to it.'); return }
+    setSaving(true); setError('')
+    // Single Name drives both fax_name and fax_caller_id_name on the backend.
+    const payload = { ...form, fax_caller_id_name: form.fax_name.trim() }
+    try {
+      let saved
+      if (editBox) {
+        const { data } = await faxApi.update(editBox.fax_uuid, payload)
+        saved = data
+        toast.success('Fax box updated.')
+      } else {
+        const { data } = await faxApi.create(payload)
+        saved = data
+        toast.success('Fax box created.')
+      }
+      onClose(saved || true)
+    } catch (err) {
+      const d = err?.response?.data
+      setError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={() => { if (!saving) onClose(false) }}>
+      <DialogContent className="w-[95vw] max-w-lg flex flex-col p-0 gap-0">
+        <DialogHeader className="px-6 py-4 border-b shrink-0">
+          <DialogTitle>{editBox ? 'Edit Fax Box' : 'New Fax Box'}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 px-6 py-5 overflow-y-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="Name *" hint="Also used as the outbound caller ID name.">
+              <Input placeholder="Main Fax" value={form.fax_name} onChange={sf('fax_name')} disabled={saving} />
+            </Field>
+            <Field label="Extension" hint="Tied to this DID number — one fax box per number.">
+              <Input value={form.fax_extension} readOnly disabled className="font-mono" />
+            </Field>
+            <Field label="Notification Email" hint="Inbound faxes are emailed here. Separate multiple addresses with commas." className="sm:col-span-2">
+              <Input type="text" placeholder="fax@company.com, alerts@company.com" value={form.fax_email} onChange={sf('fax_email')} disabled={saving} />
+            </Field>
+            <Field label="Status">
+              <Select value={String(form.fax_enabled)} onChange={(e) => setForm(p => ({ ...p, fax_enabled: e.target.value === 'true' }))} disabled={saving}>
+                <option value="true">Enabled</option>
+                <option value="false">Disabled</option>
+              </Select>
+            </Field>
+            <Field label="Caller ID Number">
+              <Select value={form.fax_caller_id_number} onChange={sf('fax_caller_id_number')} disabled={saving}>
+                <option value="">— Select DID —</option>
+                {/* Keep the current value selectable even if its DID isn't in the
+                    list yet (e.g. an unsaved DID auto-created this box). */}
+                {form.fax_caller_id_number &&
+                  !dids.some(d => d.destination_number === form.fax_caller_id_number) && (
+                    <option value={form.fax_caller_id_number}>{form.fax_caller_id_number}</option>
+                  )}
+                {dids.map(d => (
+                  <option key={d.destination_uuid} value={d.destination_number}>
+                    {d.destination_number}{d.destination_name ? ` — ${d.destination_name}` : ''}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Description" className="sm:col-span-2">
+              <Input placeholder="Optional description" value={form.fax_description} onChange={sf('fax_description')} disabled={saving} />
+            </Field>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </div>
+        <div className="flex justify-end gap-2 px-6 py-3 border-t shrink-0">
+          <Button variant="outline" onClick={() => onClose(false)} disabled={saving}>Cancel</Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? <><Loader2 className="h-4 w-4 animate-spin" />Saving…</> : 'Save'}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // ── Tab body ───────────────────────────────────────────────────────────────────
 
-function DIDFormBody({ tab, form, set, setForm, destData, destLoading }) {
+// Inline notification-email editor shown under a linked fax box. Saves on blur
+// (only when the value actually changed) so admins can set the inbound-fax email
+// without opening the full box form.
+function FaxBoxEmailField({ box, onSave }) {
+  const [value, setValue] = useState(box.fax_email || '')
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { setValue(box.fax_email || '') }, [box.fax_uuid, box.fax_email])
+
+  const commit = async () => {
+    if (value === (box.fax_email || '')) return
+    setSaving(true)
+    try { await onSave(box, value) } finally { setSaving(false) }
+  }
+
+  return (
+    <Field label="Notification Email" hint="Incoming faxes are emailed here as a PDF. Separate multiple addresses with commas.">
+      <div className="relative">
+        <Input
+          type="text"
+          placeholder="fax@company.com, alerts@company.com"
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          onBlur={commit}
+          disabled={saving}
+        />
+        {saving && <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+      </div>
+    </Field>
+  )
+}
+
+function DIDFormBody({ tab, form, set, setForm, destData, destLoading, onNewFaxBox, onEditFaxBox, onAutoCreateFaxBox, autoCreatingFax, onUpdateFaxBoxEmail }) {
   const addAction    = () => setForm(p => ({ ...p, actions: [...p.actions, { ...EMPTY_ACTION }] }))
   const removeAction = (idx) => setForm(p => ({ ...p, actions: p.actions.filter((_, i) => i !== idx) }))
   const updateAction = (idx, v) => setForm(p => ({
@@ -585,19 +732,64 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading }) {
     </div>
   )
 
-  if (tab === 'fax') return (
+  if (tab === 'fax') {
+    const selectedBox = (destData.fax_boxes || []).find(b => b.fax_uuid === form.fax_id)
+    return (
     <div className="space-y-3">
-      <Field label="Fax Box" hint="Link a fax box to enable fax receive on this DID">
-        <Select value={form.fax_id} onChange={set('fax_id')}>
-          <option value="">— None —</option>
-          {(destData.fax_boxes || []).map(b => (
-            <option key={b.fax_uuid} value={b.fax_uuid}>
-              {b.fax_name} ({b.fax_extension})
-            </option>
-          ))}
-        </Select>
+      <Field label="Fax Box" hint="Each number has a single fax box. Create one to enable fax receive on this DID.">
+        {selectedBox ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-3 rounded-xl border px-4 py-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-500/10">
+                <PhoneForwarded className="h-4 w-4 text-orange-500" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium truncate">{selectedBox.fax_name}</p>
+                <p className="text-xs text-muted-foreground font-mono">
+                  {selectedBox.fax_extension}
+                  {selectedBox.fax_caller_id_number ? ` · CID ${selectedBox.fax_caller_id_number}` : ''}
+                </p>
+              </div>
+              <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => onEditFaxBox(selectedBox)}>
+                <Pencil className="h-3.5 w-3.5 mr-1" />Edit
+              </Button>
+              <Button
+                type="button" variant="ghost" size="sm"
+                className="shrink-0 text-muted-foreground hover:text-destructive"
+                onClick={() => setForm(p => ({ ...p, fax_id: '' }))}
+              >
+                <X className="h-3.5 w-3.5 mr-1" />Unlink
+              </Button>
+            </div>
+            <FaxBoxEmailField box={selectedBox} onSave={onUpdateFaxBoxEmail} />
+          </div>
+        ) : (
+          <div className="flex items-center justify-between rounded-xl border border-dashed px-4 py-3">
+            <span className="text-sm text-muted-foreground">No fax box for this number.</span>
+            <Button type="button" variant="outline" size="sm" onClick={onNewFaxBox}>
+              <Plus className="h-3.5 w-3.5 mr-1" />Create Fax Box
+            </Button>
+          </div>
+        )}
       </Field>
-      <ToggleRow label="Enable Fax Receive" hint="Accept incoming faxes on this DID" checked={form.fax_receive} onChange={v => setForm(p => ({ ...p, fax_receive: v }))} />
+      <ToggleRow
+        label="Enable Fax Receive"
+        hint="Accept incoming faxes on this DID. Turning this on creates a fax box automatically if none exists."
+        checked={form.fax_receive}
+        onChange={v => {
+          if (v && !form.fax_id) {
+            // Auto-create + link a fax box, then enable receive.
+            onAutoCreateFaxBox()
+          } else {
+            setForm(p => ({ ...p, fax_receive: v }))
+          }
+        }}
+      />
+      {autoCreatingFax && (
+        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+          <Loader2 className="h-3 w-3 animate-spin" /> Creating fax box…
+        </p>
+      )}
 
       <SectionTitle>Protocol</SectionTitle>
       <Field label="Fax Protocol">
@@ -608,12 +800,13 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading }) {
 
       <SectionTitle>Delivery</SectionTitle>
       <p className="text-xs text-muted-foreground -mt-1">
-        Email notifications are configured on the linked <span className="font-medium">Fax Box</span> (Fax page),
-        which supports multiple comma-separated addresses.
+        Email notifications and caller ID are configured on the <span className="font-medium">Fax Box</span> above
+        (Create / Edit).
       </p>
       <ToggleRow label="Store Received Faxes" checked={form.fax_store} onChange={v => setForm(p => ({ ...p, fax_store: v }))} />
     </div>
-  )
+    )
+  }
 
   return null
 }
@@ -840,6 +1033,9 @@ export default function Destinations() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [affinityOpen, setAffinityOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
+  // Inline fax box management (from the DID dialog's Fax tab).
+  const [faxBoxDialogOpen, setFaxBoxDialogOpen] = useState(false)
+  const [editFaxBox, setEditFaxBox] = useState(null)
 
   useEffect(() => {
     const h = () => setAffinityOpen(true)
@@ -847,7 +1043,63 @@ export default function Destinations() {
     return () => window.removeEventListener('open-affinity', h)
   }, [])
 
-  const { destData, destLoading, loadDestData } = useDestinationData({ withConferences: true, withFaxBoxes: true })
+  const { destData, destLoading, loadDestData, reloadFaxBoxes } = useDestinationData({ withConferences: true, withFaxBoxes: true })
+
+  const openNewFaxBox  = () => { setEditFaxBox(null); setFaxBoxDialogOpen(true) }
+  const openEditFaxBox = (box) => { if (box) { setEditFaxBox(box); setFaxBoxDialogOpen(true) } }
+  const [autoCreatingFax, setAutoCreatingFax] = useState(false)
+
+  // Auto-create a fax box for this DID (no form). Extension = DID number, name =
+  // friendly name or the number. Used when Enable Fax Receive is toggled on.
+  const autoCreateFaxBox = useCallback(async () => {
+    const number = (form.destination_number || '').trim()
+    if (!number) { setFormError('Enter the DID number before enabling fax receive.'); setTab('information'); return null }
+    setAutoCreatingFax(true)
+    try {
+      const name = (form.destination_name || '').trim() || number
+      const { data } = await faxApi.create({
+        fax_name:             name,
+        fax_caller_id_name:   name,
+        // Default the caller ID number to this DID — it's the number faxes go out on.
+        fax_caller_id_number: number,
+        fax_extension:        number,
+        fax_enabled:          true,
+      })
+      await reloadFaxBoxes()
+      setForm(p => ({ ...p, fax_id: data.fax_uuid, fax_receive: true }))
+      toast.success('Fax box created.')
+      return data
+    } catch (err) {
+      const d = err?.response?.data
+      toast.error(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Could not create fax box.')
+      return null
+    } finally { setAutoCreatingFax(false) }
+  }, [form.destination_number, form.destination_name, reloadFaxBoxes])
+
+  // Called when the inline fax box dialog closes. `result` is the saved box
+  // object (create/update) or false on cancel. After a create, auto-link the
+  // new box to the DID being edited.
+  const handleFaxBoxClose = async (result) => {
+    setFaxBoxDialogOpen(false)
+    if (!result) { setEditFaxBox(null); return }
+    await reloadFaxBoxes()
+    if (!editFaxBox && result?.fax_uuid) {
+      setForm(p => ({ ...p, fax_id: result.fax_uuid }))
+    }
+    setEditFaxBox(null)
+  }
+
+  // Patch just the notification email on a linked fax box (inline edit).
+  const updateFaxBoxEmail = useCallback(async (box, email) => {
+    try {
+      await faxApi.patch(box.fax_uuid, { fax_email: email })
+      await reloadFaxBoxes()
+      toast.success('Notification email saved.')
+    } catch (err) {
+      const d = err?.response?.data
+      toast.error(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Could not save email.')
+    }
+  }, [reloadFaxBoxes])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1094,7 +1346,13 @@ export default function Destinations() {
                 {formError}
               </div>
             )}
-            <DIDFormBody tab={tab} form={form} set={set} setForm={setForm} destData={destData} destLoading={destLoading} />
+            <DIDFormBody
+              tab={tab} form={form} set={set} setForm={setForm}
+              destData={destData} destLoading={destLoading}
+              onNewFaxBox={openNewFaxBox} onEditFaxBox={openEditFaxBox}
+              onAutoCreateFaxBox={autoCreateFaxBox} autoCreatingFax={autoCreatingFax}
+              onUpdateFaxBoxEmail={updateFaxBoxEmail}
+            />
           </div>
 
           {/* Footer */}
@@ -1123,6 +1381,15 @@ export default function Destinations() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Inline fax box create/edit, opened from the DID dialog's Fax tab */}
+      <FaxBoxFormDialog
+        open={faxBoxDialogOpen}
+        editBox={editFaxBox}
+        didNumber={form.destination_number}
+        dids={rows}
+        onClose={handleFaxBoxClose}
+      />
     </div>
   )
 }
