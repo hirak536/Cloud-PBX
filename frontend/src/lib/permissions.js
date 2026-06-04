@@ -49,13 +49,17 @@ export function creatableRoles(role) {
 // ── Per-user page grants ───────────────────────────────────────────────────────
 // Standard ('user') accounts only see pages explicitly granted to them via the
 // user's `allowed_pages` list. Admins/superusers ignore this list and get full
-// role-based access. The Dashboard is always available to everyone.
+// role-based access.
 //
-// GRANTABLE_PAGES is the catalog an admin can assign from — it is exactly the set
-// of pages NOT gated behind an admin/superuser role (i.e. not in PAGE_ROLES),
-// minus the always-on Dashboard. Each entry's `path` (without leading slash) is
-// what gets stored in allowed_pages. Keep labels/groups in sync with the Sidebar.
+// GRANTABLE_PAGES is the catalog an admin can assign from — it is the set of
+// pages NOT gated behind an admin/superuser role (i.e. not in PAGE_ROLES). The
+// Dashboard (stored as 'dashboard', route '/') is grantable like any other page.
+// Each entry's `path` is what gets stored in allowed_pages. Keep labels/groups in
+// sync with the Sidebar.
 export const GRANTABLE_PAGES = [
+  { group: 'General', items: [
+    { path: 'dashboard',           label: 'Dashboard' },
+  ]},
   { group: 'Call Management', items: [
     { path: 'extensions',          label: 'Extensions' },
     { path: 'ring-groups',         label: 'Ring Groups' },
@@ -101,7 +105,26 @@ export function canAccessPage(user, page) {
   const required = PAGE_ROLES[page]
   if (required) return hasRole(role, required)
   if (role !== 'user') return true
-  // Standard user: only granted pages (Dashboard handled by caller / always-on).
+  // Standard user: only granted pages. The Dashboard ('dashboard') is gated like
+  // any other page — it must be explicitly granted.
   const granted = Array.isArray(user?.allowed_pages) ? user.allowed_pages : []
   return granted.includes(page)
+}
+
+// Resolve a route path (e.g. '/', '/fax') to its page key used in allowed_pages.
+// The root route maps to the 'dashboard' grant key.
+export function pageKeyOf(routePath) {
+  const stripped = routePath.replace(/^\//, '')
+  return stripped === '' ? 'dashboard' : stripped
+}
+
+// The path a user should land on after login or when bounced from a denied page.
+// Prefers the Dashboard when granted, otherwise the first page the user can see.
+// Falls back to '/' (which itself may be denied, but avoids an undefined target).
+export function landingPath(user) {
+  if (roleOf(user) !== 'user') return '/'
+  if (canAccessPage(user, 'dashboard')) return '/'
+  const granted = Array.isArray(user?.allowed_pages) ? user.allowed_pages : []
+  const first = GRANTABLE_PATHS.find(p => p !== 'dashboard' && granted.includes(p))
+  return first ? `/${first}` : '/'
 }

@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { fax as faxApi, destinations as destApi } from '@/api'
 import { useSelector } from 'react-redux'
 import { selectAuth } from '@/store'
+import { roleOf } from '@/lib/permissions'
 import { formatDate } from '@/lib/utils'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -24,8 +25,7 @@ const STATUS_VARIANT = { sent: 'success', received: 'success', pending: 'warning
 const SEND_EMPTY = { fax_uuid: '', destination_number: '' }
 const BOX_EMPTY = {
   fax_name: '', fax_extension: '', fax_email: '',
-  fax_caller_id_name: '', fax_caller_id_number: '',
-  fax_forward_number: '', fax_description: '', fax_enabled: true,
+  fax_caller_id_number: '', fax_description: '', fax_enabled: true,
 }
 
 // ─── FaxBoxDialog ────────────────────────────────────────────────────────────
@@ -49,12 +49,12 @@ function FaxBoxDialog({ open, onClose, editBox }) {
 
     if (editBox) {
       setForm({
-        fax_name:             editBox.fax_name || '',
+        // Single name field — prefer the existing name, fall back to the
+        // previously-separate caller ID name for older records.
+        fax_name:             editBox.fax_name || editBox.fax_caller_id_name || '',
         fax_extension:        editBox.fax_extension || '',
         fax_email:            editBox.fax_email || '',
-        fax_caller_id_name:   editBox.fax_caller_id_name || '',
         fax_caller_id_number: editBox.fax_caller_id_number || '',
-        fax_forward_number:   editBox.fax_forward_number || '',
         fax_description:      editBox.fax_description || '',
         fax_enabled:          editBox.fax_enabled !== false,
       })
@@ -70,12 +70,16 @@ function FaxBoxDialog({ open, onClose, editBox }) {
     if (!form.fax_name.trim())      { setError('Name is required.');      return }
     if (!form.fax_extension.trim()) { setError('Extension is required.'); return }
     setSaving(true); setError('')
+    // The single Name field drives both fax_name and fax_caller_id_name on the
+    // backend (which still stores them separately and uses caller-id name when
+    // dialing). Forward number is no longer collected.
+    const payload = { ...form, fax_caller_id_name: form.fax_name.trim() }
     try {
       if (editBox) {
-        await faxApi.update(editBox.fax_uuid, form)
+        await faxApi.update(editBox.fax_uuid, payload)
         toast.success('Fax box updated.')
       } else {
-        await faxApi.create(form)
+        await faxApi.create(payload)
         toast.success('Fax box created.')
       }
       onClose(true)
@@ -97,6 +101,7 @@ function FaxBoxDialog({ open, onClose, editBox }) {
             <div className="space-y-1.5">
               <Label>Name *</Label>
               <Input placeholder="Main Fax" value={form.fax_name} onChange={sf('fax_name')} disabled={saving} />
+              <p className="text-xs text-muted-foreground">Also used as the outbound caller ID name.</p>
             </div>
             <div className="space-y-1.5">
               <Label>Extension *</Label>
@@ -115,10 +120,6 @@ function FaxBoxDialog({ open, onClose, editBox }) {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>Caller ID Name</Label>
-              <Input placeholder="Company Fax" value={form.fax_caller_id_name} onChange={sf('fax_caller_id_name')} disabled={saving} />
-            </div>
-            <div className="space-y-1.5">
               <Label>Caller ID Number</Label>
               <Select value={form.fax_caller_id_number} onChange={sf('fax_caller_id_number')} disabled={saving || didsLoading}>
                 <option value="">— Select DID —</option>
@@ -128,10 +129,6 @@ function FaxBoxDialog({ open, onClose, editBox }) {
                   </option>
                 ))}
               </Select>
-            </div>
-            <div className="space-y-1.5 sm:col-span-2">
-              <Label>Forward Number</Label>
-              <Input placeholder="Optional forward number" value={form.fax_forward_number} onChange={sf('fax_forward_number')} disabled={saving} />
             </div>
             <div className="space-y-1.5 sm:col-span-2">
               <Label>Description</Label>
@@ -154,6 +151,9 @@ function FaxBoxDialog({ open, onClose, editBox }) {
 // ─── FaxBoxes tab ────────────────────────────────────────────────────────────
 
 function FaxBoxes() {
+  // Only admins/superusers may create, edit, or delete fax boxes. Standard
+  // users get a read-only list.
+  const canManage = roleOf(useSelector(selectAuth).user) !== 'user'
   const [boxes, setBoxes]     = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch]   = useState('')
@@ -200,9 +200,11 @@ function FaxBoxes() {
             <RefreshCw className="h-4 w-4" />
           </Button>
         </div>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="h-4 w-4" />New Fax Box
-        </Button>
+        {canManage && (
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="h-4 w-4" />New Fax Box
+          </Button>
+        )}
       </div>
 
       <Card>
@@ -215,14 +217,14 @@ function FaxBoxes() {
                 <TableHead>Email</TableHead>
                 <TableHead>Caller ID</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead className="w-24 text-right">Actions</TableHead>
+                {canManage && <TableHead className="w-24 text-right">Actions</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading
                 ? [...Array(4)].map((_, i) => (
                     <TableRow key={i}>
-                      {[...Array(6)].map((_, j) => (
+                      {[...Array(canManage ? 6 : 5)].map((_, j) => (
                         <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
                       ))}
                     </TableRow>
@@ -230,8 +232,10 @@ function FaxBoxes() {
                 : boxes.length === 0
                   ? (
                     <TableRow>
-                      <TableCell colSpan={6} className="py-16 text-center text-sm text-muted-foreground">
-                        No fax boxes yet. Click <strong>New Fax Box</strong> to create one.
+                      <TableCell colSpan={canManage ? 6 : 5} className="py-16 text-center text-sm text-muted-foreground">
+                        {canManage
+                          ? <>No fax boxes yet. Click <strong>New Fax Box</strong> to create one.</>
+                          : 'No fax boxes available.'}
                       </TableCell>
                     </TableRow>
                   )
@@ -250,19 +254,21 @@ function FaxBoxes() {
                           {b.fax_enabled ? 'Enabled' : 'Disabled'}
                         </Badge>
                       </TableCell>
-                      <TableCell>
-                        <div className="flex justify-end gap-1">
-                          <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit" onClick={() => openEdit(b)}>
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" title="Delete"
-                            disabled={deleting === b.fax_uuid} onClick={() => handleDelete(b)}>
-                            {deleting === b.fax_uuid
-                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              : <Trash2 className="h-3.5 w-3.5" />}
-                          </Button>
-                        </div>
-                      </TableCell>
+                      {canManage && (
+                        <TableCell>
+                          <div className="flex justify-end gap-1">
+                            <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit" onClick={() => openEdit(b)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" title="Delete"
+                              disabled={deleting === b.fax_uuid} onClick={() => handleDelete(b)}>
+                              {deleting === b.fax_uuid
+                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                : <Trash2 className="h-3.5 w-3.5" />}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))
               }
@@ -313,6 +319,12 @@ function SendFaxDialog({ open, onClose }) {
   const handleSend = async () => {
     if (!form.fax_uuid) { toast.error('Please select a fax box.'); return }
     if (!form.destination_number.trim()) { toast.error('Destination number is required.'); return }
+    // Accept 10 digits, 1+10 digits, or +1+10 digits. The server normalizes to +1XXXXXXXXXX.
+    const digits = form.destination_number.replace(/\D/g, '')
+    if (!(digits.length === 10 || (digits.length === 11 && digits.startsWith('1')))) {
+      toast.error('Enter a valid US number: 10 digits, or 1 / +1 followed by 10 digits.')
+      return
+    }
     if (!file) { toast.error('Please select a TIFF or PDF file.'); return }
 
     // Caller ID and gateway are derived from the fax box on the server — we only
@@ -365,7 +377,7 @@ function SendFaxDialog({ open, onClose }) {
             </div>
             <div className="space-y-1.5">
               <Label>Destination Number *</Label>
-              <Input placeholder="+1XXXXXXXXXX" value={form.destination_number} onChange={sf('destination_number')} disabled={sending} />
+              <Input placeholder="9725329272 or +19725329272" value={form.destination_number} onChange={sf('destination_number')} disabled={sending} />
             </div>
           </div>
 

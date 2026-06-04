@@ -18,6 +18,28 @@ from .utils import pdf_to_tiff, tiff_to_pdf
 logger = logging.getLogger(__name__)
 
 
+def _normalize_destination(raw):
+    """Normalize a US fax destination to E.164 (+1XXXXXXXXXX).
+
+    Accepts:
+      - 10 digits          (9725329272)      → +19725329272
+      - 11 digits w/ 1     (19725329272)     → +19725329272
+      - +1 then 10 digits  (+19725329272)    → +19725329272
+    Returns (normalized, error). On invalid input, normalized is None and error
+    is a human-readable message.
+    """
+    s = (raw or '').strip()
+    # Strip common formatting characters: spaces, dashes, parens, dots.
+    digits = ''.join(ch for ch in s if ch.isdigit())
+    if len(digits) == 10:
+        return f'+1{digits}', None
+    if len(digits) == 11 and digits.startswith('1'):
+        return f'+{digits}', None
+    return None, (
+        'Enter a valid US number: 10 digits, or 1 + 10 digits, or +1 + 10 digits.'
+    )
+
+
 
 
 
@@ -69,6 +91,15 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
             return FaxListSerializer
         return FaxSerializer
 
+    def get_permissions(self):
+        # Creating/editing/deleting fax boxes is admin-only. Reads and the
+        # send action remain available to any authenticated user (subject to
+        # tenant + fax_box_scope filtering in get_queryset).
+        from core.permissions import IsStaffOrReadOnly
+        if self.action in ('create', 'update', 'partial_update', 'destroy'):
+            return [permissions.IsAuthenticated(), IsStaffOrReadOnly()]
+        return [permissions.IsAuthenticated()]
+
     def get_queryset(self):
         qs = super().get_queryset()
         scope = self.request.user.fax_box_scope()
@@ -89,15 +120,20 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
         """
         fax = self.get_object()
 
-        destination_number = request.data.get('destination_number', '').strip()
+        destination_raw = request.data.get('destination_number', '').strip()
         uploaded_file = request.FILES.get('file')
         gateway = _resolve_gateway(request.data.get('gateway', '').strip(), fax.tenant)
 
-        if not destination_number:
+        if not destination_raw:
             return Response(
                 {'error': 'destination_number is required'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # Normalize to E.164 (+1XXXXXXXXXX) — the gateway rejects bare 10-digit
+        # numbers with UNALLOCATED_NUMBER.
+        destination_number, dest_err = _normalize_destination(destination_raw)
+        if dest_err:
+            return Response({'error': dest_err}, status=status.HTTP_400_BAD_REQUEST)
         if not uploaded_file:
             return Response(
                 {'error': 'file is required (TIFF or PDF)'},
@@ -308,7 +344,7 @@ class FaxQuickSendView(APIView):
     """
 
     def post(self, request, *args, **kwargs):
-        destination_number = request.data.get('destination_number', '').strip()
+        destination_raw = request.data.get('destination_number', '').strip()
         uploaded_file = request.FILES.get('file')
         caller_id_name = request.data.get('caller_id_name', 'Fax').strip()
         caller_id_number = request.data.get('caller_id_number', '').strip()
@@ -321,8 +357,11 @@ class FaxQuickSendView(APIView):
                 tenant = Tenant.objects.filter(tenant_uuid=tenant_id).first()
         gateway = _resolve_gateway(request.data.get('gateway', '').strip(), tenant)
 
-        if not destination_number:
+        if not destination_raw:
             return Response({'error': 'destination_number is required'}, status=status.HTTP_400_BAD_REQUEST)
+        destination_number, dest_err = _normalize_destination(destination_raw)
+        if dest_err:
+            return Response({'error': dest_err}, status=status.HTTP_400_BAD_REQUEST)
         if not uploaded_file:
             return Response({'error': 'file is required (TIFF or PDF)'}, status=status.HTTP_400_BAD_REQUEST)
         if not gateway:

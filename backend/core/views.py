@@ -360,6 +360,11 @@ class TenantViewSet(viewsets.ModelViewSet):
         return Tenant.objects.none()
 
     def get_permissions(self):
+        # Any authenticated user may list/retrieve tenants they can see — the
+        # queryset already scopes non-superusers to their own tenant. This lets
+        # the sidebar resolve the user's Active Tenant. Writes stay admin-only.
+        if self.action == 'list':
+            return [IsAuthenticated()]
         if self.action in ('retrieve', 'update', 'partial_update'):
             return [IsAuthenticated(), IsTenantAdmin()]
         return [IsAuthenticated(), IsSuperAdmin()]

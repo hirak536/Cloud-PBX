@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useSelector, useDispatch } from 'react-redux'
 import { selectAuth, selectTenant } from '@/store'
-import { canAccessPage } from '@/lib/permissions'
+import { canAccessPage, pageKeyOf } from '@/lib/permissions'
 import { setCurrentTenant, fetchTenantsThunk } from '@/store/slices/tenantSlice'
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -303,12 +303,9 @@ function NavItem({ item, collapsed }) {
 export default function Sidebar({ collapsed }) {
   const { user } = useSelector(selectAuth)
 
-  // A nav item is visible if it's the always-on Dashboard, or the user can
-  // access its page (role tier + per-user grants).
-  const canSeeItem = (item) => {
-    if (item.path === '/') return true
-    return canAccessPage(user, item.path.replace(/^\//, ''))
-  }
+  // A nav item is visible if the user can access its page (role tier + per-user
+  // grants). The Dashboard ('/') maps to the 'dashboard' grant key.
+  const canSeeItem = (item) => canAccessPage(user, pageKeyOf(item.path))
 
   return (
     <aside

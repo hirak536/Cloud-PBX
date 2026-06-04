@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { useSelector } from 'react-redux'
 import { selectAuth } from '@/store'
-import { canAccessPage } from '@/lib/permissions'
+import { canAccessPage, landingPath } from '@/lib/permissions'
 import LiveProvider from '@/providers/LiveProvider'
 import AppLayout from '@/components/AppLayout'
 import IdleLogout from '@/components/IdleLogout'
@@ -69,9 +69,28 @@ function RequireAuth({ children }) {
 function RequirePage({ page, children }) {
   const { user } = useSelector(selectAuth)
   if (!canAccessPage(user, page)) {
-    return <Navigate to="/" replace />
+    const target = landingPath(user)
+    // Avoid a redirect loop when the user has no accessible page: landingPath
+    // falls back to '/', so if the denied page IS the dashboard and nothing
+    // else is granted, render an empty-state instead of bouncing.
+    if (page === 'dashboard' && target === '/') {
+      return <NoAccess />
+    }
+    return <Navigate to={target} replace />
   }
   return children
+}
+
+// Shown to a standard user who has been granted no pages at all.
+function NoAccess() {
+  return (
+    <div className="flex h-full min-h-[60vh] flex-col items-center justify-center text-center px-6">
+      <h2 className="text-lg font-semibold">No pages assigned</h2>
+      <p className="mt-1 max-w-md text-sm text-muted-foreground">
+        Your account doesn’t have access to any pages yet. Please contact your administrator.
+      </p>
+    </div>
+  )
 }
 
 // Wrap a lazy page element with a Suspense fallback and a page-access guard.
@@ -102,7 +121,7 @@ export default function App() {
             </RequireAuth>
           }
         >
-          <Route index element={<Suspense fallback={<PageLoader />}><Dashboard /></Suspense>} />
+          <Route index element={page('dashboard', Dashboard)} />
           <Route path="extensions"         element={page('extensions', Extensions)} />
           <Route path="ring-groups"        element={page('ring-groups', RingGroups)} />
           <Route path="ivr-menus"          element={page('ivr-menus', IvrMenus)} />

@@ -269,3 +269,20 @@ class ReadOnly(BasePermission):
 
     def has_permission(self, request, view):
         return request.method in SAFE_METHODS
+
+
+class IsStaffOrReadOnly(BasePermission):
+    """Read for any authenticated user; write only for staff/superusers.
+
+    Mirrors the frontend role tiers (superuser/admin = ``is_staff``/``is_superuser``;
+    standard ``user`` has neither). Standard users get a read-only view; only
+    admins and superusers may create, update, or delete.
+    """
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        return bool(getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False))

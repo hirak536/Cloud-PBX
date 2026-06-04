@@ -1437,7 +1437,7 @@ export default function Users() {
                   </button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Choose which pages this user can see. The Dashboard is always available.
+                  Choose which pages this user can see, including the Dashboard.
                 </p>
                 <div className="border rounded-md max-h-60 overflow-y-auto divide-y">
                   {GRANTABLE_PAGES.map(group => (
