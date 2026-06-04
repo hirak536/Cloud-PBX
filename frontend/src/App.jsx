@@ -5,6 +5,7 @@ import { useSelector } from 'react-redux'
 import { selectAuth } from '@/store'
 import { canAccessPage, landingPath } from '@/lib/permissions'
 import LiveProvider from '@/providers/LiveProvider'
+import UserSync from '@/providers/UserSync'
 import AppLayout from '@/components/AppLayout'
 import IdleLogout from '@/components/IdleLogout'
 import Login from '@/pages/Login'
@@ -106,6 +107,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <LiveProvider />
+      <UserSync />
       <IdleLogout />
       <Toaster position="top-right" richColors closeButton />
       <Routes>

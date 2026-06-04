@@ -15,6 +15,20 @@ export const loginThunk = createAsyncThunk('auth/login', async ({ username, pass
   }
 })
 
+// Re-fetch the current user's record so permission/role/tenant changes made by
+// an admin take effect without a re-login. Silent: on failure (other than auth,
+// which the interceptor handles) it leaves the existing user in place.
+export const refreshUserThunk = createAsyncThunk('auth/refreshUser', async (_, { getState, rejectWithValue }) => {
+  const { isAuthenticated, accessToken } = getState().auth
+  if (!isAuthenticated || !accessToken) return rejectWithValue('not-authenticated')
+  try {
+    const { data } = await authApi.me()
+    return data
+  } catch (err) {
+    return rejectWithValue(err?.response?.data ?? { detail: 'refresh failed' })
+  }
+})
+
 export const logoutThunk = createAsyncThunk('auth/logout', async (_, { getState }) => {
   const { refreshToken } = getState().auth
   try { if (refreshToken) await authApi.logout(refreshToken) } catch {}
@@ -59,6 +73,10 @@ const authSlice = createSlice({
       .addCase(loginThunk.rejected, (state, { payload }) => {
         state.loading = false
         state.error = payload?.detail ?? 'Login failed'
+      })
+      .addCase(refreshUserThunk.fulfilled, (state, { payload }) => {
+        // Only update while still authenticated (guards against a logout race).
+        if (state.isAuthenticated && payload) state.user = payload
       })
       .addCase(logoutThunk.fulfilled, (state) => {
         state.user = null
