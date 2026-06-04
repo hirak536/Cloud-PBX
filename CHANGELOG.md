@@ -17,6 +17,7 @@ Newest entries on top.
 - Super Admins can now delete fax boxes
 - Fax box selection scoped per tenant
 - Client API: filter fax files by fax box (`?fax=<fax_uuid>`); summary counts respect the filter
+- Fax station ID now always populated: outbound uses the sender's caller ID, inbound uses the caller's number
 
 ### FreeSWITCH / Calls
 - Added support for local IP connections within FreeSWITCH

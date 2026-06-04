@@ -177,6 +177,10 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
                 logger.error(f'FaxSendView: PDF conversion failed: {e}')
                 return Response({'error': f'PDF conversion failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        # Caller ID for this fax box — used for the originate and stored on the file.
+        cid_name = fax.fax_caller_id_name or fax.fax_name
+        cid_number = fax.fax_caller_id_number or fax.fax_extension
+
         ff = FaxFile.objects.create(
             fax=fax,
             tenant=fax.tenant,
@@ -187,12 +191,14 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
             direction='outbound',
             fax_file_status='pending',
             fax_file_destination_number=destination_number,
+            fax_file_caller_id_name=cid_name,
+            fax_file_caller_id_number=cid_number,
+            # Outbound: station ID is our caller ID (the sending number).
+            fax_file_station_id=cid_number,
             fax_file_date=timezone.now(),
         )
 
         # Build ESL originate command for txfax
-        cid_name = fax.fax_caller_id_name or fax.fax_name
-        cid_number = fax.fax_caller_id_number or fax.fax_extension
         originate_vars = (
             f'origination_caller_id_name={cid_name},'
             f'origination_caller_id_number={cid_number},'
@@ -434,6 +440,8 @@ class FaxQuickSendView(APIView):
             fax_file_destination_number=destination_number,
             fax_file_caller_id_name=caller_id_name,
             fax_file_caller_id_number=caller_id_number,
+            # Outbound: station ID is our caller ID (the sending number).
+            fax_file_station_id=caller_id_number,
             fax_file_date=timezone.now(),
         )
 
@@ -542,7 +550,9 @@ class FaxReceiveWebhookView(View):
             fax_file_caller_id_number=caller_id_number,
             # Store the real DID number; fall back to mailbox extension if DID not sent
             fax_file_destination_number=fax_did_number or fax_mailbox,
-            fax_file_station_id=fax_remote_station_id,
+            # Inbound: station ID is the caller's number (the sender). Fall back to
+            # the remote-reported station id/header when no caller number is present.
+            fax_file_station_id=caller_id_number or fax_remote_station_id,
             fax_file_date=timezone.now(),
         )
 

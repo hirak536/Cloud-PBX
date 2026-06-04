@@ -141,15 +141,14 @@ def poll_fax_result(self, fax_file_uuid: str, channel_uuid: str):
             ff.fax_file_pages = pages
             update_fields.append('fax_file_pages')
 
-        if fax_remote_station_id:
-            ff.fax_file_station_id = fax_remote_station_id
-            update_fields.append('fax_file_station_id')
-        elif fax_remote_id:
-            ff.fax_file_station_id = fax_remote_id
-            update_fields.append('fax_file_station_id')
-        elif fax_header:
-            ff.fax_file_station_id = fax_header
-            update_fields.append('fax_file_station_id')
+        # Station ID for outbound is our own caller ID, set at send time — do not
+        # overwrite it with the remote machine's reported station ID. Only fill it
+        # here if it was somehow left blank at creation.
+        if not ff.fax_file_station_id:
+            fallback = fax_remote_station_id or fax_remote_id or fax_header
+            if fallback:
+                ff.fax_file_station_id = fallback
+                update_fields.append('fax_file_station_id')
 
         ff.save(update_fields=update_fields)
         logger.info(f'poll_fax_result: FaxFile {fax_file_uuid} → {new_status}')
