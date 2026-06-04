@@ -337,7 +337,7 @@ def _esl_api(command: str) -> str:
 
 def _is_registered(sip_id: str, domain_name: str) -> bool:
     try:
-        result = _esl_api(f'sofia_contact {sip_id}@{domain_name}')
+        result = _esl_api(f'sofia_contact */{sip_id}@{domain_name}')
         return bool(result) and not result.strip().startswith('error')
     except Exception:
         return False

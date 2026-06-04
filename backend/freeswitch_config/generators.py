@@ -919,7 +919,7 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
     offline_dest_cond = etree.SubElement(offline_el, 'condition',
                                          field='destination_number', expression=dest_expr)
     offline_reg_cond = etree.SubElement(offline_el, 'condition',
-                                        field=f'${{sofia_contact({sip_id}@{domain_name})}}',
+                                        field=f'${{sofia_contact(*/{sip_id}@{domain_name})}}',
                                         expression=r'^(error|$)')
     # Always tag the target extension so CDR ingest can record it
     etree.SubElement(offline_reg_cond, 'action', application='set',
