@@ -1,8 +1,8 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { fax as faxApi, destinations as destApi, tenants as tenantsApi } from '@/api'
+import { fax as faxApi, destinations as destApi } from '@/api'
 import { useSelector } from 'react-redux'
-import { selectAuth, selectTenant } from '@/store'
+import { selectAuth } from '@/store'
 import { formatDate } from '@/lib/utils'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -21,7 +21,7 @@ import {
 } from 'lucide-react'
 
 const STATUS_VARIANT = { sent: 'success', received: 'success', pending: 'warning', failed: 'destructive' }
-const SEND_EMPTY = { destination_number: '', caller_id_name: '', caller_id_number: '', did: '' }
+const SEND_EMPTY = { fax_uuid: '', destination_number: '' }
 const BOX_EMPTY = {
   fax_name: '', fax_extension: '', fax_email: '',
   fax_caller_id_name: '', fax_caller_id_number: '',
@@ -282,11 +282,12 @@ function FaxBoxes() {
 
 // ─── SendFaxDialog ────────────────────────────────────────────────────────────
 
-function SendFaxDialog({ open, onClose, tenantGateway }) {
+function SendFaxDialog({ open, onClose }) {
   const [form, setForm]       = useState(SEND_EMPTY)
   const [file, setFile]       = useState(null)
   const [sending, setSending] = useState(false)
-  const [dids, setDids]       = useState([])
+  const [boxes, setBoxes]     = useState([])
+  const [boxesLoading, setBoxesLoading] = useState(false)
   const fileRef = useRef(null)
 
   useEffect(() => {
@@ -294,35 +295,35 @@ function SendFaxDialog({ open, onClose, tenantGateway }) {
     setForm(SEND_EMPTY)
     setFile(null)
     if (fileRef.current) fileRef.current.value = ''
-    destApi.list()
-      .then(({ data }) => setDids(Array.isArray(data) ? data : data.results || []))
-      .catch(() => {})
+    // Load enabled fax boxes — the chosen box supplies caller ID + gateway server-side.
+    setBoxesLoading(true)
+    faxApi.list({ page_size: 500, fax_enabled: true })
+      .then(({ data }) => {
+        const list = Array.isArray(data) ? data : data.results || []
+        setBoxes(list)
+        // Auto-select when there's exactly one box.
+        if (list.length === 1) setForm(p => ({ ...p, fax_uuid: list[0].fax_uuid }))
+      })
+      .catch(() => setBoxes([]))
+      .finally(() => setBoxesLoading(false))
   }, [open])
 
-  const handleDidSelect = (val) => {
-    const did = dids.find(d => d.destination_uuid === val)
-    setForm(p => ({
-      ...p,
-      did: val,
-      caller_id_number: did?.destination_number || p.caller_id_number,
-      caller_id_name: did?.destination_name || p.caller_id_name,
-    }))
-  }
+  const selectedBox = boxes.find(b => b.fax_uuid === form.fax_uuid)
 
   const handleSend = async () => {
+    if (!form.fax_uuid) { toast.error('Please select a fax box.'); return }
     if (!form.destination_number.trim()) { toast.error('Destination number is required.'); return }
     if (!file) { toast.error('Please select a TIFF or PDF file.'); return }
 
+    // Caller ID and gateway are derived from the fax box on the server — we only
+    // send the box, destination, and file.
     const fd = new FormData()
     fd.append('destination_number', form.destination_number.trim())
     fd.append('file', file)
-    if (form.caller_id_name.trim())   fd.append('caller_id_name',   form.caller_id_name.trim())
-    if (form.caller_id_number.trim()) fd.append('caller_id_number', form.caller_id_number.trim())
-    if (tenantGateway)                fd.append('gateway',          tenantGateway)
 
     setSending(true)
     try {
-      const { data } = await faxApi.quickSend(fd)
+      const { data } = await faxApi.send(form.fax_uuid, fd)
       if (data.status === 'pending') {
         toast.success('Fax queued successfully.', { description: `Sending to ${form.destination_number}` })
         onClose(true)
@@ -337,6 +338,11 @@ function SendFaxDialog({ open, onClose, tenantGateway }) {
 
   const sf = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
 
+  // Caller ID preview that mirrors the server's resolution order:
+  // box caller-id name/number, falling back to box name/extension.
+  const previewName   = selectedBox ? (selectedBox.fax_caller_id_name || selectedBox.fax_name || '—') : ''
+  const previewNumber = selectedBox ? (selectedBox.fax_caller_id_number || selectedBox.fax_extension || '—') : ''
+
   return (
     <Dialog open={open} onOpenChange={() => { if (!sending) onClose(false) }}>
       <DialogContent className="w-[95vw] max-w-lg flex flex-col p-0 gap-0">
@@ -347,29 +353,32 @@ function SendFaxDialog({ open, onClose, tenantGateway }) {
         <div className="space-y-4 px-6 py-5">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label>Destination Number *</Label>
-              <Input placeholder="+1XXXXXXXXXX" value={form.destination_number} onChange={sf('destination_number')} disabled={sending} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Outbound DID</Label>
-              <Select value={form.did} onChange={e => handleDidSelect(e.target.value)} disabled={sending}>
-                <option value="">Select DID (optional)</option>
-                {dids.map(d => (
-                  <option key={d.destination_uuid} value={d.destination_uuid}>
-                    {d.destination_number}{d.destination_name ? ` — ${d.destination_name}` : ''}
+              <Label>Fax Box *</Label>
+              <Select value={form.fax_uuid} onChange={sf('fax_uuid')} disabled={sending || boxesLoading}>
+                <option value="">{boxesLoading ? 'Loading…' : 'Select fax box'}</option>
+                {boxes.map(b => (
+                  <option key={b.fax_uuid} value={b.fax_uuid}>
+                    {b.fax_name}{b.fax_extension ? ` (${b.fax_extension})` : ''}
                   </option>
                 ))}
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>Caller ID Name</Label>
-              <Input placeholder="Company Fax" value={form.caller_id_name} onChange={sf('caller_id_name')} disabled={sending} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Caller ID Number</Label>
-              <Input placeholder="+1XXXXXXXXXX" value={form.caller_id_number} onChange={sf('caller_id_number')} disabled={sending} />
+              <Label>Destination Number *</Label>
+              <Input placeholder="+1XXXXXXXXXX" value={form.destination_number} onChange={sf('destination_number')} disabled={sending} />
             </div>
           </div>
+
+          {selectedBox && (
+            <div className="rounded-md border bg-muted/40 px-3 py-2.5 text-sm">
+              <p className="text-xs font-medium text-muted-foreground mb-1">Caller ID (from fax box)</p>
+              <p className="font-mono">
+                {previewName}
+                {previewNumber && previewNumber !== '—' && <span className="text-muted-foreground"> · {previewNumber}</span>}
+              </p>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <Label>File (TIFF or PDF) *</Label>
             <div className="flex items-center gap-2">
@@ -424,7 +433,7 @@ function PreviewDialog({ open, onClose, file, token }) {
 
 // ─── FaxHistory tab ──────────────────────────────────────────────────────────
 
-function FaxHistory({ tenantGateway }) {
+function FaxHistory() {
   const token = useSelector(selectAuth).accessToken
 
   const [files, setFiles]     = useState([])
@@ -483,7 +492,6 @@ function FaxHistory({ tenantGateway }) {
       <SendFaxDialog
         open={showSend}
         onClose={(reloadNeeded) => { setShowSend(false); if (reloadNeeded) load() }}
-        tenantGateway={tenantGateway}
       />
 
       {summary && (
@@ -601,16 +609,7 @@ const TABS = [
 ]
 
 export default function Fax() {
-  const { currentTenant } = useSelector(selectTenant)
   const [tab, setTab] = useState('boxes')
-  const [tenantGateway, setTenantGateway] = useState('')
-
-  useEffect(() => {
-    if (!currentTenant?.tenant_uuid) return
-    tenantsApi.get(currentTenant.tenant_uuid)
-      .then(({ data }) => setTenantGateway(data.fax_gateway || ''))
-      .catch(() => {})
-  }, [currentTenant?.tenant_uuid])
 
   return (
     <div className="space-y-4">
@@ -637,7 +636,7 @@ export default function Fax() {
       </div>
 
       {tab === 'boxes'   && <FaxBoxes />}
-      {tab === 'history' && <FaxHistory tenantGateway={tenantGateway} />}
+      {tab === 'history' && <FaxHistory />}
     </div>
   )
 }

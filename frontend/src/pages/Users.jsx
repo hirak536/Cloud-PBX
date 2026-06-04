@@ -974,12 +974,18 @@ export default function Users() {
     }).catch(() => {})
   }, [])
 
-  // Fax boxes for the per-user fax-box picker (tenant-scoped by the backend).
+  // Fax boxes for the per-user fax-box picker. Scoped to the tenant chosen in the
+  // dialog's Tenant dropdown (a superuser may target a tenant other than the
+  // active one); the backend honors ?tenant= for superusers and otherwise locks
+  // to the requester's own tenant. Falls back to the active tenant when no tenant
+  // is selected yet (e.g. dialog closed).
   useEffect(() => {
-    faxApi.list({ page_size: 500 }).then(({ data }) => {
+    const tenantUuid = form.tenant_uuid || currentTenant?.tenant_uuid
+    if (!tenantUuid) { setFaxBoxes([]); return }
+    faxApi.list({ page_size: 500, tenant: tenantUuid }).then(({ data }) => {
       setFaxBoxes(Array.isArray(data) ? data : data.results || [])
     }).catch(() => {})
-  }, [currentTenant?.tenant_uuid])
+  }, [form.tenant_uuid, currentTenant?.tenant_uuid])
 
   const f = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
 
@@ -1397,7 +1403,12 @@ export default function Users() {
                   : (
                     <Select
                       value={form.tenant_uuid}
-                      onChange={(e) => setForm(p => ({ ...p, tenant_uuid: e.target.value }))}
+                      onChange={(e) => {
+                        // Switching tenants invalidates any fax boxes picked for
+                        // the previous tenant — reset the fax-box scope.
+                        setForm(p => ({ ...p, tenant_uuid: e.target.value, allowed_fax_uuids: [] }))
+                        setFaxScope('all')
+                      }}
                     >
                       <option value="">Select tenant</option>
                       {allTenants.map(t => (
