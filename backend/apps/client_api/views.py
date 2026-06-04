@@ -259,8 +259,6 @@ class ClientCDRView(APIView):
             qs = qs.filter(hangup_cause__in=('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED'), billsec__gt=0)
         elif status_filter == 'BUSY':
             qs = qs.filter(hangup_cause='USER_BUSY')
-        elif status_filter == 'CONGESTION':
-            qs = qs.filter(hangup_cause__in=self._CONGESTION_CAUSES)
         elif status_filter == 'NO_ANSWER':
             qs = qs.filter(hangup_cause__in=self._NO_ANSWER_CAUSES).exclude(missed_call=True)
         elif status_filter == 'MISSED':
@@ -357,10 +355,6 @@ class ClientCDRView(APIView):
                 Q(last_app='phrase', last_arg__contains='voicemail')
             )),
             BUSY=Count('xml_cdr_uuid', filter=Q(hangup_cause='USER_BUSY')),
-            CONGESTION=Count('xml_cdr_uuid', filter=Q(hangup_cause__in=(
-                'NORMAL_CIRCUIT_CONGESTION', 'SWITCH_CONGESTION',
-                'RESOURCE_UNAVAILABLE', 'SERVICE_UNAVAILABLE',
-            ))),
             NO_ANSWER=Count('xml_cdr_uuid', filter=Q(
                 hangup_cause__in=('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
                                   'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'),
@@ -440,7 +434,6 @@ class ClientCDRView(APIView):
             outbound_answered=Count('xml_cdr_uuid', filter=_outbound_Q & _answered_Q),
             outbound_no_answer=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause__in=_NO_ANSWER_CAUSES) & ~_answered_Q),
             outbound_busy=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause='USER_BUSY') & ~_answered_Q),
-            outbound_congestion=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause__in=_CONGESTION_CAUSES) & ~_answered_Q),
             outbound_failed=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause__in=_FAILED_CAUSES) & ~_answered_Q & ~Q(hangup_cause__in=_NO_ANSWER_CAUSES) & ~Q(hangup_cause='USER_BUSY') & ~Q(hangup_cause__in=_CONGESTION_CAUSES)),
             total_duration=Sum('duration'),
             total_billsec=Sum('billsec'),
@@ -1494,7 +1487,6 @@ class ClientCDRDailySummaryView(APIView):
                 out_answered=Count('xml_cdr_uuid', filter=_outbound_Q & _answered_Q),
                 out_no_answer=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause__in=_NO_ANSWER_CAUSES) & ~_answered_Q),
                 out_busy=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause='USER_BUSY') & ~_answered_Q),
-                out_congestion=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause__in=_CONGESTION_CAUSES) & ~_answered_Q),
                 out_failed=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause__in=_FAILED_CAUSES) & ~_answered_Q & ~Q(hangup_cause__in=_NO_ANSWER_CAUSES) & ~Q(hangup_cause='USER_BUSY') & ~Q(hangup_cause__in=_CONGESTION_CAUSES)),
                 total_duration=Sum('duration'),
                 total_billsec=Sum('billsec'),
@@ -1523,7 +1515,7 @@ class ClientCDRDailySummaryView(APIView):
                 existing = day_buckets[day_str]
                 for key in ('total', 'in_total', 'in_answered', 'in_voicemail', 'in_missed',
                             'in_no_answer', 'in_busy', 'out_total', 'out_answered',
-                            'out_no_answer', 'out_busy', 'out_congestion', 'out_failed',
+                            'out_no_answer', 'out_busy', 'out_failed',
                             'total_duration', 'total_billsec'):
                     existing[key] = (existing.get(key) or 0) + (row.get(key) or 0)
 
@@ -1774,7 +1766,6 @@ class ClientExtensionCallSummaryView(APIView):
             outbound_answered=Count('xml_cdr_uuid', filter=_outbound_Q & _answered_Q),
             outbound_no_answer=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause__in=_NO_ANSWER_CAUSES) & ~_answered_Q),
             outbound_busy=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause='USER_BUSY') & ~_answered_Q),
-            outbound_congestion=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause__in=_CONGESTION_CAUSES) & ~_answered_Q),
             outbound_failed=Count('xml_cdr_uuid', filter=_outbound_Q & Q(hangup_cause__in=_FAILED_CAUSES) & ~_answered_Q & ~Q(hangup_cause__in=_NO_ANSWER_CAUSES) & ~Q(hangup_cause='USER_BUSY') & ~Q(hangup_cause__in=_CONGESTION_CAUSES)),
             total_duration=Sum('duration'),
             total_billsec=Sum('billsec'),
@@ -1977,14 +1968,12 @@ class StatsReportView(APIView):
                 ob_busy=Count('xml_cdr_uuid', filter=_outbound_Q & _busy_Q & ~_answered_Q),
                 ob_no_answer=Count('xml_cdr_uuid', filter=_outbound_Q & _no_answer_Q & ~_answered_Q),
                 ob_failed=Count('xml_cdr_uuid', filter=_outbound_Q & _failed_Q & ~_answered_Q & ~_no_answer_Q & ~_busy_Q & ~_congestion_Q),
-                ob_congestion=Count('xml_cdr_uuid', filter=_outbound_Q & _congestion_Q & ~_answered_Q),
                 ob_total=Count('xml_cdr_uuid', filter=_outbound_Q),
                 ob_talk_sec=Sum('billsec', filter=_outbound_Q & _answered_Q),
                 ib_answered=Count('xml_cdr_uuid', filter=_inbound_Q & _answered_Q),
                 ib_busy=Count('xml_cdr_uuid', filter=_inbound_Q & _busy_Q & ~_answered_Q),
                 ib_no_answer=Count('xml_cdr_uuid', filter=_inbound_Q & _no_answer_Q & ~_answered_Q & ~_VM_Q),
                 ib_failed=Count('xml_cdr_uuid', filter=_inbound_Q & _failed_Q & ~_answered_Q & ~_no_answer_Q & ~_busy_Q & ~_congestion_Q),
-                ib_congestion=Count('xml_cdr_uuid', filter=_inbound_Q & _congestion_Q & ~_answered_Q),
                 ib_voicemail=Count('xml_cdr_uuid', filter=_inbound_Q & _VM_Q),
                 ib_total=Count('xml_cdr_uuid', filter=_inbound_Q),
                 ib_talk_sec=Sum('billsec', filter=_inbound_Q & _answered_Q),
@@ -1993,9 +1982,9 @@ class StatsReportView(APIView):
 
         _ZERO_ROW = {
             'ob_answered': 0, 'ob_busy': 0, 'ob_no_answer': 0, 'ob_failed': 0,
-            'ob_congestion': 0, 'ob_total': 0, 'ob_talk_sec': 0,
+            'ob_total': 0, 'ob_talk_sec': 0,
             'ib_answered': 0, 'ib_busy': 0, 'ib_no_answer': 0, 'ib_failed': 0,
-            'ib_congestion': 0, 'ib_voicemail': 0, 'ib_total': 0, 'ib_talk_sec': 0,
+            'ib_voicemail': 0, 'ib_total': 0, 'ib_talk_sec': 0,
         }
 
         def _fmt_ext(ext_number, row, name=''):
@@ -2123,7 +2112,6 @@ class StatsReportView(APIView):
                 ib_busy=Count('xml_cdr_uuid', filter=_busy_Q & ~_answered_Q),
                 ib_no_answer=Count('xml_cdr_uuid', filter=_no_answer_Q & ~_answered_Q & ~_VM_Q),
                 ib_failed=Count('xml_cdr_uuid', filter=_failed_Q & ~_answered_Q & ~_no_answer_Q & ~_busy_Q & ~_congestion_Q),
-                ib_congestion=Count('xml_cdr_uuid', filter=_congestion_Q & ~_answered_Q),
                 ib_talk_sec=Sum('billsec', filter=_answered_Q),
                 ib_no_answer_sec=Sum('duration', filter=_no_answer_Q & ~_answered_Q),
             )
@@ -2143,7 +2131,6 @@ class StatsReportView(APIView):
                 ob_busy=Count('xml_cdr_uuid', filter=_busy_Q & ~_answered_Q),
                 ob_no_answer=Count('xml_cdr_uuid', filter=_no_answer_Q & ~_answered_Q),
                 ob_failed=Count('xml_cdr_uuid', filter=_failed_Q & ~_answered_Q & ~_no_answer_Q & ~_busy_Q & ~_congestion_Q),
-                ob_congestion=Count('xml_cdr_uuid', filter=_congestion_Q & ~_answered_Q),
                 ob_talk_sec=Sum('billsec', filter=_answered_Q),
             )
         )

@@ -117,11 +117,6 @@ class ClientCDRSerializer(serializers.ModelSerializer):
         if cause == 'USER_BUSY':
             return 'BUSY'
 
-        # Congestion
-        if cause in ('NORMAL_CIRCUIT_CONGESTION', 'SWITCH_CONGESTION',
-                     'RESOURCE_UNAVAILABLE', 'SERVICE_UNAVAILABLE'):
-            return 'CONGESTION'
-
         # Not answered / offline — missed if flag set
         if cause in ('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT', 'ALLOTTED_TIMEOUT',
                      'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'):
