@@ -97,8 +97,16 @@ export default function TopBar({ collapsed, onToggle, onMobileToggle }) {
         )}
         <span className="font-semibold truncate">{meta.title}</span>
 
-        {/* Tenant switcher badge */}
-        {currentTenant && (
+        {/* Tenant switcher badge — only interactive when the user has more than
+            one tenant. A single-tenant user (e.g. standard PBX user) sees a
+            static label with no switch option. */}
+        {currentTenant && tenantList.length <= 1 && (
+          <span className="hidden md:inline-flex items-center gap-1.5 rounded-full bg-primary/10 border border-primary/20 px-2.5 py-0.5 text-[11px] font-semibold text-primary ml-2">
+            <Building2 className="h-3 w-3 shrink-0" />
+            {currentTenant.tenant_name}
+          </span>
+        )}
+        {currentTenant && tenantList.length > 1 && (
           <div className="relative hidden md:block ml-2" ref={tenantRef}>
             <button
               onClick={() => setTenantOpen((o) => !o)}

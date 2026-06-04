@@ -35,6 +35,8 @@ const EMPTY_FORM = {
   user_email: '',
   user_enabled: true,
   role: 'user',
+  // Single tenant a standard 'user' is bound to. Required for the user role.
+  tenant_uuid: '',
   admin_tenant_uuids: [],
   allowed_pages: [],
   // [] = all fax boxes (no restriction); non-empty = only those fax box UUIDs.
@@ -983,7 +985,11 @@ export default function Users() {
 
   const openCreate = () => {
     setEditId(null)
-    setForm({ ...EMPTY_FORM, role: allowedRoles[0] || 'user' })
+    setForm({
+      ...EMPTY_FORM,
+      role: allowedRoles[0] || 'user',
+      tenant_uuid: currentTenant?.tenant_uuid || '',
+    })
     setFaxScope('all')
     setFormError('')
     setDialogOpen(true)
@@ -1002,6 +1008,7 @@ export default function Users() {
       user_email: r.user_email || '',
       user_enabled: r.user_enabled !== false,
       role: roleFromUser(r),
+      tenant_uuid: r.tenant || '',
       admin_tenant_uuids: (r.admin_tenants || []).map(t => t.tenant_uuid),
       allowed_pages: Array.isArray(r.allowed_pages) ? r.allowed_pages : [],
       allowed_fax_uuids: Array.isArray(r.allowed_fax_uuids) ? r.allowed_fax_uuids : [],
@@ -1055,6 +1062,10 @@ export default function Users() {
       setFormError('Select at least one tenant for Admin role.')
       return
     }
+    if (form.role === 'user' && !form.tenant_uuid) {
+      setFormError('Select a tenant for this user.')
+      return
+    }
     if (
       form.role === 'user' &&
       form.allowed_pages.includes('fax') &&
@@ -1074,6 +1085,9 @@ export default function Users() {
       user_enabled: form.user_enabled,
       is_superuser: form.role === 'superuser',
       is_staff: form.role === 'superuser' || form.role === 'admin',
+      // A standard user is bound to exactly one tenant. Superusers span all
+      // tenants and admins are scoped via admin_tenant_uuids, so both clear it.
+      tenant: form.role === 'user' ? form.tenant_uuid : null,
       admin_tenant_uuids: form.role === 'admin' ? form.admin_tenant_uuids : [],
       // Per-user page grants only apply to standard users; clear for admin/superuser.
       allowed_pages: form.role === 'user' ? form.allowed_pages : [],
@@ -1372,6 +1386,30 @@ export default function Users() {
                       })}
                     </div>
                   )}
+              </div>
+            )}
+
+            {form.role === 'user' && (
+              <div className="space-y-1.5">
+                <Label>Tenant <span className="text-destructive">*</span></Label>
+                {allTenants.length === 0
+                  ? <p className="text-sm text-muted-foreground">No tenants available.</p>
+                  : (
+                    <Select
+                      value={form.tenant_uuid}
+                      onChange={(e) => setForm(p => ({ ...p, tenant_uuid: e.target.value }))}
+                    >
+                      <option value="">Select tenant</option>
+                      {allTenants.map(t => (
+                        <option key={t.tenant_uuid} value={t.tenant_uuid}>
+                          {t.tenant_code} — {t.tenant_name}
+                        </option>
+                      ))}
+                    </Select>
+                  )}
+                <p className="text-xs text-muted-foreground">
+                  This user belongs to a single tenant and cannot switch tenants.
+                </p>
               </div>
             )}
 
