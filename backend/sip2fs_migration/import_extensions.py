@@ -24,7 +24,8 @@ import argparse
 import django
 
 # ── Bootstrap Django ──────────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# backend/ is the Django import root (holds config/, core/, apps/); this script lives in backend/sip2fs_migration/
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')
 django.setup()
