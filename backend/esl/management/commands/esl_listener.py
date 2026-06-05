@@ -431,11 +431,12 @@ def _deliver_webhook(key_id, webhook_url: str, webhook_secret: str, payload: dic
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO v_webhook_deliveries "
-            "    (id, api_key_id, event, payload, status, attempts, last_response_code, last_error, delivered_at, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s, NOW())",
+            "    (id, api_key_id, url, event, payload, status, attempts, last_response_code, last_error, delivered_at, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s, %s, NOW())",
             (
                 str(uuid.uuid4()),
                 key_id,
+                webhook_url,
                 payload.get('event', ''),
                 json.dumps(payload, default=str),
                 'success' if success else 'failed',
