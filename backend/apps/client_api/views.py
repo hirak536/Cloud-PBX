@@ -466,20 +466,25 @@ class ClientCDRView(APIView):
             mailboxes = mailboxes.filter(voicemail_id=plain_ext)
         vm_uuids = [str(vm.voicemail_uuid) for vm in mailboxes]
 
+        vm_total = 0
+        vm_read = 0
         if vm_uuids:
-            msg_uuids = list(
-                VoicemailMessage.objects.filter(username__in=vm_uuids)
-                .values_list('uuid', flat=True)
-            )
-            vm_total = len(msg_uuids)
-            vm_read = VoicemailReadState.objects.filter(
-                message_uuid__in=msg_uuids,
-                reader=VoicemailReadState.READER_CLIENT,
-                is_read=True,
-            ).count()
-        else:
-            vm_total = 0
-            vm_read = 0
+            # The voicemail_msgs table lives in a separate (FreeSWITCH SQLite) DB that
+            # may be unreachable in some environments — degrade to zeros, don't 500.
+            try:
+                msg_uuids = list(
+                    VoicemailMessage.objects.filter(username__in=vm_uuids)
+                    .values_list('uuid', flat=True)
+                )
+                vm_total = len(msg_uuids)
+                vm_read = VoicemailReadState.objects.filter(
+                    message_uuid__in=msg_uuids,
+                    reader=VoicemailReadState.READER_CLIENT,
+                    is_read=True,
+                ).count()
+            except Exception:
+                vm_total = 0
+                vm_read = 0
         vm_unread = vm_total - vm_read
 
         tenant_counts = {
