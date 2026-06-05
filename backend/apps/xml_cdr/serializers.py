@@ -9,7 +9,9 @@ class XmlCdrSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
 
     def get_status(self, obj):
-        return ClientCDRSerializer.get_status(ClientCDRSerializer(), obj)
+        # Reuse the client status logic, forwarding context (vm_route_idents) so a
+        # missed call to a VM-routed extension is reported as voicemail here too.
+        return ClientCDRSerializer(context=self.context).get_status(obj)
 
     class Meta:
         model = XmlCdr

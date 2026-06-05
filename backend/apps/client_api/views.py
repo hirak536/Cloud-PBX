@@ -255,6 +255,21 @@ class ClientCDRView(APIView):
             qs = qs.filter(hangup_cause=hangup_cause)
 
         status_filter = p.get('status', '').upper()
+        # A missed inbound call to a VM-routed extension is treated as voicemail.
+        _vm_Q = (
+            Q(last_app='voicemail') |
+            Q(last_app='speak', last_arg__contains='|') |
+            Q(last_app='record', last_arg__contains='/voicemail/') |
+            Q(last_app='system', last_arg__contains='voicemail-messages/ingest') |
+            Q(last_app='phrase', last_arg__contains='voicemail')
+        )
+        if status_filter in ('MISSED', 'WENT_TO_VOICEMAIL'):
+            from apps.common.vm_routing import vm_route_idents as _vm_route_idents  # noqa: PLC0415
+            _vm_idents = _vm_route_idents(tenant)
+            _missed_to_vm_Q = (
+                Q(direction='inbound', missed_call=True, hangup_cause__in=self._NO_ANSWER_CAUSES)
+                & Q(extension_number__in=_vm_idents)
+            ) if _vm_idents else Q(pk__in=[])
         if status_filter == 'ANSWERED':
             qs = qs.filter(hangup_cause__in=('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED'), billsec__gt=0)
         elif status_filter == 'BUSY':
@@ -262,15 +277,9 @@ class ClientCDRView(APIView):
         elif status_filter == 'NO_ANSWER':
             qs = qs.filter(hangup_cause__in=self._NO_ANSWER_CAUSES).exclude(missed_call=True)
         elif status_filter == 'MISSED':
-            qs = qs.filter(hangup_cause__in=self._NO_ANSWER_CAUSES, missed_call=True)
+            qs = qs.filter(hangup_cause__in=self._NO_ANSWER_CAUSES, missed_call=True).exclude(_missed_to_vm_Q)
         elif status_filter == 'WENT_TO_VOICEMAIL':
-            qs = qs.filter(
-                Q(last_app='voicemail') |
-                Q(last_app='speak', last_arg__contains='|') |
-                Q(last_app='record', last_arg__contains='/voicemail/') |
-                Q(last_app='system', last_arg__contains='voicemail-messages/ingest') |
-                Q(last_app='phrase', last_arg__contains='voicemail')
-            )
+            qs = qs.filter(_vm_Q | _missed_to_vm_Q)
         elif status_filter == 'FAILED':
             qs = qs.filter(hangup_cause__in=self._FAILED_CAUSES)
 
@@ -322,12 +331,18 @@ class ClientCDRView(APIView):
 
         qs = self._filtered_qs(request, tenant)
 
+        # Extensions whose no-answer routing lands on voicemail — a missed call to
+        # one of these is reported as voicemail (matches the summary buckets).
+        from apps.common.vm_routing import vm_route_idents as _vm_route_idents  # noqa: PLC0415
+        vm_idents = _vm_route_idents(tenant)
+        ser_ctx = {'vm_route_idents': vm_idents}
+
         if xml_cdr_uuid:
             try:
                 obj = qs.get(xml_cdr_uuid=xml_cdr_uuid)
             except XmlCdr.DoesNotExist:
                 raise NotFound()
-            return Response(ClientCDRSerializer(obj).data)
+            return Response(ClientCDRSerializer(obj, context=ser_ctx).data)
 
         # Export: return all matching rows without pagination
         export = request.query_params.get('export', '').lower() == 'true'
@@ -351,6 +366,14 @@ class ClientCDRView(APIView):
         # even when the client filters by status.
         total = counts_qs.count()
 
+        # Missed inbound calls to a VM-routed extension count as voicemail, not missed.
+        _missed_to_vm_counts_Q = (
+            Q(direction='inbound', missed_call=True,
+              hangup_cause__in=('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
+                                'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'))
+            & Q(extension_number__in=vm_idents)
+        ) if vm_idents else Q(pk__in=[])
+
         status_counts = counts_qs.aggregate(
             ANSWERED=Count('xml_cdr_uuid', filter=Q(
                 hangup_cause__in=('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED'), billsec__gt=0
@@ -361,7 +384,7 @@ class ClientCDRView(APIView):
                 Q(last_app='record', last_arg__contains='/voicemail/') |
                 Q(last_app='system', last_arg__contains='voicemail-messages/ingest') |
                 Q(last_app='phrase', last_arg__contains='voicemail')
-            )),
+            ) | _missed_to_vm_counts_Q),
             BUSY=Count('xml_cdr_uuid', filter=Q(hangup_cause='USER_BUSY')),
             NO_ANSWER=Count('xml_cdr_uuid', filter=Q(
                 hangup_cause__in=('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
@@ -371,7 +394,7 @@ class ClientCDRView(APIView):
                 hangup_cause__in=('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
                                   'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'),
                 missed_call=True,
-            )),
+            ) & ~_missed_to_vm_counts_Q),
             FAILED=Count('xml_cdr_uuid', filter=Q(hangup_cause__in=(
                 'UNALLOCATED_NUMBER', 'NO_ROUTE_TRANSIT_NET', 'NO_ROUTE_DESTINATION',
                 'CALL_REJECTED', 'NUMBER_CHANGED', 'DESTINATION_OUT_OF_ORDER',
@@ -391,7 +414,7 @@ class ClientCDRView(APIView):
             'page': page,
             'page_size': page_size,
             'status_counts': status_counts,
-            'results': ClientCDRSerializer(items, many=True).data,
+            'results': ClientCDRSerializer(items, many=True, context=ser_ctx).data,
         })
 
     def _summary(self, request, tenant):
@@ -427,14 +450,26 @@ class ClientCDRView(APIView):
         _inbound_Q = Q(direction='inbound')
         _outbound_Q = Q(direction='outbound')
 
+        # Extensions whose no-answer routing lands on voicemail. A missed call to
+        # such an extension is reported as voicemail even when FreeSWITCH didn't log
+        # a separate voicemail leg. See apps.common.vm_routing for the rule.
+        from apps.common.vm_routing import vm_route_idents as _vm_route_idents  # noqa: PLC0415
+        vm_idents = _vm_route_idents(tenant)
+        # Missed call that the dialplan would have sent to voicemail.
+        _missed_to_vm_Q = (
+            _inbound_Q & Q(missed_call=True) & ~_VOICEMAIL_Q
+            & ~Q(hangup_cause__in=_FAILED_CAUSES)
+            & Q(extension_number__in=vm_idents)
+        ) if vm_idents else Q(pk__in=[])
+
         agg = qs.aggregate(
             total_calls=Count('xml_cdr_uuid'),
             answered_calls=Count('xml_cdr_uuid', filter=_answered_Q),
             # Inbound breakdown — mutually exclusive buckets
             inbound_calls=Count('xml_cdr_uuid', filter=_inbound_Q),
             inbound_answered=Count('xml_cdr_uuid', filter=_inbound_Q & _answered_Q & ~_VOICEMAIL_Q),
-            inbound_voicemail=Count('xml_cdr_uuid', filter=_inbound_Q & _VOICEMAIL_Q),
-            inbound_missed=Count('xml_cdr_uuid', filter=_inbound_Q & Q(missed_call=True) & ~_VOICEMAIL_Q & ~Q(hangup_cause__in=_FAILED_CAUSES)),
+            inbound_voicemail=Count('xml_cdr_uuid', filter=(_inbound_Q & _VOICEMAIL_Q) | _missed_to_vm_Q),
+            inbound_missed=Count('xml_cdr_uuid', filter=_inbound_Q & Q(missed_call=True) & ~_VOICEMAIL_Q & ~Q(hangup_cause__in=_FAILED_CAUSES) & ~_missed_to_vm_Q),
             inbound_no_answer=Count('xml_cdr_uuid', filter=_inbound_Q & Q(hangup_cause__in=_NO_ANSWER_CAUSES) & ~_VOICEMAIL_Q & Q(missed_call=False)),
             inbound_busy=Count('xml_cdr_uuid', filter=_inbound_Q & Q(hangup_cause='USER_BUSY') & ~_VOICEMAIL_Q),
             inbound_failed=Count('xml_cdr_uuid', filter=_inbound_Q & Q(hangup_cause__in=_FAILED_CAUSES) & ~_VOICEMAIL_Q & ~_answered_Q & ~Q(hangup_cause__in=_NO_ANSWER_CAUSES) & ~Q(hangup_cause='USER_BUSY') & ~Q(hangup_cause__in=_CONGESTION_CAUSES)),

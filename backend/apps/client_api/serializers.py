@@ -88,6 +88,15 @@ class ClientCDRSerializer(serializers.ModelSerializer):
     missed_call = serializers.BooleanField(read_only=True)
     status = serializers.SerializerMethodField()
 
+    def _missed_routes_to_vm(self, obj):
+        """True when this is a missed inbound call whose destination extension is
+        configured to send no-answer to voicemail. The set of VM-routed extension
+        identifiers is supplied by the view via context['vm_route_idents']."""
+        if not obj.missed_call or obj.direction != 'inbound':
+            return False
+        idents = self.context.get('vm_route_idents')
+        return bool(idents) and obj.extension_number in idents
+
     def get_status(self, obj):
         cause = (obj.hangup_cause or '').upper()
 
@@ -123,6 +132,8 @@ class ClientCDRSerializer(serializers.ModelSerializer):
             if obj.direction == 'outbound':
                 return 'NO_ANSWER'
             if obj.missed_call:
+                if self._missed_routes_to_vm(obj):
+                    return 'WENT_TO_VOICEMAIL'
                 return 'MISSED'
             return 'NO_ANSWER'
 
@@ -145,6 +156,8 @@ class ClientCDRSerializer(serializers.ModelSerializer):
         if obj.billsec > 0:
             return 'ANSWERED'
         if obj.missed_call:
+            if self._missed_routes_to_vm(obj):
+                return 'WENT_TO_VOICEMAIL'
             return 'MISSED'
         return 'FAILED'
 

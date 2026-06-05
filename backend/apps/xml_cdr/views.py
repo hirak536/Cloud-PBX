@@ -22,6 +22,16 @@ class XmlCdrViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewSet):
     ordering_fields = ['start_stamp', 'duration', 'billsec', 'insert_date']
     ordering = ['-start_stamp']
 
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        # Extensions whose no-answer routing lands on voicemail — a missed call to
+        # one of these is reported as voicemail across every CDR API. The admin list
+        # spans tenants, so the lookup is global; identifiers are mostly the
+        # tenant-suffixed sip_username form ("906-IHDT"), which is unique per tenant.
+        from apps.common.vm_routing import vm_route_idents  # noqa: PLC0415
+        ctx['vm_route_idents'] = vm_route_idents()
+        return ctx
+
     def get_queryset(self):
         qs = super().get_queryset()
         p = self.request.query_params
