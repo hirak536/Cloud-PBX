@@ -329,11 +329,19 @@ class ClientCDRView(APIView):
                 raise NotFound()
             return Response(ClientCDRSerializer(obj).data)
 
-        # Pagination
-        page = int(request.query_params.get('page', 1))
-        page_size = min(int(request.query_params.get('page_size', 25)), 100)
-        offset = (page - 1) * page_size
-        items = qs[offset:offset + page_size]
+        # Export: return all matching rows without pagination
+        export = request.query_params.get('export', '').lower() == 'true'
+        if export:
+            items = qs
+            page = 1
+            page_size = qs.count()
+            offset = 0
+        else:
+            # Pagination
+            page = int(request.query_params.get('page', 1))
+            page_size = min(int(request.query_params.get('page_size', 25)), 100)
+            offset = (page - 1) * page_size
+            items = qs[offset:offset + page_size]
 
         # status_counts always ignore status filter — reflect date range + extension + search/number only.
         # count should always reflect the total calls for the selected extension/date range.
