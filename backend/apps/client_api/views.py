@@ -434,9 +434,10 @@ class ClientCDRView(APIView):
             inbound_calls=Count('xml_cdr_uuid', filter=_inbound_Q),
             inbound_answered=Count('xml_cdr_uuid', filter=_inbound_Q & _answered_Q & ~_VOICEMAIL_Q),
             inbound_voicemail=Count('xml_cdr_uuid', filter=_inbound_Q & _VOICEMAIL_Q),
-            inbound_missed=Count('xml_cdr_uuid', filter=_inbound_Q & Q(missed_call=True) & ~_VOICEMAIL_Q),
+            inbound_missed=Count('xml_cdr_uuid', filter=_inbound_Q & Q(missed_call=True) & ~_VOICEMAIL_Q & ~Q(hangup_cause__in=_FAILED_CAUSES)),
             inbound_no_answer=Count('xml_cdr_uuid', filter=_inbound_Q & Q(hangup_cause__in=_NO_ANSWER_CAUSES) & ~_VOICEMAIL_Q & Q(missed_call=False)),
             inbound_busy=Count('xml_cdr_uuid', filter=_inbound_Q & Q(hangup_cause='USER_BUSY') & ~_VOICEMAIL_Q),
+            inbound_failed=Count('xml_cdr_uuid', filter=_inbound_Q & Q(hangup_cause__in=_FAILED_CAUSES) & ~_VOICEMAIL_Q & ~_answered_Q & ~Q(hangup_cause__in=_NO_ANSWER_CAUSES) & ~Q(hangup_cause='USER_BUSY') & ~Q(hangup_cause__in=_CONGESTION_CAUSES)),
             # Outbound breakdown — mutually exclusive buckets
             outbound_calls=Count('xml_cdr_uuid', filter=_outbound_Q),
             outbound_answered=Count('xml_cdr_uuid', filter=_outbound_Q & _answered_Q),
@@ -452,45 +453,20 @@ class ClientCDRView(APIView):
         inbound = agg['inbound_calls'] or 0
         outbound = agg['outbound_calls'] or 0
 
-        # Voicemail counts — scoped to extension mailbox if extension filter provided,
-        # and to the same date range as the CDR filter if provided.
-        extension_param = request.query_params.get('extension', '')
-        vm_qs = VoicemailMessage.objects.filter(in_folder='inbox')
-        if extension_param:
-            plain_ext = extension_param.split('-')[0]
-            vm_qs = vm_qs.filter(username=plain_ext)
-        else:
-            domain_names = list(tenant.domains.filter(domain_enabled=True).values_list('domain_name', flat=True))
-            vm_qs = vm_qs.filter(domain__in=domain_names)
-
-        # Apply date range using epoch — convert ISO datetime strings to Unix timestamps
-        start_gte = request.query_params.get('start') or request.query_params.get('start_stamp__gte')
-        start_lte = request.query_params.get('end') or request.query_params.get('start_stamp__lte')
-        if start_gte:
-            try:
-                vm_qs = vm_qs.filter(created_epoch__gte=int(dp.parse(start_gte).timestamp()))
-            except Exception:
-                pass
-        if start_lte:
-            try:
-                vm_qs = vm_qs.filter(created_epoch__lte=int(dp.parse(start_lte).timestamp()))
-            except Exception:
-                pass
-
-        try:
-            vm_total = vm_qs.count()
-            vm_read = vm_qs.filter(read_flags='read').count()
-        except Exception:
-            vm_total = 0
-            vm_read = 0
-        vm_unread = vm_total - vm_read
+        # Voicemail count — derived from the CDR data, identical to incoming.voicemail.
+        # Scoped to extension + date range only (NOT status/direction) so the count is
+        # stable regardless of the status/direction filter applied to the rest of the
+        # summary. Mirrors how status_counts in the list API ignore the status filter.
+        vm_total = self._extension_only_qs(request, tenant).filter(
+            Q(direction='inbound') & _VOICEMAIL_Q
+        ).count()
 
         tenant_counts = {
             'total_did': Destination.objects.filter(tenant=tenant).count(),
             'total_ext': Extension.objects.filter(tenant=tenant).count(),
         }
 
-        return Response({
+        payload = {
             'total_did': tenant_counts['total_did'],
             'total_ext': tenant_counts['total_ext'],
             'total_calls': total,
@@ -511,14 +487,27 @@ class ClientCDRView(APIView):
                 'missed': agg['inbound_missed'] or 0,
                 'no_answer': agg['inbound_no_answer'] or 0,
                 'busy': agg['inbound_busy'] or 0,
+                'failed': agg['inbound_failed'] or 0,
                 'voicemail': agg['inbound_voicemail'] or 0,
             },
             'voicemail': {
                 'total': vm_total,
-                'read': vm_read,
-                'unread': vm_unread,
             },
-        })
+        }
+
+        # Omit any zero-valued field; drop nested groups that become empty.
+        def _prune(d):
+            out = {}
+            for key, value in d.items():
+                if isinstance(value, dict):
+                    nested = _prune(value)
+                    if nested:
+                        out[key] = nested
+                elif value:
+                    out[key] = value
+            return out
+
+        return Response(_prune(payload))
 
 
 # ──────────────────────────────────────────────
