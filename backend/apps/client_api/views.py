@@ -453,13 +453,34 @@ class ClientCDRView(APIView):
         inbound = agg['inbound_calls'] or 0
         outbound = agg['outbound_calls'] or 0
 
-        # Voicemail count — derived from the CDR data, identical to incoming.voicemail.
-        # Scoped to extension + date range only (NOT status/direction) so the count is
-        # stable regardless of the status/direction filter applied to the rest of the
-        # summary. Mirrors how status_counts in the list API ignore the status filter.
-        vm_total = self._extension_only_qs(request, tenant).filter(
-            Q(direction='inbound') & _VOICEMAIL_Q
-        ).count()
+        # Voicemail counts — actual messages in the tenant's mailbox(es) from the
+        # voicemail_msgs table (same source as the voicemail listing endpoint), NOT
+        # the CDR call count. Read state lives in VoicemailReadState (reader='client').
+        # Independent of status/direction filters; scoped to extension if provided.
+        from apps.voicemails.models import Voicemail as VoicemailModel  # noqa: PLC0415
+
+        extension_param = request.query_params.get('extension', '')
+        mailboxes = VoicemailModel.objects.filter(tenant=tenant)
+        if extension_param:
+            plain_ext = extension_param.split('-')[0]
+            mailboxes = mailboxes.filter(voicemail_id=plain_ext)
+        vm_uuids = [str(vm.voicemail_uuid) for vm in mailboxes]
+
+        if vm_uuids:
+            msg_uuids = list(
+                VoicemailMessage.objects.filter(username__in=vm_uuids)
+                .values_list('uuid', flat=True)
+            )
+            vm_total = len(msg_uuids)
+            vm_read = VoicemailReadState.objects.filter(
+                message_uuid__in=msg_uuids,
+                reader=VoicemailReadState.READER_CLIENT,
+                is_read=True,
+            ).count()
+        else:
+            vm_total = 0
+            vm_read = 0
+        vm_unread = vm_total - vm_read
 
         tenant_counts = {
             'total_did': Destination.objects.filter(tenant=tenant).count(),
@@ -492,22 +513,12 @@ class ClientCDRView(APIView):
             },
             'voicemail': {
                 'total': vm_total,
+                'read': vm_read,
+                'unread': vm_unread,
             },
         }
 
-        # Omit any zero-valued field; drop nested groups that become empty.
-        def _prune(d):
-            out = {}
-            for key, value in d.items():
-                if isinstance(value, dict):
-                    nested = _prune(value)
-                    if nested:
-                        out[key] = nested
-                elif value:
-                    out[key] = value
-            return out
-
-        return Response(_prune(payload))
+        return Response(payload)
 
 
 # ──────────────────────────────────────────────
