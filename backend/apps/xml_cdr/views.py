@@ -34,6 +34,10 @@ class XmlCdrViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
+        # Restrict to the A-leg so each call appears once. Without this the list and
+        # summary double-count (every call has both an A-leg and B-leg row), which is
+        # what makes the admin CDR view disagree with the client_api view.
+        qs = qs.filter(leg='a')
         p = self.request.query_params
         # Accept both naming conventions (frontend sends __gte/__lte; legacy uses start_date/end_date)
         start = p.get('start_stamp__gte') or p.get('start_date')

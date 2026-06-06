@@ -141,6 +141,17 @@ class ClientExtensionView(ClientAPICacheMixin, APIView):
             return Response(data)
         else:
             qs = qs.order_by('extension')
+            # Export: return all matching rows without pagination (?export=all|true)
+            export = request.query_params.get('export', '').lower() in ('all', 'true')
+            if export:
+                export_key = self._ck(tenant_uuid, f'list:export:enabled={enabled_param}')
+                hit = self._cache_get(export_key)
+                if hit is not None:
+                    return Response(hit)
+                data = ClientExtensionSerializer(qs, many=True).data
+                payload = {'count': len(data), 'results': data}
+                self._cache_set(export_key, payload)
+                return Response(payload)
             from rest_framework.pagination import PageNumberPagination
             paginator = PageNumberPagination()
             paginator.page_size = 20
