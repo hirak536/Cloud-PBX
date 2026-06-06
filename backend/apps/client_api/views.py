@@ -122,9 +122,7 @@ class ClientExtensionView(ClientAPICacheMixin, APIView):
 
     def get(self, request, tenant_uuid, extension_uuid=None):
         tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
-        # 'list-all' (not 'list') so cached paginated responses from before the
-        # un-paginated change can't be served as stale hits with the old shape.
-        suffix = f'detail:{extension_uuid}' if extension_uuid else 'list-all'
+        suffix = f'detail:{extension_uuid}' if extension_uuid else 'list'
         key = self._ck(tenant_uuid, suffix)
         hit = self._cache_get(key)
         if hit is not None:
@@ -143,9 +141,13 @@ class ClientExtensionView(ClientAPICacheMixin, APIView):
             return Response(data)
         else:
             qs = qs.order_by('extension')
-            data = ClientExtensionSerializer(qs, many=True).data
-            self._cache_set(key, data)
-            return Response(data)
+            from rest_framework.pagination import PageNumberPagination
+            paginator = PageNumberPagination()
+            paginator.page_size = 20
+            paginator.page_size_query_param = 'page_size'
+            page = paginator.paginate_queryset(qs, request)
+            data = ClientExtensionSerializer(page, many=True).data
+            return paginator.get_paginated_response(data)
 
 
 # ──────────────────────────────────────────────
