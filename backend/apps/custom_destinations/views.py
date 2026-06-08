@@ -25,14 +25,14 @@ class CustomDestinationViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
         return CustomDestinationSerializer
 
     def perform_create(self, serializer):
-        cd = serializer.save()
+        super().perform_create(serializer)
+        cd = serializer.instance
         if cd.kind == 'toggle' and cd.toggle_extension:
             cd.push_toggle_state()
 
     def perform_update(self, serializer):
-        cd = serializer.save()
-        # Re-assert state onto FreeSWITCH after any edit so the lamp matches the
-        # saved record (and a renamed/renumbered toggle re-publishes correctly).
+        super().perform_update(serializer)
+        cd = serializer.instance
         if cd.kind == 'toggle' and cd.toggle_extension:
             cd.push_toggle_state()
 
