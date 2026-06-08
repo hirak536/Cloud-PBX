@@ -1019,6 +1019,9 @@ function BulkAddDIDsDialog({ open, onClose, onDone }) {
 
 export default function Destinations() {
   const [rows, setRows]           = useState([])
+  const [total, setTotal]         = useState(0)
+  const [page, setPage]           = useState(1)
+  const PAGE_SIZE                 = 25
   const [loading, setLoading]     = useState(true)
   const [search, setSearch]       = useState('')
   const debouncedSearch           = useDebounce(search, 300)
@@ -1101,14 +1104,23 @@ export default function Destinations() {
     }
   }, [reloadFaxBoxes])
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (p = page) => {
     setLoading(true)
     try {
-      const { data } = await api.list(debouncedSearch ? { search: debouncedSearch } : {})
-      setRows(Array.isArray(data) ? data : data.results || [])
+      const params = { page: p, page_size: PAGE_SIZE }
+      if (debouncedSearch) params.search = debouncedSearch
+      const { data } = await api.list(params)
+      if (Array.isArray(data)) {
+        setRows(data)
+        setTotal(data.length)
+      } else {
+        setRows(data.results || [])
+        setTotal(data.count || 0)
+      }
     } finally { setLoading(false) }
-  }, [search])
+  }, [debouncedSearch, page])
 
+  useEffect(() => { setPage(1) }, [debouncedSearch])
   useEffect(() => { load() }, [load])
 
   const set = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
@@ -1311,6 +1323,32 @@ export default function Destinations() {
           </TableBody>
         </Table>
       </CardContent></Card>
+
+      {/* pagination */}
+      {total > PAGE_SIZE && (
+        <div className="flex items-center justify-between text-sm text-muted-foreground">
+          <span>
+            {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}
+          </span>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline" size="sm"
+              disabled={page === 1}
+              onClick={() => setPage(p => p - 1)}
+            >
+              ← Prev
+            </Button>
+            <span className="px-3 py-1 text-xs">Page {page} of {Math.ceil(total / PAGE_SIZE)}</span>
+            <Button
+              variant="outline" size="sm"
+              disabled={page >= Math.ceil(total / PAGE_SIZE)}
+              onClick={() => setPage(p => p + 1)}
+            >
+              Next →
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialog}>
