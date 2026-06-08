@@ -24,7 +24,6 @@ export default function LiveProvider() {
   const { currentTenant } = useSelector(selectTenant)
   const wsRef = useRef(null)
   const timerRef = useRef(null)
-  const destroyedRef = useRef(false)
 
   useEffect(() => {
     if (!isAuthenticated || !accessToken) {
@@ -38,24 +37,25 @@ export default function LiveProvider() {
       return
     }
 
-    destroyedRef.current = false
+    // Each effect run gets its own "alive" flag so onclose callbacks from a
+    // previous run never schedule reconnects into the new run's closure.
+    let alive = true
+
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+    const tenantParam = currentTenant?.tenant_uuid ? `&tenant=${currentTenant.tenant_uuid}` : ''
 
     function connect() {
-      if (destroyedRef.current) return
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-      const tenantParam = currentTenant?.tenant_uuid ? `&tenant=${currentTenant.tenant_uuid}` : ''
+      if (!alive) return
       const ws = new WebSocket(`${proto}://${location.host}/ws/operator-panel/?token=${accessToken}${tenantParam}`)
       wsRef.current = ws
 
       ws.onopen = () => {
-        // console.log('[LiveProvider] WS connected')
         dispatch(setWsConnected(true))
       }
 
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data)
-          // console.log('[LiveProvider] msg:', msg.type, msg)
           switch (msg.type) {
             case 'active_calls_update':
               dispatch(setActiveCalls(msg.calls || []))
@@ -82,11 +82,10 @@ export default function LiveProvider() {
         } catch {}
       }
 
-      ws.onclose = (e) => {
-        // console.log('[LiveProvider] WS closed', e.code, e.reason)
+      ws.onclose = () => {
         dispatch(setWsConnected(false))
         wsRef.current = null
-        if (!destroyedRef.current) {
+        if (alive) {
           timerRef.current = setTimeout(connect, 4000)
         }
       }
@@ -97,7 +96,7 @@ export default function LiveProvider() {
     connect()
 
     return () => {
-      destroyedRef.current = true
+      alive = false
       clearTimeout(timerRef.current)
       if (wsRef.current) {
         try { wsRef.current.onclose = null; wsRef.current.close() } catch {}
