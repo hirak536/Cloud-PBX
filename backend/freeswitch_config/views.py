@@ -250,15 +250,15 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
 
     duration = int_var('duration')
     waitsec = int_var('waitsec')
+    answer_epoch = int_var('answer_epoch')
+    end_epoch = int_var('end_epoch')
     raw_billsec = int_var('billsec')
-    # FreeSWITCH sets billsec = answer_time - hangup_time on the inbound channel,
-    # which equals duration (ring time included). Correct it to talk time only.
     # Missed/offline calls have no talk time regardless of what FreeSWITCH reports.
     hangup_cause_raw = var('hangup_cause', '')
     if hangup_cause_raw == 'USER_NOT_REGISTERED':
         billsec = 0
-    elif waitsec > 0:
-        billsec = max(0, duration - waitsec)
+    elif answer_epoch > 0 and end_epoch > 0:
+        billsec = max(0, end_epoch - answer_epoch)
     else:
         billsec = raw_billsec
     leg = 'b' if is_originating_leg else 'a'
@@ -330,9 +330,9 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         context=var('context'),
         start_epoch=int_var('start_epoch'),
         start_stamp=stamp('start_stamp'),
-        answer_epoch=int_var('answer_epoch'),
+        answer_epoch=answer_epoch,
         answer_stamp=stamp('answer_stamp'),
-        end_epoch=int_var('end_epoch'),
+        end_epoch=end_epoch,
         end_stamp=stamp('end_stamp'),
         duration=duration,
         mduration=int_var('mduration'),
