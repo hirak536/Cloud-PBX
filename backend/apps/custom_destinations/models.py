@@ -23,6 +23,7 @@ DEST_TYPE_CHOICES = [
 KIND_CHOICES = [
     ('simple',            'Simple Destination'),
     ('sticky_last_agent', 'Route to Last Agent'),
+    ('toggle',            'Toggle (BLF switch)'),
     # Future kinds (time_of_day, area_code_routing, round_robin, ...) plug in here
     # and the frontend renders matching fields via the kind registry.
 ]
@@ -86,6 +87,50 @@ class CustomDestination(models.Model):
         help_text='Route inbound calls to the last extension that previously called the caller\'s number.',
     )
 
+    # ── Toggle (BLF switch) kind ────────────────────────────────────────────────
+    # When kind == 'toggle' this custom destination becomes a switch:
+    #   • `toggle_extension` is a dialable number (like an extension, but BLF-only):
+    #     a phone subscribes a BLF key to it to see GREEN while ON / RED while OFF,
+    #     and pressing the key (dialing it) flips the state with a confirmation tone,
+    #   • `toggle_feature_code` is an optional second dial string that also flips it,
+    #   • calls routed *through* it go to the "ON" destination while on, "OFF" while off.
+    # The two branches reference other CustomDestinations so they can be any dest type.
+    toggle_extension = models.CharField(
+        max_length=16, blank=True, default='',
+        help_text='Dialable BLF number for this toggle, e.g. "801". Subscribe a phone '
+                  'BLF key to it; dialing it flips the toggle. Required for toggle kind.',
+    )
+    toggle_feature_code = models.CharField(
+        max_length=16, blank=True, default='',
+        help_text='Optional second dial string that also flips the toggle, e.g. "*71".',
+    )
+    toggle_default_on = models.BooleanField(
+        default=True,
+        help_text='Initial state seeded into a brand-new toggle (True = ON / green).',
+    )
+    toggle_state = models.BooleanField(
+        default=True,
+        help_text='Live canonical state — the source of truth. True = ON / green, '
+                  'False = OFF / red. Kept in sync with FreeSWITCH mod_db + presence; '
+                  'republished to phones on reboot/resync so the lamp never drifts.',
+    )
+    toggle_on_dest = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='+',
+        db_column='toggle_on_dest_uuid',
+        help_text='Where calls go while the toggle is ON (green). Another CustomDestination.',
+    )
+    toggle_off_dest = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='+',
+        db_column='toggle_off_dest_uuid',
+        help_text='Where calls go while the toggle is OFF (red). Another CustomDestination.',
+    )
+
     # ── Status ────────────────────────────────────────────────────────────────
     enabled = models.BooleanField(default=True)
 
@@ -100,6 +145,45 @@ class CustomDestination(models.Model):
 
     def __str__(self):
         return f'{self.name} → {self.get_dest_type_display()}'
+
+    # ── Toggle state helpers ────────────────────────────────────────────────
+    @property
+    def toggle_db_key(self):
+        """mod_db key holding this toggle's state inside FreeSWITCH."""
+        return f'custom_toggle/{self.custom_destination_uuid}'
+
+    @property
+    def toggle_presence_id(self):
+        """Presence identity a phone BLF key subscribes to (number@domain)."""
+        domain_name = self.domain.domain_name if self.domain_id else ''
+        return f'{self.toggle_extension}@{domain_name}'
+
+    def push_toggle_state(self):
+        """Write self.toggle_state into FreeSWITCH and republish presence.
+
+        Makes the live phone lamp match the DB source of truth. Safe to call
+        repeatedly (idempotent) — used on UI flips and on reboot/resync so a
+        rebooted phone showing the wrong colour gets corrected.
+        Returns True on success, False if ESL is unavailable (state still saved
+        in the DB and will resync on the next dialplan route / resync call).
+        """
+        if self.kind != 'toggle' or not self.toggle_extension:
+            return False
+        import logging
+        log = logging.getLogger(__name__)
+        val = 'true' if self.toggle_state else 'false'
+        # 'confirmed' lights the lamp (green/ON), 'terminated' clears it (red/OFF).
+        state = 'confirmed' if self.toggle_state else 'terminated'
+        status = 'Active (ON)' if self.toggle_state else 'Idle (OFF)'
+        try:
+            from esl.client import get_esl_client
+            esl = get_esl_client()
+            esl.api(f'db insert/{self.toggle_db_key}/{val}')
+            esl.presence_in(self.toggle_presence_id, status=status, state=state)
+            return True
+        except Exception as exc:
+            log.warning('push_toggle_state failed for %s: %s', self.custom_destination_uuid, exc)
+            return False
 
 
 class CallerExtensionAffinity(models.Model):

@@ -1188,6 +1188,119 @@ def _call_parking_slot_to_dialplan_xml(slot_obj, domain_name, tenant_code):
     return hint_el
 
 
+def _toggle_custom_dest_to_dialplan_xml(cd, domain_name, ctx_name, preload=None):
+    """Generate FreeSWITCH <extension> elements for a 'toggle' CustomDestination.
+
+    The toggle behaves like an extension that exists only as a BLF switch:
+      • `toggle_extension` (e.g. 801) is the dialable BLF number. Its presence
+        lives at <ext>@domain so a phone BLF key subscribed to that number lights
+        GREEN while ON / RED while OFF. Dialing it (pressing the key) flips the
+        state and plays a confirmation tone, then republishes presence so the
+        lamp updates instantly.
+      • `toggle_feature_code` (optional) is a second dial string that also flips it.
+      • A separate internal router (toggle_route_<uuid>) is what other destinations
+        transfer to: it follows the ON branch while the flag is true, OFF otherwise.
+
+    State is stored in FreeSWITCH's mod_db under key custom_toggle/<uuid>.
+    """
+    uid = str(cd.custom_destination_uuid)
+    ext = cd.toggle_extension
+    fc = cd.toggle_feature_code
+    # Presence at <ext>@domain so a standard BLF subscription to the number works,
+    # exactly like subscribing a key to a real extension.
+    presence_id = f'{ext}@{domain_name}'
+    db_key = f'custom_toggle/{uid}'
+    # The stored value is 'true' (ON) or 'false' (OFF). When mod_db has no value
+    # yet (fresh FreeSWITCH, or after a flush), seed it from the DB canonical
+    # state (toggle_state) so the runtime state matches what the UI shows. This
+    # is what keeps a rebooted phone from drifting: the dialplan re-asserts the
+    # Django source of truth into mod_db.
+    default_val = 'true' if cd.toggle_state else 'false'
+    state_expr = f'${{db(select/{db_key})}}'
+
+    elements = []
+
+    # ── 1. Router (call-through) ─────────────────────────────────────────────
+    # Other destinations transfer to toggle_route_<uuid>; it picks the branch by
+    # current state. This is the routing path, NOT the BLF lamp (no hint here).
+    route_el = etree.Element('extension', name=f'toggle_route_{uid}')
+    etree.SubElement(route_el, 'condition',
+                     field='destination_number',
+                     expression=f'^toggle_{re.escape(uid)}$',
+                     attrib={'break': 'never'})
+    on_actions = []
+    off_actions = []
+    try:
+        if cd.toggle_on_dest_id:
+            on_actions = _resolve_dest_action(cd.toggle_on_dest, domain_name, preload=preload) or []
+        if cd.toggle_off_dest_id:
+            off_actions = _resolve_dest_action(cd.toggle_off_dest, domain_name, preload=preload) or []
+    except Exception as e:
+        logger.warning('Toggle %s branch resolution error: %s', uid, e)
+
+    # Seed the stored value to the configured default when the key is unset, so
+    # an untouched toggle routes to its intended initial branch (not always OFF).
+    # ${db(select/...)} returns empty for a missing key; we match that empty
+    # string and insert the default before the routing branch evaluates.
+    seed_cond = etree.SubElement(route_el, 'condition',
+                                 field=state_expr,
+                                 expression='^$',
+                                 attrib={'break': 'never'})
+    etree.SubElement(seed_cond, 'action', application='db',
+                     data=f'insert/{db_key}/{default_val}')
+
+    # The stored value is matched against ^true$: a match (ON) runs the ON branch
+    # via <action>, everything else (false) runs the OFF branch via <anti-action>.
+    branch_cond = etree.SubElement(route_el, 'condition',
+                                   field=state_expr,
+                                   expression='^true$')
+    for app, data in on_actions:
+        etree.SubElement(branch_cond, 'action', application=app, data=data)
+    for app, data in off_actions:
+        etree.SubElement(branch_cond, 'anti-action', application=app, data=data)
+    elements.append(route_el)
+
+    # ── 2. BLF extension (the dialable number + lamp) ────────────────────────
+    # hint=presence_id drives the lamp; dialing the number flips the toggle.
+    blf_dial_exprs = [re.escape(ext)]
+    if fc:
+        blf_dial_exprs.append(re.escape(fc))
+    blf_el = etree.Element('extension', name=f'toggle_blf_{uid}',
+                           attrib={'hint': presence_id})
+    blf_cond = etree.SubElement(blf_el, 'condition',
+                                field='destination_number',
+                                expression=f'^({"|".join(blf_dial_exprs)})$')
+    etree.SubElement(blf_cond, 'action', application='answer')
+    etree.SubElement(blf_cond, 'action', application='sleep', data='300')
+    etree.SubElement(blf_cond, 'action', application='execute_extension',
+                     data=f'toggle_exec_{uid} XML {ctx_name}')
+    etree.SubElement(blf_cond, 'action', application='hangup')
+    elements.append(blf_el)
+
+    # ── 3. Internal flip-exec (matched by uuid, never dialled directly) ─────
+    exec_el = etree.Element('extension', name=f'toggle_exec_{uid}')
+    # Currently ON (true) → turn OFF, publish 'terminated' (lamp goes red).
+    exec_cond = etree.SubElement(exec_el, 'condition',
+                                 field=state_expr,
+                                 expression='^true$')
+    etree.SubElement(exec_cond, 'action', application='db',
+                     data=f'insert/{db_key}/false')
+    etree.SubElement(exec_cond, 'action', application='presence',
+                     data=f'terminated {presence_id}')
+    etree.SubElement(exec_cond, 'action', application='playback',
+                     data='tone_stream://%(200,0,400)')
+    # Not ON (false or empty) → turn ON, publish 'confirmed' (lamp goes green).
+    etree.SubElement(exec_cond, 'anti-action', application='db',
+                     data=f'insert/{db_key}/true')
+    etree.SubElement(exec_cond, 'anti-action', application='presence',
+                     data=f'confirmed {presence_id}')
+    etree.SubElement(exec_cond, 'anti-action', application='playback',
+                     data='tone_stream://%(200,0,800)')
+    elements.append(exec_el)
+
+    return elements
+
+
 def _ring_group_to_dialplan_xml(rg, domain_name, ctx, preload=None):
     """Generate a FreeSWITCH <extension> element for a ring group.
 
@@ -2074,6 +2187,18 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
         get_or_create_context(ctx_name).append(
             _call_parking_slot_to_dialplan_xml(slot_obj, slot_domain_name, tenant_code)
         )
+
+    # ── 11. Toggle (BLF switch) custom destinations ──────────────────────
+    # A CustomDestination of kind 'toggle' becomes a stateful switch: a feature
+    # code flips a DB-backed flag, a BLF key shows green (ON) / red (OFF), and
+    # calls routed through it follow the ON or OFF branch accordingly.
+    for cd in preload['custom_dests'].values():
+        if cd.kind != 'toggle' or not cd.toggle_extension:
+            continue
+        tenant_code = cd.tenant.tenant_code if cd.tenant else None
+        ctx_name = f'default-{tenant_code}' if tenant_code else 'default'
+        for el in _toggle_custom_dest_to_dialplan_xml(cd, domain.domain_name, ctx_name, preload=preload):
+            get_or_create_context(ctx_name).append(el)
 
     # ── Prune to only the requested context (+ public) ───────────────────
     # FreeSWITCH consumes a single context per dialplan fetch. Returning every

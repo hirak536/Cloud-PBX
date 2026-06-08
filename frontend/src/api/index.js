@@ -381,6 +381,9 @@ export const customDestinations = {
   update: (id, data) => api.put(`/custom-destinations/${id}/`, data),
   delete: (id) => api.delete(`/custom-destinations/${id}/`),
   affinityStats: () => api.get('/custom-destinations/affinity-stats/'),
+  toggleState: (id) => api.get(`/custom-destinations/${id}/toggle-state/`),
+  setToggleState: (id, state) => api.post(`/custom-destinations/${id}/set-state/`, { state }),
+  resyncToggles: () => api.post('/custom-destinations/resync-toggles/'),
 }
 
 export const recordings = {

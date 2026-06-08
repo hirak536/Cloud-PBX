@@ -3,6 +3,23 @@
 All notable changes to IHS-PBX are documented in this file.
 Newest entries on top.
 
+## 2026-06-08
+
+### Client API
+- Voicemail messages: the `number` filter now matches both caller ID number and caller ID name (global search), like the `search` filter
+- Voicemail messages: search/number filters are applied to the unread count too; single-mailbox responses now return both `unread` (global mailbox unread, ignores filters) and `filtered_unread` (unread within the active search/number filter)
+
+## 2026-06-06
+
+### Client API
+- Extensions: pass `export=all` (or `export=true`) to return the full extension list without pagination; default list responses now paginate (page size 20, `?page_size=` override)
+
+### Admin Panel
+- CDR list & summary: restricted to A-leg calls so each call is counted once — fixes the admin CDR view showing roughly double the rows/counts and disagreeing with the Client API (e.g. for tenant GMD)
+
+### Tooling
+- Fixed `migrate_cdrs.py` and `migrate_voicemails.py` Django bootstrap (`ModuleNotFoundError: No module named 'config'`) — they now resolve the settings package when run from `sip2fs_migration/`
+
 ## 2026-06-05
 
 ### Client API

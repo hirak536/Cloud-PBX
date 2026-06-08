@@ -41,4 +41,10 @@ class CustomDestinationListSerializer(serializers.ModelSerializer):
             'dest_external_number',
             'callback_to_last_caller',
             'enabled',
+            'toggle_extension',
+            'toggle_feature_code',
+            'toggle_default_on',
+            'toggle_state',
+            'toggle_on_dest',
+            'toggle_off_dest',
         ]

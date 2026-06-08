@@ -74,6 +74,63 @@ class FreeSwitchESL:
             except Exception:
                 pass
 
+    def sendevent(self, name: str, headers: Dict[str, str], body: str = '') -> str:
+        """Inject a custom event into FreeSWITCH's event system.
+
+        Used e.g. to publish PRESENCE_IN events so BLF lamps update out-of-band
+        (no active call). headers become event headers; body is the optional
+        event body.
+        """
+        conn = self._connect()
+        try:
+            lines = [f'sendevent {name}']
+            for k, v in headers.items():
+                lines.append(f'{k}: {v}')
+            payload = '\n'.join(lines) + '\n'
+            if body:
+                payload += f'Content-Length: {len(body)}\n\n{body}'
+            response = conn.send(payload + '\n')
+            return response.data if hasattr(response, 'data') else str(response)
+        except Exception as e:
+            logger.error(f"ESL sendevent error ({name}): {e}")
+            raise
+        finally:
+            try:
+                conn.stop()
+            except Exception:
+                pass
+
+    def presence_in(self, presence_id: str, status: str = 'Active',
+                    state: str = 'confirmed') -> str:
+        """Publish a PRESENCE_IN event so subscribed BLF keys update.
+
+        presence_id: the entity, e.g. "801@domain".
+        state: 'confirmed'/'early' light the lamp (green), 'terminated' clears it (red).
+        """
+        proto = 'fs_toggle'
+        headers = {
+            'proto': proto,
+            'login': presence_id,
+            'from': presence_id,
+            'status': status,
+            'rpid': 'unknown',
+            'event_type': 'presence',
+            'alt_event_type': 'dialog',
+            'answer-state': state,
+            'presence-call-direction': 'outbound',
+            'unique-id': presence_id,
+        }
+        return self.sendevent('PRESENCE_IN', headers)
+
+    def db_select(self, key: str) -> str:
+        """Read a mod_db value (db select/<key>). Returns '' when unset."""
+        out = self.api(f'db select/{key}')
+        out = (out or '').strip()
+        # FreeSWITCH returns the literal '-ERR' or empty string for a missing key.
+        if not out or out.startswith('-ERR') or 'not found' in out.lower():
+            return ''
+        return out
+
     def reload_xml(self) -> str:
         """Reload FreeSWITCH XML configuration."""
         return self.api('reloadxml')

@@ -14,7 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import {
   Plus, Pencil, Trash2, Search, Loader2, X, ChevronDown,
-  PhoneForwarded, PhoneOff, History, Users, Sparkles,
+  PhoneForwarded, PhoneOff, History, Users, Sparkles, ToggleRight, RefreshCw,
 } from 'lucide-react'
 
 const DEST_META = {
@@ -42,6 +42,13 @@ const EMPTY = {
   dest_external_number: '',
   callback_to_last_caller: false,
   enabled: true,
+  // toggle kind
+  toggle_extension: '',
+  toggle_feature_code: '',
+  toggle_default_on: true,
+  toggle_state: true,
+  toggle_on_dest: '',
+  toggle_off_dest: '',
 }
 
 // ── Kind registry ────────────────────────────────────────────────────────────
@@ -92,6 +99,88 @@ const KIND_REGISTRY = {
     ),
     onSavePrep: (form) => ({ ...form, callback_to_last_caller: true }),
   },
+
+  toggle: {
+    label: 'Toggle (BLF switch)',
+    icon: ToggleRight,
+    description: 'A BLF switch with its own dialable number. Subscribe a phone BLF key to the number: GREEN = ON (routes to the ON destination), RED = OFF (routes to the OFF destination). Pressing the key flips it.',
+    renderBody: ({ form, setForm, cdOptions, editId }) => (
+      <>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="BLF Number *" hint='Dialable number for the BLF key, e.g. "801".'>
+            <Input
+              placeholder="801"
+              value={form.toggle_extension}
+              onChange={e => setForm(p => ({ ...p, toggle_extension: e.target.value }))}
+            />
+          </Field>
+          <Field label="Default State" hint="State before first toggle.">
+            <div className="flex items-center gap-2 h-9">
+              <Toggle
+                checked={form.toggle_default_on}
+                onChange={v => setForm(p => ({ ...p, toggle_default_on: v }))}
+              />
+              <span className="text-sm">{form.toggle_default_on ? 'ON (green)' : 'OFF (red)'}</span>
+            </div>
+          </Field>
+        </div>
+        <Field label="Feature Code" hint='Optional second dial string that also flips it, e.g. "*71".'>
+          <Input
+            placeholder="*71 (optional)"
+            value={form.toggle_feature_code}
+            onChange={e => setForm(p => ({ ...p, toggle_feature_code: e.target.value }))}
+          />
+        </Field>
+        <Field label="ON destination (green) *" hint="Where calls go while the toggle is ON.">
+          <CustomDestSelect
+            value={form.toggle_on_dest}
+            onChange={v => setForm(p => ({ ...p, toggle_on_dest: v }))}
+            options={cdOptions}
+            excludeId={editId}
+          />
+        </Field>
+        <Field label="OFF destination (red) *" hint="Where calls go while the toggle is OFF.">
+          <CustomDestSelect
+            value={form.toggle_off_dest}
+            onChange={v => setForm(p => ({ ...p, toggle_off_dest: v }))}
+            options={cdOptions}
+            excludeId={editId}
+          />
+        </Field>
+        <div className="flex items-start gap-2 text-xs text-blue-700 rounded-lg border border-blue-200 bg-blue-500/5 px-3 py-2">
+          <ToggleRight className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          <span>
+            Subscribe a phone BLF key to the BLF number to see the green/red lamp;
+            pressing the key flips it. The ON and OFF destinations must be other
+            custom destinations.
+          </span>
+        </div>
+      </>
+    ),
+    // Toggle doesn't route directly via dest_type; store a hangup placeholder so
+    // the shared "pick a destination" validation/columns stay satisfied.
+    onSavePrep: (form) => ({
+      ...form,
+      callback_to_last_caller: false,
+      dest_type: form.dest_type || 'hangup',
+      toggle_on_dest: form.toggle_on_dest || null,
+      toggle_off_dest: form.toggle_off_dest || null,
+    }),
+  },
+}
+
+function CustomDestSelect({ value, onChange, options, excludeId }) {
+  const items = (options || []).filter(o => o.custom_destination_uuid !== excludeId)
+  return (
+    <Select value={value || ''} onChange={e => onChange(e.target.value)}>
+      <option value="">Select a custom destination…</option>
+      {items.map(o => (
+        <option key={o.custom_destination_uuid} value={o.custom_destination_uuid}>
+          {o.name}
+        </option>
+      ))}
+    </Select>
+  )
 }
 
 const KIND_LIST = Object.entries(KIND_REGISTRY).map(([value, def]) => ({ value, ...def }))
@@ -313,6 +402,49 @@ function ResultBtn({ onClick, children }) {
   )
 }
 
+// Live ON/OFF indicator for a toggle destination. Reads the runtime state from
+// FreeSWITCH (via the backend) so a phone-side flip is reflected, and lets the
+// user flip it from here (which republishes presence so phone lamps update).
+function ToggleStateBadge({ row }) {
+  const [state, setState] = useState(row.toggle_state !== false)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    api.toggleState(row.custom_destination_uuid)
+      .then(({ data }) => { if (alive && typeof data.state === 'boolean') setState(data.state) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [row.custom_destination_uuid])
+
+  const flip = async (e) => {
+    e.stopPropagation()
+    setBusy(true)
+    try {
+      const { data } = await api.setToggleState(row.custom_destination_uuid, !state)
+      setState(data.state)
+    } catch { /* leave state as-is on error */ }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <button
+      type="button" onClick={flip} disabled={busy}
+      title="Click to flip — updates the phone BLF lamp"
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold transition-colors',
+        state ? 'bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25'
+              : 'bg-red-500/15 text-red-600 hover:bg-red-500/25',
+      )}
+    >
+      {busy
+        ? <Loader2 className="h-3 w-3 animate-spin" />
+        : <span className={cn('h-2 w-2 rounded-full', state ? 'bg-emerald-500' : 'bg-red-500')} />}
+      {state ? 'ON' : 'OFF'}
+    </button>
+  )
+}
+
 function Field({ label, hint, children, className }) {
   return (
     <div className={cn('space-y-1.5', className)}>
@@ -438,6 +570,7 @@ export default function CustomDestinations() {
   const [formError, setFormError] = useState('')
   const [deleting, setDeleting] = useState(null)
   const [affinityOpen, setAffinityOpen] = useState(false)
+  const [resyncing, setResyncing] = useState(false)
 
   const { destData, destLoading, loadDestData } = useDestinationData({ withConferences: true })
 
@@ -467,13 +600,25 @@ export default function CustomDestinations() {
       dest_external_number: r.dest_external_number || '',
       callback_to_last_caller: !!r.callback_to_last_caller,
       enabled: r.enabled !== false,
+      toggle_extension: r.toggle_extension || '',
+      toggle_feature_code: r.toggle_feature_code || '',
+      toggle_default_on: r.toggle_default_on !== false,
+      toggle_state: r.toggle_state !== false,
+      toggle_on_dest: r.toggle_on_dest || '',
+      toggle_off_dest: r.toggle_off_dest || '',
     })
     setFormError(''); setDialog(true); loadDestData()
   }
 
   const handleSave = async () => {
     if (!form.name.trim()) { setFormError('Name is required.'); return }
-    if (!form.dest_type)   { setFormError('Pick a destination.'); return }
+    if (form.kind === 'toggle') {
+      if (!form.toggle_extension.trim()) { setFormError('BLF number is required.'); return }
+      if (!form.toggle_on_dest)  { setFormError('Pick an ON destination.'); return }
+      if (!form.toggle_off_dest) { setFormError('Pick an OFF destination.'); return }
+    } else if (!form.dest_type) {
+      setFormError('Pick a destination.'); return
+    }
     setSaving(true); setFormError('')
     try {
       const kindDef = KIND_REGISTRY[form.kind] || KIND_REGISTRY.simple
@@ -495,6 +640,18 @@ export default function CustomDestinations() {
     } finally { setSaving(false) }
   }
 
+  const handleResync = async () => {
+    setResyncing(true)
+    try {
+      const { data } = await api.resyncToggles()
+      load()
+      alert(`Resynced ${data.pushed} toggle${data.pushed === 1 ? '' : 's'} to the phones.` +
+        (data.failed ? ` ${data.failed} could not reach FreeSWITCH.` : ''))
+    } catch {
+      alert('Resync failed — could not reach FreeSWITCH.')
+    } finally { setResyncing(false) }
+  }
+
   const handleDelete = async (id) => {
     if (!confirm('Delete this custom destination?')) return
     setDeleting(id)
@@ -510,6 +667,11 @@ export default function CustomDestinations() {
         </div>
         <Button variant="outline" size="sm" onClick={() => setAffinityOpen(true)}>
           <History className="h-4 w-4 mr-1" /> View Affinity
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleResync} disabled={resyncing}
+          title="Re-push all toggle states to the phones (fixes BLF lamps after a reboot)">
+          {resyncing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1" />}
+          Resync BLF
         </Button>
         <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />New Destination</Button>
       </div>
@@ -554,14 +716,26 @@ export default function CustomDestinations() {
                           </span>
                         </TableCell>
                         <TableCell>
-                          <span className={cn('text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded', meta?.color, meta?.bg)}>
-                            {meta?.label || r.dest_type || '—'}
-                          </span>
+                          {kindKey === 'toggle' ? (
+                            <span className="inline-flex items-center gap-1.5 text-xs font-mono font-bold text-emerald-600">
+                              <ToggleRight className="h-3.5 w-3.5" />
+                              {r.toggle_extension || '—'}
+                              {r.toggle_feature_code && <span className="text-muted-foreground font-normal">/ {r.toggle_feature_code}</span>}
+                            </span>
+                          ) : (
+                            <span className={cn('text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded', meta?.color, meta?.bg)}>
+                              {meta?.label || r.dest_type || '—'}
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell>
-                          <Badge variant={r.enabled !== false ? 'success' : 'secondary'}>
-                            {r.enabled !== false ? 'Active' : 'Disabled'}
-                          </Badge>
+                          {kindKey === 'toggle' ? (
+                            <ToggleStateBadge row={r} />
+                          ) : (
+                            <Badge variant={r.enabled !== false ? 'success' : 'secondary'}>
+                              {r.enabled !== false ? 'Active' : 'Disabled'}
+                            </Badge>
+                          )}
                         </TableCell>
                         <TableCell>
                           <div className="flex gap-1">
@@ -613,6 +787,7 @@ export default function CustomDestinations() {
             {/* Kind-specific body */}
             {(KIND_REGISTRY[form.kind] || KIND_REGISTRY.simple).renderBody({
               form, setForm, destData, destLoading,
+              cdOptions: rows, editId,
               openAffinity: () => setAffinityOpen(true),
             })}
 
