@@ -996,6 +996,7 @@ class ClientVoicemailMessageView(APIView):
                 return Response({'voicemail_id': voicemail_id_filter, 'total': 0, 'unread': 0, 'results': []})
             vm_uuid_str = str(vm_obj.voicemail_uuid)
             all_msgs = VoicemailMessage.objects.filter(username=vm_uuid_str)
+            filtered_msgs = all_msgs
             qs = all_msgs
 
             read_filter = request.query_params.get('read')
@@ -1006,19 +1007,27 @@ class ClientVoicemailMessageView(APIView):
                 else:
                     qs = qs.exclude(uuid__in=read_uuids)
 
+            # Search filters apply to both the listing and the unread count, but
+            # the `read` filter only applies to the listing — so accumulate the
+            # search filters separately and reuse them for the unread count.
+            search_q = None
             number = request.query_params.get('number')
             if number:
-                qs = qs.filter(
+                search_q = (
                     Q(cid_number__icontains=number) |
                     Q(cid_name__icontains=number)
                 )
 
             search = request.query_params.get('search')
             if search:
-                qs = qs.filter(
+                search_q = (search_q or Q()) & (
                     Q(cid_number__icontains=search) |
                     Q(cid_name__icontains=search)
                 )
+
+            if search_q is not None:
+                qs = qs.filter(search_q)
+                filtered_msgs = filtered_msgs.filter(search_q)
 
             if message_uuid:
                 try:
@@ -1032,7 +1041,10 @@ class ClientVoicemailMessageView(APIView):
             ser_ctx = {'read_uuids': read_uuids, 'voicemail_map': voicemail_map,
                        'request': request, 'tenant_uuid': tenant_uuid}
             total = qs.count()
-            unread = all_msgs.exclude(uuid__in=read_uuids).count()
+            # Global unread — ignores search/number filters (whole mailbox).
+            global_unread = all_msgs.exclude(uuid__in=read_uuids).count()
+            # Search-scoped unread — reflects the active search/number filters.
+            filtered_unread = filtered_msgs.exclude(uuid__in=read_uuids).count()
             from rest_framework.pagination import PageNumberPagination
             paginator = PageNumberPagination()
             paginator.page_size = 20
@@ -1044,7 +1056,8 @@ class ClientVoicemailMessageView(APIView):
             paginated.data.update({
                 'voicemail_id': voicemail_id_filter,
                 'total': total,
-                'unread': unread,
+                'unread': global_unread,
+                'result': {'unread': filtered_unread},
             })
             return paginated
         except Exception as e:
