@@ -6,6 +6,7 @@
 import { useEffect, useRef } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { selectAuth } from '@/store'
+import { selectTenant } from '@/store'
 import {
   setWsConnected,
   setActiveCalls,
@@ -20,6 +21,7 @@ import {
 export default function LiveProvider() {
   const dispatch = useDispatch()
   const { isAuthenticated, accessToken } = useSelector(selectAuth)
+  const { currentTenant } = useSelector(selectTenant)
   const wsRef = useRef(null)
   const timerRef = useRef(null)
   const destroyedRef = useRef(false)
@@ -41,7 +43,8 @@ export default function LiveProvider() {
     function connect() {
       if (destroyedRef.current) return
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-      const ws = new WebSocket(`${proto}://${location.host}/ws/operator-panel/?token=${accessToken}`)
+      const tenantParam = currentTenant?.tenant_uuid ? `&tenant=${currentTenant.tenant_uuid}` : ''
+      const ws = new WebSocket(`${proto}://${location.host}/ws/operator-panel/?token=${accessToken}${tenantParam}`)
       wsRef.current = ws
 
       ws.onopen = () => {
@@ -102,7 +105,7 @@ export default function LiveProvider() {
       }
       dispatch(setWsConnected(false))
     }
-  }, [isAuthenticated, accessToken])
+  }, [isAuthenticated, accessToken, currentTenant?.tenant_uuid])
 
   return null
 }

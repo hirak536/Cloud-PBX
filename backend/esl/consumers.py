@@ -247,17 +247,50 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
 
     group_name = 'operator_panel'
 
-    def _get_tenant_code(self):
-        """Return tenant_code for the connected user, or None for superusers/staff."""
+    def _get_superuser_tenant_uuid(self):
+        """Return the ?tenant=<uuid> query param value if the user is a superuser/staff, else None."""
         user = self.scope.get('user')
-        if not user or user.is_superuser or user.is_staff:
+        if not user or not (user.is_superuser or user.is_staff):
+            return None
+        from urllib.parse import parse_qs
+        qs = self.scope.get('query_string', b'').decode()
+        params = parse_qs(qs)
+        return (params.get('tenant') or [None])[0]
+
+    def _get_tenant_code(self):
+        """Return tenant_code for the connected user.
+        Superusers/staff are scoped via the ?tenant=<uuid> query param (same as the REST API).
+        Returns None only when no tenant context exists (superuser with no param = all calls)."""
+        user = self.scope.get('user')
+        if not user:
+            return None
+        if user.is_superuser or user.is_staff:
+            # Superuser tenant code is resolved asynchronously via _resolve_superuser_tenant_code();
+            # this sync method returns None for superusers — callers that need filtering must use
+            # the async version instead.
             return None
         tenant = getattr(user, 'tenant', None)
         return tenant.tenant_code if tenant else None
 
-    def _filter_calls(self, calls, rg_extensions=None):
-        """Filter call list to this consumer's tenant. No-op for superusers."""
-        tenant_code = self._get_tenant_code()
+    async def _resolve_tenant_code(self):
+        """Async version of _get_tenant_code() — resolves superuser tenant via DB lookup."""
+        user = self.scope.get('user')
+        if not user:
+            return None
+        if user.is_superuser or user.is_staff:
+            tenant_uuid = self._get_superuser_tenant_uuid()
+            if not tenant_uuid:
+                return None
+            from core.models import Tenant
+            t = await database_sync_to_async(
+                lambda: Tenant.objects.filter(tenant_uuid=tenant_uuid).first()
+            )()
+            return t.tenant_code if t else None
+        tenant = getattr(user, 'tenant', None)
+        return tenant.tenant_code if tenant else None
+
+    def _filter_calls(self, calls, tenant_code, rg_extensions=None):
+        """Filter call list to the given tenant. Returns all if tenant_code is None."""
         if not tenant_code:
             return calls
         suffix = f'-{tenant_code}'
@@ -269,9 +302,8 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
                str(c.get('dest', '')) in rg_exts
         ]
 
-    async def _get_tenant_ring_group_extensions(self):
-        """Return the set of ring group extensions belonging to this tenant."""
-        tenant_code = self._get_tenant_code()
+    async def _get_tenant_ring_group_extensions(self, tenant_code):
+        """Return the set of ring group extensions belonging to the given tenant."""
         if not tenant_code:
             return set()
         from apps.ring_groups.models import RingGroup
@@ -283,9 +315,8 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
             )
         )()
 
-    def _filter_regs(self, regs):
-        """Filter registration list to this consumer's tenant. No-op for superusers."""
-        tenant_code = self._get_tenant_code()
+    def _filter_regs(self, regs, tenant_code):
+        """Filter registration list to the given tenant. Returns all if tenant_code is None."""
         if not tenant_code:
             return regs
         suffix = f'-{tenant_code}'
@@ -327,8 +358,9 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
     async def call_event(self, event):
         try:
             if isinstance(event, dict) and 'data' in event:
-                rg_exts = await self._get_tenant_ring_group_extensions()
-                calls = self._filter_calls(event.get('data') or [], rg_extensions=rg_exts)
+                tenant_code = await self._resolve_tenant_code()
+                rg_exts = await self._get_tenant_ring_group_extensions(tenant_code)
+                calls = self._filter_calls(event.get('data') or [], tenant_code, rg_extensions=rg_exts)
                 payload = {'type': 'active_calls_update', 'calls': calls}
             else:
                 payload = event
@@ -342,7 +374,8 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
     async def registration_event(self, event):
         try:
             if isinstance(event, dict) and 'data' in event:
-                regs = self._filter_regs(event.get('data') or [])
+                tenant_code = await self._resolve_tenant_code()
+                regs = self._filter_regs(event.get('data') or [], tenant_code)
                 payload = {'type': 'registrations_update', 'registrations': regs}
             else:
                 payload = event
@@ -399,8 +432,9 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
                 }
                 for row in rows
             ]
-            rg_exts = await self._get_tenant_ring_group_extensions()
-            calls = self._filter_calls(calls, rg_extensions=rg_exts)
+            tenant_code = await self._resolve_tenant_code()
+            rg_exts = await self._get_tenant_ring_group_extensions(tenant_code)
+            calls = self._filter_calls(calls, tenant_code, rg_extensions=rg_exts)
             await self.send(json.dumps({'type': 'active_calls_update', 'calls': calls}))
         except Exception as e:
             logger.error(f"OperatorPanelConsumer send_calls_snapshot error: {e}")
@@ -411,7 +445,8 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
             esl = get_esl_client()
             raw = await database_sync_to_async(esl.show_registrations)()
             rows = json.loads(raw).get('rows', []) if isinstance(raw, str) else raw.get('rows', [])
-            regs = self._filter_regs(rows)
+            tenant_code = await self._resolve_tenant_code()
+            regs = self._filter_regs(rows, tenant_code)
             await self.send(json.dumps({'type': 'registrations_update', 'registrations': regs}))
         except Exception as e:
             logger.error(f"OperatorPanelConsumer send_registrations_snapshot error: {e}")
@@ -420,7 +455,7 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
         try:
             from .tasks import _build_extension_status_map
             status_map = await database_sync_to_async(_build_extension_status_map)()
-            tenant_code = self._get_tenant_code()
+            tenant_code = await self._resolve_tenant_code()
             if tenant_code:
                 from apps.extensions.models import Extension
                 tenant_exts = await database_sync_to_async(
@@ -441,7 +476,7 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
     async def extension_status_event(self, event):
         try:
             payload = event.get('payload', event)
-            tenant_code = self._get_tenant_code()
+            tenant_code = await self._resolve_tenant_code()
             if tenant_code and isinstance(payload, dict) and 'extensions' in payload:
                 from apps.extensions.models import Extension
                 tenant_exts = await database_sync_to_async(
