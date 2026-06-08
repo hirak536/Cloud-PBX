@@ -1057,7 +1057,7 @@ class ClientVoicemailMessageView(APIView):
                 'voicemail_id': voicemail_id_filter,
                 'total': total,
                 'unread': global_unread,
-                'result': {'unread': filtered_unread},
+                'filtered_unread': filtered_unread,
             })
             return paginated
         except Exception as e:
