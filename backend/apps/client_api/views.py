@@ -1008,7 +1008,10 @@ class ClientVoicemailMessageView(APIView):
 
             number = request.query_params.get('number')
             if number:
-                qs = qs.filter(cid_number__icontains=number)
+                qs = qs.filter(
+                    Q(cid_number__icontains=number) |
+                    Q(cid_name__icontains=number)
+                )
 
             search = request.query_params.get('search')
             if search:
