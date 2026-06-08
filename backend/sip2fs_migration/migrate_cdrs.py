@@ -26,7 +26,8 @@ import logging
 from datetime import datetime, timedelta, timezone as dt_timezone
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, BASE_DIR)
+BACKEND_DIR = os.path.dirname(BASE_DIR)  # config package lives in backend/
+sys.path.insert(0, BACKEND_DIR)
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')
 django.setup()
 
