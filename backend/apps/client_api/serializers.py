@@ -4,6 +4,7 @@ from rest_framework import serializers
 from apps.destinations.models import Destination
 from apps.extensions.models import Extension
 from apps.fax.models import Fax, FaxFile
+from apps.recordings.models import CallRecording
 from apps.voicemails.models import VoicemailMessage, VoicemailReadState
 from apps.xml_cdr.models import XmlCdr
 from .models import TenantAPIKey
@@ -246,3 +247,25 @@ class ClientVoicemailMessageSerializer(serializers.ModelSerializer):
             f'{instance.username}@{instance.domain}', instance.username
         )
         return data
+
+
+# ──────────────────────────────────────────────
+# Client API: Call Recordings serializer
+# ──────────────────────────────────────────────
+
+class ClientCallRecordingSerializer(serializers.ModelSerializer):
+    recording_id = serializers.UUIDField(source='call_recording_uuid', read_only=True)
+    caller        = serializers.CharField(source='call_recording_caller_id_number', read_only=True)
+    caller_name   = serializers.CharField(source='call_recording_caller_id_name', read_only=True)
+    destination   = serializers.CharField(source='call_recording_destination_number', read_only=True)
+    start_stamp   = serializers.DateTimeField(source='call_recording_start_stamp', read_only=True)
+    duration      = serializers.IntegerField(source='call_recording_duration', read_only=True)
+    billsec       = serializers.IntegerField(source='call_recording_billsec', read_only=True)
+    filename      = serializers.CharField(source='call_recording_filename', read_only=True)
+
+    class Meta:
+        model = CallRecording
+        fields = [
+            'recording_id', 'caller', 'caller_name', 'destination',
+            'start_stamp', 'duration', 'billsec', 'filename',
+        ]

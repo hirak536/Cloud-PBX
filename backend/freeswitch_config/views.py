@@ -290,6 +290,12 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         logger.warning(f"CDR ingest: could not resolve domain from domain_name={domain_name!r}")
 
     raw_direction = var('direction', 'inbound')
+    # ${ihs_direction} is stamped by our own dialplan (e.g. the outbound route)
+    # BEFORE any recording announcement or bridge runs, so it is authoritative
+    # even for calls that hang up early (during the "may be recorded" playback)
+    # and never reach the gateway bridge. FreeSWITCH's intrinsic `direction`
+    # labels these PSTN-bound A-legs 'inbound', which is wrong — trust ours.
+    ihs_direction = var('ihs_direction', '')
     context_val = var('context', '')
     caller_number = var('caller_id_number') or var('effective_caller_id_number') or var('sip_from_user') or ''
     last_app_val = var('last_app', '').lower()
@@ -306,13 +312,24 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         except Exception:
             originating_leg_direction = None
 
-    if bridged_to_gateway:
+    if ihs_direction in ('inbound', 'outbound', 'local'):
+        direction = ihs_direction
+    elif bridged_to_gateway:
         direction = 'outbound'
     elif is_originating_leg and originating_leg_direction in ('inbound', 'outbound'):
         direction = originating_leg_direction
     elif is_originating_leg:
         caller_digits = caller_number.lstrip('+')
         direction = 'outbound' if len(caller_digits) <= 6 else 'inbound'
+    elif context_val == 'authenticated':
+        # Calls from a registered extension dialing out always land in the
+        # `authenticated` context — these are outbound regardless of what
+        # FreeSWITCH's raw direction reports (it labels callback/click-to-call
+        # A-legs as inbound).
+        direction = 'outbound'
+    elif context_val == 'fromoutside':
+        # PSTN/DID calls arriving from a carrier gateway — always inbound.
+        direction = 'inbound'
     elif context_val == 'public':
         direction = 'outbound' if len(caller_number.lstrip('+')) <= 6 else 'inbound'
     elif context_val.startswith('default-'):
@@ -320,7 +337,17 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         # outbound (extension dialing out). Trust FreeSWITCH raw_direction here.
         direction = raw_direction if raw_direction in ('inbound', 'outbound') else 'inbound'
     else:
-        direction = raw_direction if raw_direction in ('inbound', 'outbound', 'local') else 'inbound'
+        # No context (FreeSWITCH stopped stamping it after the dialplan-scoping
+        # change). Infer from the numbers: a short internal extension as the
+        # caller dialing a long PSTN destination is outbound.
+        caller_digits = caller_number.lstrip('+')
+        dest_digits = (var('destination_number') or '').lstrip('+')
+        if caller_digits.isdigit() and len(caller_digits) <= 6 and len(dest_digits) >= 7:
+            direction = 'outbound'
+        elif raw_direction in ('inbound', 'outbound', 'local'):
+            direction = raw_direction
+        else:
+            direction = 'inbound'
 
     duration = int_var('duration')
     waitsec = int_var('waitsec')
@@ -512,6 +539,17 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
             # as the primary check to avoid creating duplicate synthetic A-legs.
             a_leg_uuid = originating_leg_uuid or str(record.bridge_uuid)
             a_leg_exists = XmlCdr.objects.filter(call_uuid=a_leg_uuid, leg='a').exists()
+            # Backfill the extension onto the real A-leg. For inbound DID calls
+            # FreeSWITCH posts a real A-leg (the inbound channel) whose CDR carries
+            # NO extension — only the B-leg's `username` identifies the device that
+            # rang. The CDR list view shows leg='a' only, so without this copy the
+            # extension column is blank for every inbound call. The A-leg can be
+            # keyed by either originating_leg_uuid or the B-leg's bridge_uuid.
+            if _looks_like_internal_ext(record.extension_number):
+                XmlCdr.objects.filter(
+                    leg='a', extension_number__in=('', None),
+                    call_uuid__in=[u for u in (a_leg_uuid, str(record.bridge_uuid)) if u],
+                ).update(extension_number=record.extension_number)
             if not a_leg_exists:
                 try:
                     from django.db import transaction
@@ -646,6 +684,13 @@ class CdrIngestView(View):
             return HttpResponse('OK')
 
         logger.debug(f"CDR ingest raw (len={len(cdr_xml)}): {cdr_xml[:200]}")
+        try:
+            import os as _os
+            if _os.path.exists('/tmp/cdr_capture'):
+                with open('/tmp/cdr_last.xml', 'w') as _f:
+                    _f.write(cdr_xml)
+        except Exception:
+            pass
 
 
         # JSON CDR (mod_json_cdr) — parse variables and process same as XML CDR
@@ -700,11 +745,32 @@ class CdrIngestView(View):
             logger.error(f"CDR ingest: failed to parse XML: {e}")
             return HttpResponse('OK')
 
+        # mod_xml_cdr puts the authoritative routing context and direction on the
+        # caller_profile (<callflow><caller_profile><context>/<direction>), NOT in
+        # <variables>. FreeSWITCH does not always export a `context` channel
+        # variable, so reading only <variables> leaves context empty — which
+        # breaks direction classification. Fall back to the caller_profile.
+        # The LAST callflow is the original (earliest) leg in mod_xml_cdr output.
+        _profile_fallback = {}
+        try:
+            _profiles = root.findall('.//callflow/caller_profile')
+            if _profiles:
+                _orig = _profiles[-1]
+                for _t in ('context', 'direction'):
+                    _e = _orig.find(_t)
+                    if _e is not None and _e.text:
+                        from urllib.parse import unquote as _uq
+                        _profile_fallback[_t] = _uq(_e.text.strip())
+        except Exception:
+            pass
+
         def var(name, default=''):
             from urllib.parse import unquote
             el = root.find(f'.//variables/{name}')
             if el is not None and el.text:
                 return unquote(el.text.strip())
+            if name in _profile_fallback:
+                return _profile_fallback[name]
             return default
 
         def int_var(name):

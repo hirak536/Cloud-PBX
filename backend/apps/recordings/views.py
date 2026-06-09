@@ -149,7 +149,7 @@ class CallRecordingViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewS
             filename=os.path.basename(path),
         )
 
-    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    @action(detail=False, methods=['get', 'post'], permission_classes=[permissions.AllowAny])
     def ingest(self, request):
         """Called by FreeSWITCH api_hangup_hook after a recorded call ends."""
         file_path = request.POST.get('file') or request.GET.get('file', '')
@@ -167,7 +167,19 @@ class CallRecordingViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewS
             return Response({'detail': 'Already ingested.'}, status=status.HTTP_200_OK)
 
         from core.models import Domain
+        import re as _re
+        from django.utils.timezone import datetime as dj_datetime
+        import pytz
+
         domain_obj = Domain.objects.filter(domain_name=domain_name).first() if domain_name else None
+        tenant_obj = domain_obj.tenant if domain_obj else None
+
+        # Fall back to resolving tenant from extension sip_username in caller
+        if tenant_obj is None and caller:
+            from apps.extensions.models import Extension as Ext
+            ext = Ext.objects.filter(sip_username=caller).select_related('tenant').first()
+            if ext:
+                tenant_obj = ext.tenant
 
         try:
             dur = int(duration)
@@ -178,15 +190,28 @@ class CallRecordingViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewS
         except (ValueError, TypeError):
             bill = 0
 
+        # Parse start_stamp from filename: YYYY-MM-DD-HH-MM-SS_...
+        start_stamp = None
+        fname = os.path.basename(file_path)
+        m = _re.match(r'^(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})_', fname)
+        if m:
+            try:
+                start_stamp = pytz.utc.localize(
+                    dj_datetime.strptime(m.group(1), '%Y-%m-%d-%H-%M-%S')
+                )
+            except ValueError:
+                pass
+
         rec = CallRecording.objects.create(
             call_recording_filename=file_path,
             call_recording_caller_id_name=caller_name,
             call_recording_caller_id_number=caller,
             call_recording_destination_number=destination,
+            call_recording_start_stamp=start_stamp,
             call_recording_duration=dur,
             call_recording_billsec=bill,
             domain=domain_obj,
-            tenant=domain_obj.tenant if domain_obj else None,
+            tenant=tenant_obj,
         )
         return Response({'detail': 'Ingested.', 'uuid': str(rec.call_recording_uuid)}, status=status.HTTP_201_CREATED)
 
@@ -230,13 +255,24 @@ class CallRecordingViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewS
                 except ValueError:
                     start_stamp = None
 
+                # Resolve tenant from caller SIP username (e.g. "600-GMD") first,
+                # fall back to domain tenant for non-extension callers.
+                tenant_obj = None
+                if caller:
+                    from apps.extensions.models import Extension as _Ext
+                    ext = _Ext.objects.filter(sip_username=caller).select_related('tenant').first()
+                    if ext:
+                        tenant_obj = ext.tenant
+                if tenant_obj is None and domain_obj:
+                    tenant_obj = domain_obj.tenant
+
                 CallRecording.objects.create(
                     call_recording_filename=abs_path,
                     call_recording_caller_id_number=caller,
                     call_recording_destination_number=destination,
                     call_recording_start_stamp=start_stamp,
                     domain=domain_obj,
-                    tenant=domain_obj.tenant if domain_obj else None,
+                    tenant=tenant_obj,
                 )
                 created += 1
 

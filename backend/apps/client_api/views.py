@@ -20,6 +20,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.destinations.models import Destination
 from apps.extensions.models import Extension
 from apps.fax.models import Fax, FaxFile
+from apps.recordings.models import CallRecording
 from apps.voicemails.models import VoicemailMessage, VoicemailReadState
 from apps.xml_cdr.models import XmlCdr
 from core.models import Tenant
@@ -28,6 +29,7 @@ from core.mixins import ClientAPICacheMixin
 from .authentication import MasterAPIKeyAuthentication, TenantAPIKeyAuthentication
 from .models import TenantAPIKey, WebhookDelivery
 from .serializers import (
+    ClientCallRecordingSerializer,
     ClientCDRSerializer,
     ClientDestinationSerializer,
     ClientExtensionSerializer,
@@ -1120,6 +1122,105 @@ class ClientVoicemailAudioView(APIView):
             raise NotFound()
         path = msg.file_path
         if not path or not os.path.exists(path):
+            raise NotFound()
+        ext = os.path.splitext(path)[1].lower()
+        content_type = {
+            '.wav': 'audio/wav',
+            '.mp3': 'audio/mpeg',
+            '.ogg': 'audio/ogg',
+            '.mp4': 'audio/mp4',
+        }.get(ext, 'audio/wav')
+        return FileResponse(open(path, 'rb'), content_type=content_type,
+                            as_attachment=False,
+                            filename=os.path.basename(path))
+
+
+# ──────────────────────────────────────────────
+# Client API: Call Recordings
+# ──────────────────────────────────────────────
+
+class ClientCallRecordingView(APIView):
+    authentication_classes = [TenantAPIKeyAuthentication]
+    permission_classes = [ClientAPIPermission]
+
+    def get(self, request, tenant_uuid, recording_uuid=None):
+        tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
+        qs = CallRecording.objects.filter(tenant=tenant)
+
+        if recording_uuid:
+            try:
+                obj = qs.get(call_recording_uuid=recording_uuid)
+            except CallRecording.DoesNotExist:
+                raise NotFound()
+            return Response(ClientCallRecordingSerializer(obj).data)
+
+        number = request.query_params.get('number') or request.query_params.get('search')
+        if number:
+            qs = qs.filter(
+                Q(call_recording_caller_id_number__icontains=number) |
+                Q(call_recording_caller_id_name__icontains=number) |
+                Q(call_recording_destination_number__icontains=number)
+            )
+
+        start = request.query_params.get('start')
+        if start:
+            try:
+                qs = qs.filter(call_recording_start_stamp__gte=dp.parse(start))
+            except (ValueError, OverflowError):
+                pass
+        end = request.query_params.get('end')
+        if end:
+            try:
+                qs = qs.filter(call_recording_start_stamp__lte=dp.parse(end))
+            except (ValueError, OverflowError):
+                pass
+
+        from rest_framework.pagination import PageNumberPagination
+        paginator = PageNumberPagination()
+        paginator.page_size = 20
+        paginator.page_size_query_param = 'page_size'
+        page = paginator.paginate_queryset(qs, request)
+        return paginator.get_paginated_response(
+            ClientCallRecordingSerializer(page, many=True).data
+        )
+
+    def delete(self, request, tenant_uuid, recording_uuid=None):
+        if not recording_uuid:
+            raise ValidationError({'detail': 'recording_uuid is required.'})
+        tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
+        try:
+            obj = CallRecording.objects.get(call_recording_uuid=recording_uuid, tenant=tenant)
+        except CallRecording.DoesNotExist:
+            raise NotFound()
+
+        path = _call_recording_path(obj.call_recording_filename)
+        obj.delete()
+        if path and os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        return Response({'status': 'deleted'})
+
+
+# ──────────────────────────────────────────────
+# Client API: Call Recording audio stream
+# ──────────────────────────────────────────────
+
+class ClientCallRecordingAudioView(APIView):
+    authentication_classes = [TenantAPIKeyAuthentication]
+    permission_classes = [ClientAPIPermission]
+
+    def get(self, request, tenant_uuid, recording_uuid):
+        from django.http import FileResponse
+        tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
+        try:
+            obj = CallRecording.objects.get(call_recording_uuid=recording_uuid, tenant=tenant)
+        except CallRecording.DoesNotExist:
+            raise NotFound()
+
+        path = _call_recording_path(obj.call_recording_filename)
+        if not path or not os.path.isfile(path):
             raise NotFound()
         ext = os.path.splitext(path)[1].lower()
         content_type = {

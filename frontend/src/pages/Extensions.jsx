@@ -67,8 +67,6 @@ const EMPTY_FORM = {
   call_screen_enabled: false,
   mobile_push_enabled: false,
   user_record: '',
-  // Recording
-  call_recording: 'inherit',
   // Voicemail
   reject_to_voicemail: false,
   voicemail_enabled: true,
@@ -769,7 +767,10 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
             <SectionTitle>Call Recording</SectionTitle>
 
             <Field label="Call Recording" span2 hint="Override the tenant-level recording setting for this extension.">
-              <Select value={form.call_recording} onChange={set('call_recording')}>
+              <Select
+                value={form.user_record === 'all' ? 'enabled' : form.user_record === '' ? 'inherit' : 'disabled'}
+                onChange={e => setForm(f => ({ ...f, user_record: e.target.value === 'enabled' ? 'all' : '' }))}
+              >
                 <option value="inherit">Inherit from tenant</option>
                 <option value="enabled">Always record</option>
                 <option value="disabled">Never record</option>
@@ -1156,7 +1157,6 @@ function BulkAddExtensionsDialog({ open, onClose, onDone, currentTenant, ringGro
     call_screen_enabled:                     form.call_screen_enabled,
     mobile_push_enabled:                     form.mobile_push_enabled,
     user_record:                             form.user_record,
-    call_recording:                          form.call_recording,
     voicemail_enabled:                       form.voicemail_enabled,
     voicemail_id:                            form.voicemail_id,
     voicemail_password:                      form.voicemail_password,
@@ -1614,7 +1614,6 @@ export default function Extensions() {
     call_screen_enabled:                     d.call_screen_enabled || false,
     mobile_push_enabled:                     d.mobile_push_enabled || false,
     user_record:                             d.user_record || '',
-    call_recording:                          d.call_recording || 'inherit',
     reject_to_voicemail:                     d.reject_to_voicemail || false,
     voicemail_enabled:                       d.voicemail_enabled !== false,
     voicemail_id:                            d.voicemail_id || '',
@@ -1694,8 +1693,6 @@ export default function Extensions() {
         call_screen_enabled:                     form.call_screen_enabled,
         mobile_push_enabled:                     form.mobile_push_enabled,
         user_record:                             form.user_record,
-        // Recording
-        call_recording:                          form.call_recording,
         // Voicemail
         voicemail_enabled:                       form.voicemail_enabled,
         voicemail_id:                            form.voicemail_id,

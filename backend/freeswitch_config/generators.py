@@ -79,7 +79,6 @@ def _add_recording_actions(cond, domain_name):
 
     etree.SubElement(cond, 'action', application='set', data='RECORD_STEREO=true')
     etree.SubElement(cond, 'action', application='set', data='recording_follow_transfer=true')
-    etree.SubElement(cond, 'action', application='set', data='media_bug_answer_req=true')
     etree.SubElement(cond, 'action', application='set', data=f'record_file={record_path}', inline='true')
 
     # Ensure recording directory exists on disk
@@ -89,10 +88,14 @@ def _add_recording_actions(cond, domain_name):
     etree.SubElement(cond, 'action', application='set',
                      data=f'api_hangup_hook=system curl -k "{ingest_url}"')
 
-    # Prevent multiple recording starts on the same call leg (e.g. DID context -> Extension context)
-    # Use eval + cond to start record_session only if the recording_started flag is not set.
-    etree.SubElement(cond, 'action', application='eval',
-                     data='${cond(${recording_started} == "true" ? "already_recording" : ${set(recording_started=true)}${record_session(${record_file})})}')
+    # Play "this call may be recorded" announcement to both legs after answer, then start
+    # recording. export nolocal: ensures the playback runs on the b-leg too.
+    # uuid_record starts after the announcement finishes (api_on_answer_2 runs sequentially).
+    etree.SubElement(cond, 'action', application='set',
+                     data='api_on_answer_1=uuid_broadcast ${uuid} '
+                          '/usr/share/freeswitch/sounds/en/us/callie/misc/8000/call_monitoring_blurb.wav both')
+    etree.SubElement(cond, 'action', application='set',
+                     data='api_on_answer_2=uuid_record ${uuid} start ${record_file}')
 
 
 def _resolve_domain(domain_name):
@@ -763,6 +766,18 @@ def _outbound_route_to_xml(route):
     # Save captured digits ($1) into a channel var so it survives across conditions.
     etree.SubElement(cond, 'action', application='set', data='outbound_digits=$1')
     etree.SubElement(cond, 'action', application='set', data='hangup_after_bridge=true')
+    # Stamp the call direction durably onto the channel BEFORE the recording
+    # announcement / bridge runs. The CDR ingest trusts ${ihs_direction} over
+    # FreeSWITCH's intrinsic `direction` (which labels these PSTN-bound A-legs
+    # 'inbound'). This way a call that hangs up during the "may be recorded"
+    # playback — before reaching the gateway bridge — is still recorded as
+    # outbound. We `set` it locally on the A-leg FIRST so the A-leg's own CDR
+    # carries it (export alone was leaving the A-leg as 'inbound' — var('ihs_direction')
+    # read empty on the originating leg), THEN export so the bridged B-leg
+    # (gateway leg) inherits it too. Both CDR legs then classify as outbound
+    # even if the B-leg CDR arrives before the A-leg is committed.
+    etree.SubElement(cond, 'action', application='set', data='ihs_direction=outbound')
+    etree.SubElement(cond, 'action', application='export', data='ihs_direction=outbound')
     # Set caller ID: route config takes priority, then directory value (already set).
     cid_number = route.caller_id_number or '${outbound_caller_id_number}'
     cid_name = route.caller_id_name or route.caller_id_number or '${outbound_caller_id_name}'
@@ -840,7 +855,7 @@ def _add_voicemail_actions(cond_el, domain_name, mailbox, vm):
             f' -F "file_path={storage_dir}/msg_${{vm_uuid}}.wav"'
             f' -F "cid_name=\'${{caller_id_name}}\'"'
             f' -F "cid_number=\'${{caller_id_number}}\'"'
-            f' -F created_epoch=${{epoch}}'
+            f' -F created_epoch=${{unix_epoch}}'
         )
         etree.SubElement(cond_el, 'action', application='set',
                          data=f'execute_on_record_stop=system:{curl_cmd}')
@@ -1031,7 +1046,18 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
     if ext.reject_to_voicemail:
         etree.SubElement(bridge_cond, 'action', application='set',
                          data='fail_on_single_reject=USER_BUSY,CALL_REJECTED,603')
-    _add_recording_actions(bridge_cond, domain_name)
+    # Attach recording only when effectively enabled. The per-extension toggle
+    # (user_record) the frontend exposes has three states:
+    #   - non-empty (e.g. 'all') -> record
+    #   - '' ("inherit")         -> fall back to the tenant's recording_enabled
+    # Without this gate the dialplan recorded unconditionally, so neither the
+    # extension toggle nor the tenant setting could turn recording off.
+    if ext.user_record:
+        _record_enabled = True
+    else:
+        _record_enabled = bool(getattr(ext.tenant, 'recording_enabled', True)) if ext.tenant else True
+    if _record_enabled:
+        _add_recording_actions(bridge_cond, domain_name)
     # Ring ALL registered contacts simultaneously (desk phone + softphone, etc.).
     # sofia_contact(*/user@domain) expands to a comma-joined dial string of every
     # active registration; user/user@domain would only ring the most recent one.

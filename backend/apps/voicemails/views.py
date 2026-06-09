@@ -253,21 +253,25 @@ class VoicemailIngestView(View):
                 pass
 
         try:
-            VoicemailMessage.objects.using('voicemail_sqlite').create(
+            _, created = VoicemailMessage.objects.using('voicemail_sqlite').get_or_create(
                 uuid=uuid_val,
-                created_epoch=created_epoch,
-                read_epoch=0,
-                username=username,
-                domain=domain,
-                cid_name=cid_name,
-                cid_number=cid_number,
-                in_folder='inbox',
-                file_path=file_path,
-                message_len=message_len,
-                flags='',
-                read_flags='',
-                forwarded_by='',
+                defaults=dict(
+                    created_epoch=created_epoch,
+                    read_epoch=0,
+                    username=username,
+                    domain=domain,
+                    cid_name=cid_name,
+                    cid_number=cid_number,
+                    in_folder='inbox',
+                    file_path=file_path,
+                    message_len=message_len,
+                    flags='',
+                    read_flags='',
+                    forwarded_by='',
+                ),
             )
+            if not created:
+                return HttpResponse('OK', status=200)
         except Exception:
             logger.exception('VoicemailIngestView: failed to insert message %s', uuid_val)
             return HttpResponse('DB error', status=500)
