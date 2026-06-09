@@ -23,6 +23,55 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Cache of sticky DID numbers (destination_number strings) so the per-request
+# check doesn't hit the DB on every non-sticky call.  Refreshed on cache miss.
+_sticky_did_cache: set = set()
+_sticky_did_cache_built = False
+
+
+def _is_sticky_did(destination_number: str) -> bool:
+    """
+    Return True if the destination DID uses sticky last-agent routing, meaning
+    the dialplan response must NOT be cached (it encodes a per-caller transfer).
+
+    Checks two paths:
+      1. DID has callback_to_last_caller=True directly
+      2. DID points to a CustomDestination with kind='sticky_last_agent' or
+         callback_to_last_caller=True
+    """
+    global _sticky_did_cache, _sticky_did_cache_built
+    if not _sticky_did_cache_built:
+        try:
+            from apps.destinations.models import Destination
+            from apps.custom_destinations.models import CustomDestination
+            from django.db.models import Q
+            sticky_cd_ids = set(
+                CustomDestination.objects.filter(
+                    Q(kind='sticky_last_agent') | Q(callback_to_last_caller=True)
+                ).values_list('custom_destination_uuid', flat=True)
+            )
+            nums = set(
+                Destination.objects.filter(
+                    Q(callback_to_last_caller=True) |
+                    Q(dest_type='custom_destination', dest_target_uuid__in=sticky_cd_ids)
+                ).values_list('destination_number', flat=True)
+            )
+            _sticky_did_cache = nums
+            _sticky_did_cache_built = True
+        except Exception:
+            return False
+
+    if not destination_number:
+        return False
+    # Normalise: strip +1 prefix to match both E.164 and 10-digit variants.
+    import re as _re
+    digits = _re.sub(r'\D', '', destination_number)
+    if len(digits) > 10 and digits.startswith('1'):
+        digits = digits[1:]
+    return (destination_number in _sticky_did_cache or
+            digits in _sticky_did_cache or
+            f'+1{digits}' in _sticky_did_cache)
+
 
 @method_decorator(csrf_exempt, name='dispatch')
 class XmlCurlView(View):
@@ -75,18 +124,29 @@ class XmlCurlView(View):
                 # WebRTC/public-entry calls lose their extension/outbound routes.
                 user_context = request.POST.get('variable_user_context', '')
                 keep_contexts = [c for c in (req_context, user_context) if c]
-                cache_key = f'dialplan:xml:{domain}:{":".join(keep_contexts)}'
-                xml = cache.get(cache_key)
-                if xml is None:
+
+                # Bypass cache for sticky-routed DIDs: the correct transfer target
+                # depends on the live caller_id_number, which varies per call.
+                # Caching would serve the first caller's affinity result to everyone.
+                sticky = _is_sticky_did(destination)
+                if sticky:
                     xml = generate_dialplan_xml(domain, destination, caller_id, caller_name,
                                                 requested_context=keep_contexts)
-                    try:
-                        cache.set(cache_key, xml, timeout=3600)
-                    except Exception:
-                        pass  # Redis unavailable — serve uncached, don't crash
-                    logger.debug('Dialplan cache MISS domain=%s', domain)
+                    logger.debug('Dialplan cache SKIP (sticky DID) domain=%s destination=%s caller=%s',
+                                 domain, destination, caller_id)
                 else:
-                    logger.debug('Dialplan cache HIT domain=%s', domain)
+                    cache_key = f'dialplan:xml:{domain}:{":".join(keep_contexts)}'
+                    xml = cache.get(cache_key)
+                    if xml is None:
+                        xml = generate_dialplan_xml(domain, destination, caller_id, caller_name,
+                                                    requested_context=keep_contexts)
+                        try:
+                            cache.set(cache_key, xml, timeout=3600)
+                        except Exception:
+                            pass  # Redis unavailable — serve uncached, don't crash
+                        logger.debug('Dialplan cache MISS domain=%s', domain)
+                    else:
+                        logger.debug('Dialplan cache HIT domain=%s', domain)
             elif section == 'configuration':
                 # FreeSWITCH sends key_name='name' and key_value='voicemail.conf' etc.
                 config_name = request.POST.get('key_value', '')
@@ -211,6 +271,20 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                 tenant = a_leg.tenant
                 if domain is None:
                     domain = a_leg.domain
+
+    # Last resort: derive tenant from the resolved domain.
+    # Skip universal/shared domains (they belong to one tenant but are used by all).
+    if tenant is None and domain is not None and not domain.domain_universal:
+        domain_tenant = getattr(domain, 'tenant', None)
+        if domain_tenant is None:
+            try:
+                domain.refresh_from_db(fields=['tenant'])
+                domain_tenant = domain.tenant
+            except Exception:
+                pass
+        if domain_tenant:
+            tenant = domain_tenant
+            logger.info(f"CDR ingest: resolved tenant {tenant.tenant_name!r} from domain {domain_name!r}")
 
     if domain is None:
         logger.warning(f"CDR ingest: could not resolve domain from domain_name={domain_name!r}")
@@ -385,7 +459,11 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                 f"({record.billsec}s, {record.hangup_cause})"
             )
         else:
-            record = XmlCdr.objects.create(**cdr_fields)
+            record, created = XmlCdr.objects.update_or_create(
+                call_uuid=call_uuid_val,
+                leg=leg,
+                defaults=cdr_fields,
+            )
             logger.info(
                 f"CDR ingest: saved {record.caller_id_number} -> {record.destination_number} "
                 f"({record.billsec}s, {record.hangup_cause})"
@@ -402,6 +480,7 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
             a_leg_exists = XmlCdr.objects.filter(call_uuid=a_leg_uuid, leg='a').exists()
             if not a_leg_exists:
                 try:
+                    from django.db import transaction
                     syn_defaults = dict(
                         domain=record.domain,
                         tenant=record.tenant,
@@ -442,10 +521,11 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                         record_path=record.record_path,
                         record_name=record.record_name,
                     )
-                    _, syn_created = XmlCdr.objects.update_or_create(
-                        call_uuid=a_leg_uuid, leg='a',
-                        defaults=syn_defaults,
-                    )
+                    with transaction.atomic():
+                        _, syn_created = XmlCdr.objects.update_or_create(
+                            call_uuid=a_leg_uuid, leg='a',
+                            defaults=syn_defaults,
+                        )
                     logger.info(
                         f"CDR ingest: {'created' if syn_created else 'updated'} synthetic A-leg for orphaned B-leg "
                         f"{record.caller_id_number} -> {record.destination_number} bridge_uuid={record.bridge_uuid}"
@@ -532,6 +612,7 @@ class CdrIngestView(View):
             return HttpResponse('OK')
 
         logger.debug(f"CDR ingest raw (len={len(cdr_xml)}): {cdr_xml[:200]}")
+
 
         # JSON CDR (mod_json_cdr) — parse variables and process same as XML CDR
         if cdr_xml.lstrip().startswith('{'):

@@ -76,14 +76,25 @@ def _domain_name(instance):
 
 # ── Signal handlers ───────────────────────────────────────────────────────────
 
+def _reset_sticky_did_cache():
+    """Reset the in-process sticky DID set so it is rebuilt on the next request."""
+    from freeswitch_config import views as _fs_views
+    _fs_views._sticky_did_cache = set()
+    _fs_views._sticky_did_cache_built = False
+
+
 def _on_dialplan_model(sender, instance, **kwargs):
     """Invalidate all dialplan cache — pattern delete catches any domain key variant."""
     _invalidate_dialplan_all()
+    if sender.__name__ in ('CustomDestination',):
+        _reset_sticky_did_cache()
 
 
 def _on_dialplan_nullable(sender, instance, **kwargs):
     """Invalidate all dialplan cache — shared/nullable domain models affect all tenants."""
     _invalidate_dialplan_all()
+    if sender.__name__ in ('Destination',):
+        _reset_sticky_did_cache()
 
 
 def _on_directory_model(sender, instance, **kwargs):

@@ -14,6 +14,34 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 
 
+def _affinity_lookup(tenant_id, caller_number: str) -> str:
+    """
+    Return the extension number (e.g. '404') for the most recent agent who
+    called this customer, or '' if no affinity record exists.
+
+    Normalises caller_number identically to affinity_route.lua: strip non-digits,
+    drop leading US country code '1', keep last 10 digits.
+    """
+    import re as _re
+    digits = _re.sub(r'\D', '', caller_number)
+    if len(digits) > 10 and digits.startswith('1'):
+        digits = digits[1:]
+    digits = digits[-10:] if len(digits) >= 10 else digits
+    if not digits or len(digits) != 10 or not tenant_id:
+        return ''
+    try:
+        from apps.custom_destinations.models import CallerExtensionAffinity
+        row = CallerExtensionAffinity.objects.only('extension_number').get(
+            tenant_id=tenant_id, caller_number=digits
+        )
+        # Strip optional tenant suffix "404-GMD" → "404"
+        ext = row.extension_number or ''
+        m = _re.match(r'^(\d+)', ext)
+        return m.group(1) if m else ext
+    except Exception:
+        return ''
+
+
 def not_found_xml():
     """Standard FreeSWITCH not-found response."""
     return '''<?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -521,23 +549,25 @@ def _resolve_dest_action(dest, domain_name, preload=None):
             from apps.custom_destinations.models import CustomDestination
             cd = _pl_get('custom_dests', target) or CustomDestination.objects.get(custom_destination_uuid=target)
             if cd.kind == 'sticky_last_agent' and cd.tenant_id:
-                # Emit the same Lua affinity action used by the DID path so that
-                # sticky-routing works when the custom destination is referenced
-                # from an IVR option, working-hours branch, ring-group timeout, etc.
+                # Sticky-routing resolved in Python using the caller_id_number that
+                # was passed into the dialplan generator at request time.
                 code = cd.tenant.tenant_code if cd.tenant else None
                 ctx = f'default-{code}' if code else 'default'
-                fb_type = 'hangup'
-                fb_data = ''
+                fb_app, fb_data = 'hangup', 'NORMAL_CLEARING'
                 if cd.dest_type == 'extension' and cd.dest_target_uuid:
                     from apps.extensions.models import Extension
                     fb_ext = Extension.objects.filter(extension_uuid=cd.dest_target_uuid).only('extension').first()
                     if fb_ext:
-                        fb_type = 'extension'
-                        fb_data = str(fb_ext.extension)
+                        fb_app, fb_data = 'transfer', f'{fb_ext.extension} XML {ctx}'
                 elif cd.dest_type == 'external' and cd.dest_external_number:
-                    fb_type = 'transfer'
-                    fb_data = f'{cd.dest_external_number} XML public'
-                return [('lua', f'affinity_route.lua {cd.tenant_id} {ctx} {fb_type} {fb_data}'.rstrip())]
+                    fb_app, fb_data = 'transfer', f'{cd.dest_external_number} XML public'
+                # caller_id_number is threaded in via preload context; fall back to ''
+                # when called from a path that doesn't have it (e.g. IVR timeout).
+                _cid = preload.get('caller_id_number', '') if preload else ''
+                sticky_ext = _affinity_lookup(cd.tenant_id, _cid)
+                if sticky_ext:
+                    return [('transfer', f'{sticky_ext} XML {ctx}')]
+                return [(fb_app, fb_data)]
             # Proxy: resolve the underlying destination type
             return _resolve_dest_action(cd, domain_name, preload=preload)
 
@@ -670,44 +700,43 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
         except Exception:
             pass
     if effective_callback and dest.tenant_id:
-        # Sticky last-agent routing.
-        #
-        # Emit a Lua action that runs at call-execute time, NOT a static transfer
-        # baked into the cached XML. Reason: mod_xml_curl caches dialplan responses
-        # by destination_number alone; if we baked the sticky extension into the
-        # XML it would only be correct for the first caller, then every subsequent
-        # caller to this DID would get bridged to the same wrong extension. The
-        # Lua reads caller_id_number live from the session and queries
-        # v_caller_extension_affinity at execute time.
-        #
-        # The fallback is what the CustomDestination wrapping this DID configured
-        # (its dest_type / dest_target_uuid) — used when no affinity match exists.
+        # Sticky last-agent routing — resolved in Python at dialplan-request time.
+        # caller_id_number is passed in from XmlCurlView (the live caller on this call).
+        # The dialplan cache is bypassed for sticky DIDs so every caller gets their
+        # own affinity lookup rather than a cached response built for a different caller.
         tenant_code = dest.tenant.tenant_code if dest.tenant else None
         ctx = f'default-{tenant_code}' if tenant_code else 'default'
 
-        fb_type = 'hangup'
-        fb_data = ''
+        # Resolve fallback destination (used when no affinity row exists).
+        fb_app, fb_data = 'hangup', 'NORMAL_CLEARING'
         if dest.dest_type == 'custom_destination' and dest.dest_target_uuid:
             try:
                 from apps.custom_destinations.models import CustomDestination
                 cd = CustomDestination.objects.get(custom_destination_uuid=dest.dest_target_uuid)
                 if cd.dest_type == 'extension' and cd.dest_target_uuid:
-                    # Look up the extension number for the fallback
                     from apps.extensions.models import Extension
                     fb_ext = Extension.objects.filter(extension_uuid=cd.dest_target_uuid).only('extension').first()
                     if fb_ext:
-                        fb_type = 'extension'
-                        fb_data = str(fb_ext.extension)
+                        fb_app, fb_data = 'transfer', f'{fb_ext.extension} XML {ctx}'
                 elif cd.dest_type == 'external' and cd.dest_external_number:
-                    fb_type = 'transfer'
-                    fb_data = f'{cd.dest_external_number} XML public'
+                    fb_app, fb_data = 'transfer', f'{cd.dest_external_number} XML public'
             except Exception:
                 pass
 
-        etree.SubElement(
-            cond, 'action', application='lua',
-            data=f'affinity_route.lua {dest.tenant_id} {ctx} {fb_type} {fb_data}'.rstrip(),
-        )
+        sticky_ext = _affinity_lookup(dest.tenant_id, caller_id_number)
+        if sticky_ext:
+            logger.info(
+                'affinity HIT DID=%s caller=%s -> ext=%s ctx=%s',
+                dest.destination_number, caller_id_number, sticky_ext, ctx,
+            )
+            etree.SubElement(cond, 'action', application='transfer',
+                             data=f'{sticky_ext} XML {ctx}')
+        else:
+            logger.info(
+                'affinity MISS DID=%s caller=%s, fallback=%s %s',
+                dest.destination_number, caller_id_number, fb_app, fb_data,
+            )
+            etree.SubElement(cond, 'action', application=fb_app, data=fb_data)
         routed_to_last = True
 
     if not routed_to_last:
@@ -1782,6 +1811,8 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
         'conferences':     {str(o.conference_profile_uuid): o for o in _ConferenceProfile.objects.select_related('tenant').filter(domain=domain)},
         'custom_dests':    {str(o.custom_destination_uuid): o for o in _CustomDestination.objects.filter(domain=domain)},
         'parking_slots':   {str(o.call_parking_slot_uuid): o  for o in _CallParkingSlot.objects.select_related('tenant', 'domain').filter(domain=domain, slot_enabled=True)},
+        # Live caller number for this request — used by sticky_last_agent affinity lookup.
+        'caller_id_number': caller_id_number,
     }
 
     root = etree.Element('document', type='freeswitch/xml')
