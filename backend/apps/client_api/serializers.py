@@ -88,34 +88,28 @@ class ClientCDRSerializer(serializers.ModelSerializer):
     missed_call = serializers.BooleanField(read_only=True)
     status = serializers.SerializerMethodField()
 
-    def _missed_routes_to_vm(self, obj):
-        """True when this is a missed inbound call whose destination extension is
-        configured to send no-answer to voicemail. The set of VM-routed extension
-        identifiers is supplied by the view via context['vm_route_idents']."""
-        if not obj.missed_call or obj.direction != 'inbound':
-            return False
-        idents = self.context.get('vm_route_idents')
-        return bool(idents) and obj.extension_number in idents
+    def _went_to_voicemail(self, obj):
+        """
+        True only when FreeSWITCH's last_app proves voicemail actually ran.
+        Extension being VM-enabled is NOT sufficient — the caller may have hung up
+        before the no-answer timeout fired (ORIGINATOR_CANCEL), which means voicemail
+        never played even though the extension routes to it on no-answer.
+        """
+        last_app = (obj.last_app or '').lower()
+        last_arg = obj.last_arg or ''
+        return (
+            last_app == 'voicemail'
+            or (last_app == 'speak' and '|' in last_arg)
+            or (last_app == 'record' and '/voicemail/' in last_arg)
+            or (last_app == 'system' and 'voicemail-messages/ingest' in last_arg)
+            or (last_app == 'phrase' and 'voicemail' in last_arg)
+        )
 
     def get_status(self, obj):
         cause = (obj.hangup_cause or '').upper()
 
-        # Voicemail — detect regardless of which last_app FreeSWITCH reports:
-        #   - last_app=voicemail (standard)
-        #   - last_app=speak + TTS arg (flite|kal|...) — greeting was last action
-        #   - last_app=record + /voicemail/ path — recording was last action
-        #   - last_app=phrase + voicemail_record_message — native FS phrase macro
-        last_app = (obj.last_app or '').lower()
-        last_arg = obj.last_arg or ''
-        if last_app == 'voicemail':
-            return 'WENT_TO_VOICEMAIL'
-        if last_app == 'speak' and '|' in last_arg:
-            return 'WENT_TO_VOICEMAIL'
-        if last_app == 'record' and '/voicemail/' in last_arg:
-            return 'WENT_TO_VOICEMAIL'
-        if last_app == 'system' and 'voicemail-messages/ingest' in last_arg:
-            return 'WENT_TO_VOICEMAIL'
-        if last_app == 'phrase' and 'voicemail' in last_arg:
+        # Voicemail — last_app must confirm voicemail actually executed.
+        if self._went_to_voicemail(obj):
             return 'WENT_TO_VOICEMAIL'
 
         # Answered
@@ -131,11 +125,7 @@ class ClientCDRSerializer(serializers.ModelSerializer):
                      'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'):
             if obj.direction == 'outbound':
                 return 'NO_ANSWER'
-            if obj.missed_call:
-                if self._missed_routes_to_vm(obj):
-                    return 'WENT_TO_VOICEMAIL'
-                return 'MISSED'
-            return 'NO_ANSWER'
+            return 'MISSED' if obj.missed_call else 'NO_ANSWER'
 
         # Failed
         if cause in (
@@ -155,11 +145,7 @@ class ClientCDRSerializer(serializers.ModelSerializer):
         # Fallback
         if obj.billsec > 0:
             return 'ANSWERED'
-        if obj.missed_call:
-            if self._missed_routes_to_vm(obj):
-                return 'WENT_TO_VOICEMAIL'
-            return 'MISSED'
-        return 'FAILED'
+        return 'MISSED' if obj.missed_call else 'FAILED'
 
     class Meta:
         model = XmlCdr
