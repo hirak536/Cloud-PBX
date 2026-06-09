@@ -3,6 +3,36 @@
 All notable changes to IHS-PBX are documented in this file.
 Newest entries on top.
 
+## 2026-06-09
+
+### Affinity (Sticky Last-Agent) Routing
+- Replaced the Lua-based affinity router (`affinity_route.lua`) with a pure-Python lookup that runs in the dialplan generator at request time, using the live `caller_id_number`. The Lua script and all references to it are removed.
+- Fixed the underlying failure: the deployed Lua script still contained the literal `__PG_PASSWORD__` placeholder instead of the real DB password, so every sticky call failed its DB lookup and dropped the caller to a hangup
+- The dialplan cache is now bypassed for sticky DIDs so each caller gets their own affinity result instead of a cached one
+- `deploy/install.sh` hardened to substitute the DB password and set `freeswitch:freeswitch` ownership on FreeSWITCH scripts (retained for any future scripts)
+
+### CDR Status Classification
+- `WENT_TO_VOICEMAIL` now requires proof that voicemail actually executed (confirmed via `last_app`). Missed calls to a voicemail-enabled extension where the caller hung up before the no-answer timeout are now correctly reported as **MISSED** instead of voicemail
+- `MEDIA_TIMEOUT` calls with talk time (`billsec > 0`) are now classified as **ANSWERED** instead of FAILED — fixes long answered calls that ended on RTP silence being mislabeled as failed. Any call with talk time is ANSWERED regardless of hangup cause
+- Fixed a 500 error on `GET /cdr/?extension=` caused by a stale `vm_idents` reference in the status-counts aggregate
+
+### CDR Tenant Attribution
+- Fixed calls landing with no tenant (`tenant=NULL`) and being invisible in the Client API and tenant-scoped admin views. WebRTC calls arrive with an empty context and a DID (not an extension) as caller ID, so the original tenant resolution missed them
+- Tenant is now recovered from `extension_number`, `destination_number`, and SIP user fields; bridged B-legs inherit the tenant of their originating A-leg
+- Backfilled existing orphaned rows: 2,464 CDRs re-attributed to their tenants
+
+### CDR Data Integrity
+- Added a unique constraint on `(call_uuid, leg)` and made B-leg ingest idempotent (`update_or_create`); synthetic A-leg creation wrapped in a transaction. Eliminates duplicate CDRs from re-delivered FreeSWITCH webhooks
+- Migration `0009` removed 1,982 existing duplicate rows before applying the constraint
+- CDR list `direction` filter now propagates into `status_counts` so the sidebar counts match the selected direction
+
+### Affinity Data Cleanup
+- Fixed `migrate_cdrs.py` (both copies) to preserve the full SIP username (e.g. `417-GMD`) instead of stripping to plain digits; voicemail legs still extract digits only
+- Added `backfill_affinity_extensions` command; corrected 3,287 affinity rows from plain extension numbers to the suffixed `sip_username` format
+
+### Data Cleanup (one-time)
+- Removed 782 bogus GMD "missed" CDRs that were artifacts of the broken-Lua window (`last_app=lua` / `affinity_route.lua` / `billsec=0` / `missed`, dated Jun 8 17:02 – Jun 9 05:30). Verified none had talk time before removal
+
 ## 2026-06-08
 
 ### Client API
