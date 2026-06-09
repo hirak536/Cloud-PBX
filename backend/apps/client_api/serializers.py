@@ -112,22 +112,23 @@ class ClientCDRSerializer(serializers.ModelSerializer):
         if self._went_to_voicemail(obj):
             return 'WENT_TO_VOICEMAIL'
 
-        # Answered
-        if cause in ('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED') and obj.billsec > 0:
+        # Answered — any call with talk time is answered regardless of hangup cause.
+        # MEDIA_TIMEOUT ends a live call when RTP goes silent; it is not a failure.
+        if obj.billsec > 0:
             return 'ANSWERED'
 
         # Busy
         if cause == 'USER_BUSY':
             return 'BUSY'
 
-        # Not answered / offline — missed if flag set
+        # Not answered / offline
         if cause in ('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT', 'ALLOTTED_TIMEOUT',
                      'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'):
             if obj.direction == 'outbound':
                 return 'NO_ANSWER'
             return 'MISSED' if obj.missed_call else 'NO_ANSWER'
 
-        # Failed
+        # Failed — call never connected
         if cause in (
             'UNALLOCATED_NUMBER', 'NO_ROUTE_TRANSIT_NET', 'NO_ROUTE_DESTINATION',
             'CALL_REJECTED', 'NUMBER_CHANGED', 'DESTINATION_OUT_OF_ORDER',
@@ -142,9 +143,6 @@ class ClientCDRSerializer(serializers.ModelSerializer):
         ):
             return 'FAILED'
 
-        # Fallback
-        if obj.billsec > 0:
-            return 'ANSWERED'
         return 'MISSED' if obj.missed_call else 'FAILED'
 
     class Meta:

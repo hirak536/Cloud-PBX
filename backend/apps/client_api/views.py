@@ -278,7 +278,7 @@ class ClientCDRView(APIView):
             Q(last_app='phrase', last_arg__contains='voicemail')
         )
         if status_filter == 'ANSWERED':
-            qs = qs.filter(hangup_cause__in=('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED'), billsec__gt=0)
+            qs = qs.filter(billsec__gt=0).exclude(_vm_Q)
         elif status_filter == 'BUSY':
             qs = qs.filter(hangup_cause='USER_BUSY')
         elif status_filter == 'NO_ANSWER':
@@ -444,7 +444,7 @@ class ClientCDRView(APIView):
         )
 
         # Answered = same as CDR list ANSWERED status
-        _answered_Q = Q(hangup_cause__in=('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED'), billsec__gt=0) & ~_VOICEMAIL_Q
+        _answered_Q = Q(billsec__gt=0) & ~_VOICEMAIL_Q
 
         _inbound_Q = Q(direction='inbound')
         _outbound_Q = Q(direction='outbound')
@@ -1524,7 +1524,7 @@ class ClientCDRDailySummaryView(APIView):
             Q(last_app='system', last_arg__contains='voicemail-messages/ingest') |
             Q(last_app='phrase', last_arg__contains='voicemail')
         )
-        _answered_Q = Q(hangup_cause__in=('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED'), billsec__gt=0) & ~_VOICEMAIL_Q
+        _answered_Q = Q(billsec__gt=0) & ~_VOICEMAIL_Q
         _inbound_Q = Q(direction='inbound')
         _outbound_Q = Q(direction='outbound')
 
@@ -1812,7 +1812,7 @@ class ClientExtensionCallSummaryView(APIView):
             Q(last_app='system', last_arg__contains='voicemail-messages/ingest') |
             Q(last_app='phrase', last_arg__contains='voicemail')
         )
-        _answered_Q = Q(hangup_cause__in=('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED'), billsec__gt=0) & ~_VOICEMAIL_Q
+        _answered_Q = Q(billsec__gt=0) & ~_VOICEMAIL_Q
         _inbound_Q = Q(direction='inbound')
         _outbound_Q = Q(direction='outbound')
 
