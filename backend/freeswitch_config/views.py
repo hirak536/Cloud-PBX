@@ -392,6 +392,22 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         except Exception:
             pass
 
+    # Tenant recovery from extension_number (e.g. "600-GMD"). WebRTC outbound calls
+    # arrive with an empty context and a DID (not an extension) as caller_id_number,
+    # so the earlier resolution misses them — but extension_number carries the tenant
+    # code. Without this they land with tenant=None and are invisible in the client API.
+    if tenant is None and extension_number and '-' in extension_number:
+        from core.models import Tenant
+        candidate_code = extension_number.rsplit('-', 1)[-1]
+        try:
+            tenant = Tenant.objects.get(tenant_code=candidate_code)
+            if domain is None:
+                domain = tenant.domains.filter(domain_enabled=True).first()
+            logger.info("CDR ingest: recovered tenant %s from extension_number %r",
+                        candidate_code, extension_number)
+        except Tenant.DoesNotExist:
+            pass
+
     call_uuid_val = call_uuid_fallback or var('uuid') or var('call_uuid') or None
     cdr_fields = dict(
         domain=domain,
