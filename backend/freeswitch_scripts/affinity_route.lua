@@ -1,18 +1,22 @@
 -- affinity_route.lua
 --
 -- Runtime sticky-routing lookup. Called from the dialplan as:
---   <action application="lua" data="affinity_route.lua TENANT_UUID FALLBACK_TYPE FALLBACK_TARGET TENANT_CTX"/>
+--   <action application="lua" data="affinity_route.lua TENANT_UUID TENANT_CTX FALLBACK_TYPE FALLBACK_TARGET"/>
+--
+-- TENANT_CTX is in position 2 (fixed) so it is never displaced by an empty
+-- FALLBACK_TARGET. FALLBACK_TYPE/TARGET are optional and may be omitted when
+-- the fallback is a plain hangup.
 --
 -- Looks up the calling number in v_caller_extension_affinity for the tenant;
--- if found, transfers to that extension. Otherwise transfers to the fallback.
+-- if found, transfers to that extension in TENANT_CTX. Otherwise falls back.
 --
 -- Cached XML is identical for every caller (just the lua action) — the per-call
 -- decision happens here, at execute time, using the live caller_id_number.
 
 local tenant_uuid    = argv[1] or ""
-local fallback_type  = argv[2] or "hangup"   -- "extension" | "transfer" | "hangup"
-local fallback_data  = argv[3] or ""         -- target ext or transfer target
-local tenant_ctx     = argv[4] or "public"   -- e.g. "default-IHDT"
+local tenant_ctx     = argv[2] or "default"  -- e.g. "default-GMD"  (fixed position)
+local fallback_type  = argv[3] or "hangup"   -- "extension" | "transfer" | "hangup"
+local fallback_data  = argv[4] or ""         -- target ext or transfer target
 
 local caller = session:getVariable("caller_id_number") or ""
 
@@ -26,15 +30,12 @@ if #digits >= 10 then
 end
 
 freeswitch.consoleLog("INFO", string.format(
-    "[affinity_route] tenant=%s caller=%s normalized=%s\n",
-    tenant_uuid, caller, digits))
+    "[affinity_route] tenant=%s ctx=%s caller=%s normalized=%s\n",
+    tenant_uuid, tenant_ctx, caller, digits))
 
 local routed_ext = nil
 
 if tenant_uuid ~= "" and #digits == 10 then
-    -- Reuse the connection FreeSWITCH already opens; named handle 'core' uses
-    -- the dsn from switch.conf.xml. If you prefer an explicit connection, use:
-    --   local dbh = freeswitch.Dbh("pgsql://hostaddr=127.0.0.1 dbname=ihspbx user=ihspbx password=...")
     local dbh = freeswitch.Dbh("pgsql://hostaddr=127.0.0.1 dbname=ihspbx user=ihspbx password=__PG_PASSWORD__")
     if dbh:connected() then
         local sql = string.format(

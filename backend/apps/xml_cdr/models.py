@@ -60,6 +60,13 @@ class XmlCdr(models.Model):
     class Meta:
         db_table = 'v_xml_cdr'
         ordering = ['-start_stamp']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['call_uuid', 'leg'],
+                condition=models.Q(call_uuid__isnull=False),
+                name='unique_call_uuid_leg',
+            ),
+        ]
         indexes = [
             models.Index(fields=['start_stamp']),
             models.Index(fields=['caller_id_number']),

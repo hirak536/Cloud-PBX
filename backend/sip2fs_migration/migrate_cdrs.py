@@ -172,16 +172,18 @@ def map_record(rec, tenant, domain):
     hangup_cause = hangup_map.get(disposition, 'NORMAL_CLEARING')
 
     # Extension number: realsrc for outbound (e.g. 104-IHDT), lastdst for inbound (e.g. 429-GMD).
-    # Voicemail legs (e.g. "Voicemail 506") leave extension blank so affinity seeding skips them.
     if userfield == 'outbound':
         ext_raw = rec.get('realsrc', '') or ''
     else:
         ext_raw = rec.get('lastdst', '') or ''
-    # Voicemail legs: keep the mailbox extension (e.g. "Voicemail 417" → "417") so the UI
-    # can render "VM 417". The affinity seeder excludes voicemail rows via last_app, not
-    # via a blank extension_number.
-    m = re.search(r'\d+', ext_raw)
-    ext_num = m.group(0) if m else ''
+    # Preserve the full sip_username (e.g. "417-GMD") so affinity routing stores the
+    # correct suffixed value. For voicemail legs ("Voicemail 506"), extract just the digits.
+    ext_raw = ext_raw.strip()
+    if ext_raw.lower().startswith('voicemail'):
+        m = re.search(r'\d+', ext_raw)
+        ext_num = m.group(0) if m else ''
+    else:
+        ext_num = ext_raw
 
     billsec = int(rec.get('billsec') or 0)
     duration = int(rec.get('duration') or 0)

@@ -86,6 +86,15 @@ systemctl daemon-reload
 systemctl enable ihspbx ihspbx-celery ihspbx-celerybeat
 systemctl start ihspbx ihspbx-celery ihspbx-celerybeat
 
+echo "==> Installing FreeSWITCH Lua scripts..."
+mkdir -p /usr/share/freeswitch/scripts
+cp ${INSTALL_DIR}/backend/freeswitch_scripts/*.lua /usr/share/freeswitch/scripts/
+# Substitute DB password placeholder in deployed Lua scripts
+PG_PASS=$(grep '^DB_PASSWORD=' ${INSTALL_DIR}/.env | cut -d'=' -f2- | tr -d '"')
+sed -i "s/__PG_PASSWORD__/${PG_PASS}/g" /usr/share/freeswitch/scripts/*.lua
+chown freeswitch:freeswitch /usr/share/freeswitch/scripts/*.lua
+chmod 644 /usr/share/freeswitch/scripts/*.lua
+
 echo "==> Configuring Nginx..."
 cp ${INSTALL_DIR}/deploy/nginx.conf /etc/nginx/sites-available/ihspbx
 ln -sf /etc/nginx/sites-available/ihspbx /etc/nginx/sites-enabled/ihspbx

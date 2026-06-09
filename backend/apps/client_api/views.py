@@ -221,7 +221,7 @@ class ClientCDRView(APIView):
                          'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL')
 
     def _extension_only_qs(self, request, tenant):
-        """Queryset scoped to tenant + date range + extension + search/number — status is intentionally excluded."""
+        """Queryset scoped to tenant + date range + extension + search/number + direction — status is intentionally excluded."""
         qs = XmlCdr.objects.filter(tenant=tenant, leg='a')
         p = request.query_params
         start_gte = p.get('start') or p.get('start_stamp__gte')
@@ -238,6 +238,9 @@ class ClientCDRView(APIView):
                 Q(extension_number=plain_ext) |
                 Q(extension_number__startswith=f'{plain_ext}-')
             )
+        direction = p.get('direction')
+        if direction:
+            qs = qs.filter(direction=direction)
         number = p.get('number')
         if number:
             qs = qs.filter(
@@ -369,8 +372,8 @@ class ClientCDRView(APIView):
             offset = (page - 1) * page_size
             items = qs[offset:offset + page_size]
 
-        # status_counts always ignore status filter — reflect date range + extension + search/number only.
-        # count should always reflect the total calls for the selected extension/date range.
+        # status_counts ignore status filter but respect direction — reflect date range + extension + direction + search/number.
+        # count always reflects the total calls for the selected scope.
         counts_qs = self._extension_only_qs(request, tenant)
         status_filter = request.query_params.get('status', '').upper()
         # Keep total count of all calls for the selected extension/date range,
@@ -385,39 +388,36 @@ class ClientCDRView(APIView):
             & Q(extension_number__in=vm_idents)
         ) if vm_idents else Q(pk__in=[])
 
+        _went_to_vm_Q = Q(
+            Q(last_app='voicemail') |
+            Q(last_app='speak', last_arg__contains='|') |
+            Q(last_app='record', last_arg__contains='/voicemail/') |
+            Q(last_app='system', last_arg__contains='voicemail-messages/ingest') |
+            Q(last_app='phrase', last_arg__contains='voicemail')
+        ) | _missed_to_vm_counts_Q
+
         status_counts = counts_qs.aggregate(
             ANSWERED=Count('xml_cdr_uuid', filter=Q(
                 hangup_cause__in=('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED'), billsec__gt=0
-            )),
-            WENT_TO_VOICEMAIL=Count('xml_cdr_uuid', filter=Q(
-                Q(last_app='voicemail') |
-                Q(last_app='speak', last_arg__contains='|') |
-                Q(last_app='record', last_arg__contains='/voicemail/') |
-                Q(last_app='system', last_arg__contains='voicemail-messages/ingest') |
-                Q(last_app='phrase', last_arg__contains='voicemail')
-            ) | _missed_to_vm_counts_Q),
+            ) & ~_went_to_vm_Q),
+            WENT_TO_VOICEMAIL=Count('xml_cdr_uuid', filter=_went_to_vm_Q),
             BUSY=Count('xml_cdr_uuid', filter=Q(hangup_cause='USER_BUSY')),
             NO_ANSWER=Count('xml_cdr_uuid', filter=Q(
                 hangup_cause__in=('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
                                   'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'),
-            ) & ~Q(missed_call=True)),
+            ) & ~Q(missed_call=True) & ~_went_to_vm_Q),
             MISSED=Count('xml_cdr_uuid', filter=Q(
                 hangup_cause__in=('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
                                   'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'),
                 missed_call=True,
             ) & ~_missed_to_vm_counts_Q),
-            FAILED=Count('xml_cdr_uuid', filter=Q(hangup_cause__in=(
-                'UNALLOCATED_NUMBER', 'NO_ROUTE_TRANSIT_NET', 'NO_ROUTE_DESTINATION',
-                'CALL_REJECTED', 'NUMBER_CHANGED', 'DESTINATION_OUT_OF_ORDER',
-                'INVALID_NUMBER_FORMAT', 'FACILITY_REJECTED', 'NETWORK_OUT_OF_ORDER',
-                'TEMPORARY_FAILURE', 'CHANNEL_UNAVAILABLE', 'OUTGOING_CALL_BARRED',
-                'INCOMING_CALL_BARRED', 'BEARER_NOT_AUTHORIZED', 'BEARER_NOT_AVAILABLE',
-                'BEARER_NOT_IMPLEMENTED', 'FACILITY_NOT_IMPLEMENTED', 'SERVICE_NOT_IMPLEMENTED',
-                'INVALID_CALL_REFERENCE', 'INCOMPATIBLE_DESTINATION', 'INTERWORKING',
-                'CRASH', 'SYSTEM_SHUTDOWN', 'LOSE_RACE', 'MANAGER_REQUEST',
-                'USER_CHALLENGE', 'MEDIA_TIMEOUT', 'PICKED_OFF',
-                'PROGRESS_TIMEOUT', 'GATEWAY_DOWN', 'NORMAL_TEMPORARY_FAILURE',
-            ))),
+            FAILED=Count('xml_cdr_uuid', filter=(
+                ~_went_to_vm_Q &
+                ~Q(hangup_cause__in=('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED'), billsec__gt=0) &
+                ~Q(hangup_cause='USER_BUSY') &
+                ~Q(hangup_cause__in=('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
+                                     'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'))
+            )),
         )
 
         return Response({

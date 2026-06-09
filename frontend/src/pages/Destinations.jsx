@@ -169,10 +169,11 @@ function actionLabel(type, targetUuid, extNumber, data) {
   return null
 }
 
-function DestinationPicker({ action, onChange, data, loading }) {
+function DestinationPicker({ action, onChange, data, loading, searchLoading, onSearch }) {
   const [open, setOpen]     = useState(false)
   const [dropUp, setDropUp] = useState(false)
   const [query, setQuery]   = useState('')
+  const debouncedQuery      = useDebounce(query, 300)
   const containerRef        = useRef(null)
   const inputRef            = useRef(null)
 
@@ -195,17 +196,25 @@ function DestinationPicker({ action, onChange, data, loading }) {
     if (open) requestAnimationFrame(() => inputRef.current?.focus())
   }, [open])
 
-  const q      = query.toLowerCase().trim()
-  const filter = (items, fields) =>
-    !q ? items : items.filter(item => fields.some(f => String(item[f] || '').toLowerCase().includes(q)))
+  // Fire API search whenever the debounced query changes
+  useEffect(() => {
+    if (!open) return
+    onSearch(debouncedQuery)
+  }, [debouncedQuery, open])
 
-  const exts  = filter(data.extensions,    ['extension', 'effective_caller_id_name', 'description'])
-  const vms   = filter(data.voicemails,    ['voicemail_id', 'description'])
-  const ivrs  = filter(data.ivr_menus,     ['ivr_menu_name', 'ivr_menu_extension'])
-  const rgs   = filter(data.ring_groups,   ['ring_group_name', 'ring_group_extension'])
-  const confs = filter(data.conferences,   ['conference_name', 'conference_extension'])
-  const whs   = filter(data.working_hours, ['working_hours_name'])
-  const cds   = filter(data.custom_destinations || [], ['name', 'description'])
+  // When closed, reset to unfiltered list
+  useEffect(() => {
+    if (!open && query) { setQuery(''); onSearch('') }
+  }, [open])
+
+  const exts  = data.extensions    || []
+  const vms   = data.voicemails    || []
+  const ivrs  = data.ivr_menus     || []
+  const rgs   = data.ring_groups   || []
+  const confs = data.conferences   || []
+  const whs   = data.working_hours || []
+  const cds   = data.custom_destinations || []
+  const q = query.trim()
   const showNumber = q.length >= 2 && /^[\d+\s().-]+$/.test(q)
   const hasAny = exts.length || vms.length || ivrs.length || rgs.length || confs.length || whs.length || cds.length || showNumber
 
@@ -247,12 +256,14 @@ function DestinationPicker({ action, onChange, data, loading }) {
       {open && (
         <div className={cn("absolute z-50 w-full min-w-[300px] rounded-xl border border-border/60 bg-card shadow-2xl shadow-black/10 animate-dropdown-in", dropUp ? "bottom-full mb-1" : "mt-1")}>
           <div className="flex items-center gap-2 border-b px-3 py-1.5">
-            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            {searchLoading
+              ? <Loader2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground animate-spin" />
+              : <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
             <input
               ref={inputRef}
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="Search or type a number…"
+              placeholder="Search extensions, ring groups, voicemail…"
               className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
             />
             {query && <button type="button" onClick={() => setQuery('')}><X className="h-3 w-3 text-muted-foreground" /></button>}
@@ -360,7 +371,7 @@ function DestinationPicker({ action, onChange, data, loading }) {
                     </button>
                   </div>
                 )}
-                {q && !hasAny && (
+                {q && !hasAny && !searchLoading && (
                   <p className="px-3 py-4 text-sm text-muted-foreground text-center">No results for &ldquo;{query}&rdquo;</p>
                 )}
                 <div className="border-t mt-1 pt-1">
@@ -581,7 +592,7 @@ function FaxBoxEmailField({ box, onSave }) {
   )
 }
 
-function DIDFormBody({ tab, form, set, setForm, destData, destLoading, onNewFaxBox, onEditFaxBox, onAutoCreateFaxBox, autoCreatingFax, onUpdateFaxBoxEmail }) {
+function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearchLoading, onSearch, onNewFaxBox, onEditFaxBox, onAutoCreateFaxBox, autoCreatingFax, onUpdateFaxBoxEmail }) {
   const addAction    = () => setForm(p => ({ ...p, actions: [...p.actions, { ...EMPTY_ACTION }] }))
   const removeAction = (idx) => setForm(p => ({ ...p, actions: p.actions.filter((_, i) => i !== idx) }))
   const updateAction = (idx, v) => setForm(p => ({
@@ -623,6 +634,8 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading, onNewFaxB
                 onChange={(v) => updateAction(idx, v)}
                 data={destData}
                 loading={destLoading}
+                searchLoading={destSearchLoading}
+                onSearch={onSearch}
               />
             </div>
             <button
@@ -1019,9 +1032,11 @@ function BulkAddDIDsDialog({ open, onClose, onDone }) {
 
 export default function Destinations() {
   const [rows, setRows]           = useState([])
-  const [total, setTotal]         = useState(0)
-  const [page, setPage]           = useState(1)
+  const [hasMore, setHasMore]     = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const nextPageRef               = useRef(1)
   const PAGE_SIZE                 = 25
+  const sentinelRef               = useRef(null)
   const [loading, setLoading]     = useState(true)
   const [search, setSearch]       = useState('')
   const debouncedSearch           = useDebounce(search, 300)
@@ -1046,7 +1061,7 @@ export default function Destinations() {
     return () => window.removeEventListener('open-affinity', h)
   }, [])
 
-  const { destData, destLoading, loadDestData, reloadFaxBoxes } = useDestinationData({ withConferences: true, withFaxBoxes: true })
+  const { destData, destLoading, destSearchLoading, loadDestData, searchDestData, reloadFaxBoxes } = useDestinationData({ withConferences: true, withFaxBoxes: true })
 
   const openNewFaxBox  = () => { setEditFaxBox(null); setFaxBoxDialogOpen(true) }
   const openEditFaxBox = (box) => { if (box) { setEditFaxBox(box); setFaxBoxDialogOpen(true) } }
@@ -1104,24 +1119,49 @@ export default function Destinations() {
     }
   }, [reloadFaxBoxes])
 
-  const load = useCallback(async (p = page) => {
+  const load = useCallback(async () => {
     setLoading(true)
+    nextPageRef.current = 1
     try {
-      const params = { page: p, page_size: PAGE_SIZE }
+      const params = { page: 1, page_size: PAGE_SIZE }
       if (debouncedSearch) params.search = debouncedSearch
       const { data } = await api.list(params)
       if (Array.isArray(data)) {
         setRows(data)
-        setTotal(data.length)
+        setHasMore(false)
       } else {
         setRows(data.results || [])
-        setTotal(data.count || 0)
+        setHasMore(!!data.next)
+        nextPageRef.current = 2
       }
     } finally { setLoading(false) }
-  }, [debouncedSearch, page])
+  }, [debouncedSearch])
 
-  useEffect(() => { setPage(1) }, [debouncedSearch])
+  const loadMore = useCallback(async () => {
+    if (loadingMore) return
+    setLoadingMore(true)
+    try {
+      const params = { page: nextPageRef.current, page_size: PAGE_SIZE }
+      if (debouncedSearch) params.search = debouncedSearch
+      const { data } = await api.list(params)
+      const results = Array.isArray(data) ? data : (data.results || [])
+      setRows(prev => [...prev, ...results])
+      setHasMore(!Array.isArray(data) && !!data.next)
+      nextPageRef.current += 1
+    } finally { setLoadingMore(false) }
+  }, [debouncedSearch, loadingMore])
+
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el) return
+    const obs = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && hasMore && !loadingMore) loadMore()
+    }, { threshold: 0.1 })
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [hasMore, loadingMore, loadMore])
 
   const set = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
 
@@ -1320,35 +1360,17 @@ export default function Destinations() {
                     </TableRow>
                   ))
             }
+            {/* infinite scroll sentinel */}
+            {!loading && hasMore && (
+              <TableRow ref={sentinelRef}>
+                <TableCell colSpan={5} className="py-3 text-center">
+                  {loadingMore && <Loader2 className="h-4 w-4 animate-spin mx-auto text-muted-foreground" />}
+                </TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       </CardContent></Card>
-
-      {/* pagination */}
-      {total > PAGE_SIZE && (
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>
-            {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}
-          </span>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="outline" size="sm"
-              disabled={page === 1}
-              onClick={() => setPage(p => p - 1)}
-            >
-              ← Prev
-            </Button>
-            <span className="px-3 py-1 text-xs">Page {page} of {Math.ceil(total / PAGE_SIZE)}</span>
-            <Button
-              variant="outline" size="sm"
-              disabled={page >= Math.ceil(total / PAGE_SIZE)}
-              onClick={() => setPage(p => p + 1)}
-            >
-              Next →
-            </Button>
-          </div>
-        </div>
-      )}
 
       {/* dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialog}>
@@ -1387,6 +1409,7 @@ export default function Destinations() {
             <DIDFormBody
               tab={tab} form={form} set={set} setForm={setForm}
               destData={destData} destLoading={destLoading}
+              destSearchLoading={destSearchLoading} onSearch={searchDestData}
               onNewFaxBox={openNewFaxBox} onEditFaxBox={openEditFaxBox}
               onAutoCreateFaxBox={autoCreateFaxBox} autoCreatingFax={autoCreatingFax}
               onUpdateFaxBoxEmail={updateFaxBoxEmail}

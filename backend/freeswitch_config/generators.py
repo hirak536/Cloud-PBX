@@ -520,6 +520,24 @@ def _resolve_dest_action(dest, domain_name, preload=None):
         elif dtype == 'custom_destination':
             from apps.custom_destinations.models import CustomDestination
             cd = _pl_get('custom_dests', target) or CustomDestination.objects.get(custom_destination_uuid=target)
+            if cd.kind == 'sticky_last_agent' and cd.tenant_id:
+                # Emit the same Lua affinity action used by the DID path so that
+                # sticky-routing works when the custom destination is referenced
+                # from an IVR option, working-hours branch, ring-group timeout, etc.
+                code = cd.tenant.tenant_code if cd.tenant else None
+                ctx = f'default-{code}' if code else 'default'
+                fb_type = 'hangup'
+                fb_data = ''
+                if cd.dest_type == 'extension' and cd.dest_target_uuid:
+                    from apps.extensions.models import Extension
+                    fb_ext = Extension.objects.filter(extension_uuid=cd.dest_target_uuid).only('extension').first()
+                    if fb_ext:
+                        fb_type = 'extension'
+                        fb_data = str(fb_ext.extension)
+                elif cd.dest_type == 'external' and cd.dest_external_number:
+                    fb_type = 'transfer'
+                    fb_data = f'{cd.dest_external_number} XML public'
+                return [('lua', f'affinity_route.lua {cd.tenant_id} {ctx} {fb_type} {fb_data}'.rstrip())]
             # Proxy: resolve the underlying destination type
             return _resolve_dest_action(cd, domain_name, preload=preload)
 
@@ -688,7 +706,7 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
 
         etree.SubElement(
             cond, 'action', application='lua',
-            data=f'affinity_route.lua {dest.tenant_id} {fb_type} {fb_data} {ctx}',
+            data=f'affinity_route.lua {dest.tenant_id} {ctx} {fb_type} {fb_data}'.rstrip(),
         )
         routed_to_last = True
 
@@ -1144,6 +1162,10 @@ def _resolve_wh_dest_from_type(dest_type, target, external, domain_name, ctx, pr
                 return [('hangup', 'NORMAL_TEMPORARY_FAILURE')]
         elif dest_type == 'hangup':
             return [('hangup', 'NORMAL_CLEARING')]
+        elif dest_type == 'custom_destination':
+            from apps.custom_destinations.models import CustomDestination
+            cd = CustomDestination.objects.get(custom_destination_uuid=target)
+            return _resolve_dest_action(cd, domain_name)
     except Exception:
         pass
     return [('hangup', 'NORMAL_CLEARING')]
