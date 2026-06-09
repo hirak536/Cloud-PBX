@@ -27,20 +27,25 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         dry_run = options['dry_run']
 
+        from django.db.models import Q
+
         code_to_tenant = {t.tenant_code: t for t in Tenant.objects.all()}
+        valid = set(code_to_tenant)
 
-        orphans = XmlCdr.objects.filter(
-            tenant__isnull=True, extension_number__contains='-'
-        ).only('xml_cdr_uuid', 'extension_number')
+        # Pass 1 — any field carrying a "-TENANTCODE" suffix.
+        orphans = XmlCdr.objects.filter(tenant__isnull=True).filter(
+            Q(extension_number__contains='-') | Q(destination_number__contains='-')
+        ).only('xml_cdr_uuid', 'extension_number', 'destination_number')
 
-        total = orphans.count()
-        self.stdout.write(f'Found {total} tenant=NULL CDR rows with a dash in extension_number.')
-
+        self.stdout.write(f'Pass 1: scanning rows with a dash in ext/destination...')
         by_code = {}
-        for row in orphans.iterator(chunk_size=1000):
-            code = row.extension_number.rsplit('-', 1)[-1]
-            if code in code_to_tenant:
-                by_code.setdefault(code, []).append(row.xml_cdr_uuid)
+        for row in orphans.iterator(chunk_size=2000):
+            for field in (row.extension_number, row.destination_number):
+                if field and '-' in field:
+                    code = field.rsplit('-', 1)[-1]
+                    if code in valid:
+                        by_code.setdefault(code, []).append(row.xml_cdr_uuid)
+                        break
 
         updated = 0
         for code, uuids in by_code.items():
@@ -49,13 +54,28 @@ class Command(BaseCommand):
                 updated += len(uuids)
                 continue
             tenant = code_to_tenant[code]
-            # Update in batches to keep transactions small.
             for i in range(0, len(uuids), 1000):
-                batch = uuids[i:i + 1000]
                 with transaction.atomic():
-                    n = XmlCdr.objects.filter(xml_cdr_uuid__in=batch).update(tenant=tenant)
-                    updated += n
+                    updated += XmlCdr.objects.filter(xml_cdr_uuid__in=uuids[i:i + 1000]).update(tenant=tenant)
             self.stdout.write(self.style.SUCCESS(f'  set tenant={code} on {len(uuids)} rows'))
 
+        # Pass 2 — B-legs inherit the tenant of their A-leg (matched by bridge_uuid).
+        self.stdout.write('Pass 2: B-leg → A-leg tenant inheritance...')
+        bleg_updated = 0
+        bleg_orphans = XmlCdr.objects.filter(
+            tenant__isnull=True, bridge_uuid__isnull=False
+        ).only('xml_cdr_uuid', 'bridge_uuid').iterator(chunk_size=2000)
+        for row in bleg_orphans:
+            a_tenant_id = XmlCdr.objects.filter(
+                call_uuid=row.bridge_uuid, tenant__isnull=False
+            ).values_list('tenant_id', flat=True).first()
+            if a_tenant_id:
+                if dry_run:
+                    bleg_updated += 1
+                else:
+                    XmlCdr.objects.filter(xml_cdr_uuid=row.xml_cdr_uuid).update(tenant_id=a_tenant_id)
+                    bleg_updated += 1
         verb = 'would update' if dry_run else 'updated'
-        self.stdout.write(self.style.SUCCESS(f'Done: {verb} {updated} rows.'))
+        self.stdout.write(self.style.SUCCESS(f'  B-leg inheritance: {verb} {bleg_updated} rows'))
+
+        self.stdout.write(self.style.SUCCESS(f'Done: {verb} {updated + bleg_updated} rows total.'))

@@ -392,21 +392,39 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         except Exception:
             pass
 
-    # Tenant recovery from extension_number (e.g. "600-GMD"). WebRTC outbound calls
-    # arrive with an empty context and a DID (not an extension) as caller_id_number,
-    # so the earlier resolution misses them — but extension_number carries the tenant
-    # code. Without this they land with tenant=None and are invisible in the client API.
-    if tenant is None and extension_number and '-' in extension_number:
+    # Tenant recovery — last-ditch attribution so calls aren't lost to tenant=None
+    # (which makes them invisible in every tenant-scoped view). WebRTC legs arrive
+    # with an empty context and a DID (not an extension) as caller_id_number, so the
+    # earlier resolution misses them. Try every field that may carry a "-CODE" suffix,
+    # then fall back to the originating A-leg's tenant for bridged B-legs.
+    if tenant is None:
         from core.models import Tenant
-        candidate_code = extension_number.rsplit('-', 1)[-1]
-        try:
-            tenant = Tenant.objects.get(tenant_code=candidate_code)
-            if domain is None:
-                domain = tenant.domains.filter(domain_enabled=True).first()
-            logger.info("CDR ingest: recovered tenant %s from extension_number %r",
-                        candidate_code, extension_number)
-        except Tenant.DoesNotExist:
-            pass
+        _valid_codes = set(Tenant.objects.values_list('tenant_code', flat=True))
+
+        # 1. Any field with a recognised "-TENANTCODE" suffix.
+        for candidate in (extension_number, var('destination_number'),
+                          var('sip_req_user'), var('sip_to_user')):
+            if candidate and '-' in candidate:
+                code = candidate.rsplit('-', 1)[-1]
+                if code in _valid_codes:
+                    tenant = Tenant.objects.get(tenant_code=code)
+                    logger.info("CDR ingest: recovered tenant %s from %r", code, candidate)
+                    break
+
+        # 2. Bridged B-leg: inherit the tenant from its A-leg (matched by bridge_uuid).
+        if tenant is None:
+            bridge_ref = var('bridge_uuid') or var('signal_bond') or originating_leg_uuid
+            if bridge_ref:
+                a_leg = XmlCdr.objects.filter(
+                    call_uuid=bridge_ref, tenant__isnull=False
+                ).select_related('tenant', 'domain').first()
+                if a_leg:
+                    tenant = a_leg.tenant
+                    logger.info("CDR ingest: recovered tenant %s from A-leg %s",
+                                tenant.tenant_code, bridge_ref)
+
+        if tenant is not None and domain is None:
+            domain = tenant.domains.filter(domain_enabled=True).first()
 
     call_uuid_val = call_uuid_fallback or var('uuid') or var('call_uuid') or None
     cdr_fields = dict(
