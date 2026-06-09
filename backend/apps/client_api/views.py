@@ -364,47 +364,28 @@ class ClientCDRView(APIView):
         # count always reflects the total calls for the selected scope.
         counts_qs = self._extension_only_qs(request, tenant)
         status_filter = request.query_params.get('status', '').upper()
-        # Keep total count of all calls for the selected extension/date range,
-        # even when the client filters by status.
         total = counts_qs.count()
 
-        # Missed inbound calls to a VM-routed extension count as voicemail, not missed.
-        _missed_to_vm_counts_Q = (
-            Q(direction='inbound', missed_call=True,
-              hangup_cause__in=('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
-                                'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'))
-            & Q(extension_number__in=vm_idents)
-        ) if vm_idents else Q(pk__in=[])
-
-        _went_to_vm_Q = Q(
+        _went_to_vm_Q = (
             Q(last_app='voicemail') |
             Q(last_app='speak', last_arg__contains='|') |
             Q(last_app='record', last_arg__contains='/voicemail/') |
             Q(last_app='system', last_arg__contains='voicemail-messages/ingest') |
             Q(last_app='phrase', last_arg__contains='voicemail')
-        ) | _missed_to_vm_counts_Q
+        )
+        _no_answer_Q = Q(hangup_cause__in=(
+            'NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
+            'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL',
+        ))
 
         status_counts = counts_qs.aggregate(
-            ANSWERED=Count('xml_cdr_uuid', filter=Q(
-                hangup_cause__in=('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED'), billsec__gt=0
-            ) & ~_went_to_vm_Q),
+            ANSWERED=Count('xml_cdr_uuid', filter=Q(billsec__gt=0) & ~_went_to_vm_Q),
             WENT_TO_VOICEMAIL=Count('xml_cdr_uuid', filter=_went_to_vm_Q),
             BUSY=Count('xml_cdr_uuid', filter=Q(hangup_cause='USER_BUSY')),
-            NO_ANSWER=Count('xml_cdr_uuid', filter=Q(
-                hangup_cause__in=('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
-                                  'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'),
-            ) & ~Q(missed_call=True) & ~_went_to_vm_Q),
-            MISSED=Count('xml_cdr_uuid', filter=Q(
-                hangup_cause__in=('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
-                                  'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'),
-                missed_call=True,
-            ) & ~_missed_to_vm_counts_Q),
+            NO_ANSWER=Count('xml_cdr_uuid', filter=_no_answer_Q & ~Q(missed_call=True) & ~_went_to_vm_Q),
+            MISSED=Count('xml_cdr_uuid', filter=_no_answer_Q & Q(missed_call=True) & ~_went_to_vm_Q),
             FAILED=Count('xml_cdr_uuid', filter=(
-                ~_went_to_vm_Q &
-                ~Q(hangup_cause__in=('NORMAL_CLEARING', 'CALL_AWARDED_DELIVERED'), billsec__gt=0) &
-                ~Q(hangup_cause='USER_BUSY') &
-                ~Q(hangup_cause__in=('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
-                                     'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL'))
+                ~_went_to_vm_Q & ~Q(billsec__gt=0) & ~Q(hangup_cause='USER_BUSY') & ~_no_answer_Q
             )),
         )
 
