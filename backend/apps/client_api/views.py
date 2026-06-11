@@ -60,6 +60,22 @@ class ClientAPIPermission(permissions.BasePermission):
         )
 
 
+def _call_recording_path(filename):
+    """Resolve a CallRecording.call_recording_filename to an absolute path.
+
+    FreeSWITCH usually stores an absolute path (e.g. /var/lib/freeswitch/
+    recordings/<domain>/<file>.wav); older/relative rows are joined onto
+    FREESWITCH_RECORDINGS_DIR. Mirrors apps/recordings/views.py resolution.
+    """
+    if not filename:
+        return None
+    if os.path.isabs(filename):
+        return filename
+    from django.conf import settings
+    recordings_dir = getattr(settings, 'FREESWITCH_RECORDINGS_DIR', '/var/lib/freeswitch/recordings')
+    return os.path.join(recordings_dir, filename)
+
+
 def _tenant_from_request(request):
     """Extract the tenant from the API key auth user."""
     return request.user.tenant
