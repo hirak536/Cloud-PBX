@@ -47,4 +47,10 @@ class CustomDestinationListSerializer(serializers.ModelSerializer):
             'toggle_state',
             'toggle_on_dest',
             'toggle_off_dest',
+            'toggle_on_type',
+            'toggle_on_target_uuid',
+            'toggle_on_external',
+            'toggle_off_type',
+            'toggle_off_target_uuid',
+            'toggle_off_external',
         ]

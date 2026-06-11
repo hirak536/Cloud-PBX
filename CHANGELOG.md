@@ -3,6 +3,35 @@
 All notable changes to IHS-PBX are documented in this file.
 Newest entries on top.
 
+## 2026-06-11
+
+### BLF Toggle (Custom Destinations)
+- BLF toggle ON/OFF destinations can now route to **any** destination — extension, IVR, ring group, voicemail, external number, hangup, or another custom destination — instead of only another custom destination. The dialog now uses the same route dropdown (`DestinationPicker`) as the extension form
+- Backend: each branch is stored as a `type`/`target_uuid`/`external` triple (`toggle_on_*` / `toggle_off_*`) resolved through the shared `_resolve_dest_action`; the legacy `toggle_on_dest`/`toggle_off_dest` FK columns are retained and back-filled (migration `0019`), with the dialplan generator falling back to them for un-migrated rows
+- Fixed the Custom Destination dialog overflowing the page on the taller BLF form — it now caps at `90vh` with a scrollable body
+- BLF Number field now flags when the number is **already in use** by an extension, ring group, IVR menu, or another BLF toggle
+
+### CDR Tenant & Extension Ingest (call logs)
+- Fixed calls saving with `tenant=NULL` (invisible in per-tenant call logs) when the tenant `-CODE` suffix lived in fields the resolver didn't scan. Tenant is now also derived from `destination_number`, the resolved `extension_number` suffix, the dialed DID (`rdnis`/`sip_req_user`/`sip_to_user`), and `<callflow><caller_profile>` routing fields when absent from `<variables>`. Removed an unsafe caller-side DID match that mis-attributed calls to the wrong tenant (e.g. an IHDT call tagged IHS)
+- WebRTC legs (busy/no-answer) report only a SIP session token (e.g. `pn1tnrgv`) as destination, leaving the extension blank. The dialplan now exports `ihs_dialed_ext=<sip_username>` onto every leg so ingest records the real extension (`901-IHDT`) on answered, busy, no-answer, and voicemail calls
+- Outbound calls placed with the tenant DID as caller ID (extension only present in `caller_id_name` as `NNN-CODE`) were logged as **inbound** with a blank extension. These are now classified **outbound** and the extension is recovered from `caller_id_name`
+
+### CDR Voicemail Classification
+- Busy/no-answer→voicemail calls were stuck as **Busy** and never reclassified. Root cause: `v_xml_cdr.last_arg` was `varchar(256)` but the voicemail record-stop curl is ~427 chars, so the real voicemail A-leg insert failed ("value too long") and the synthetic USER_BUSY row survived. Migration `0008`'s AlterField never applied to the FusionPBX-owned table
+- Widened `last_arg` to 1024 via migration `0010` (idempotent raw SQL) and truncate `last_arg` defensively at ingest so an over-length value can never drop a whole CDR row again
+- Hid the transient "Busy" flash: a busy→voicemail call briefly showed Busy before the voicemail A-leg arrived. The call-log list and status counts now suppress bare placeholder rows (`USER_BUSY` + empty `last_app`) for a 15-second grace window; genuine quick-decline busy calls still surface after the window
+
+### Recording Control
+- Outbound calls recorded unconditionally — playing the "may be recorded" tone and recording even when the extension/tenant had recording off. Outbound recording is now gated per-extension: each extension's effective record decision (`user_record`, falling back to tenant `recording_enabled`) is exported as `ihs_record`, and the outbound route records only when `ihs_record=1`. Matches the existing per-extension control on inbound
+
+### Voicemail Routing
+- Offline/unregistered, busy, and no-answer calls no longer default to voicemail. Voicemail is reached only via an explicit `forward_user_not_registered` / `forward_busy` / `forward_no_answer` destination; otherwise the call hangs up
+
+### Backfill (existing rows)
+- `backfill_cdr_tenant`: added a DID-match pass (batched per-tenant to avoid table-wide-UPDATE deadlocks against live `mod_xml_cdr` inserts)
+- `backfill_cdr_direction`: retroactively fix inbound/outbound mislabeling
+- `backfill_voicemail_cdrs`: repair voicemail rows clobbered by garbage synthetic A-legs
+
 ## 2026-06-09
 
 ### Affinity (Sticky Last-Agent) Routing

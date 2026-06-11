@@ -114,13 +114,18 @@ class CustomDestination(models.Model):
                   'False = OFF / red. Kept in sync with FreeSWITCH mod_db + presence; '
                   'republished to phones on reboot/resync so the lamp never drifts.',
     )
+    # Legacy: ON/OFF used to reference another CustomDestination only. Kept for
+    # back-compat/rollback; new code uses the toggle_on_*/toggle_off_* triples
+    # below, which mirror dest_type/dest_target_uuid/dest_external_number and so
+    # can route to ANY destination type (extension, IVR, ring group, voicemail,
+    # external number, hangup, or another custom destination).
     toggle_on_dest = models.ForeignKey(
         'self',
         on_delete=models.SET_NULL,
         null=True, blank=True,
         related_name='+',
         db_column='toggle_on_dest_uuid',
-        help_text='Where calls go while the toggle is ON (green). Another CustomDestination.',
+        help_text='Legacy ON-branch FK to another CustomDestination. Superseded by toggle_on_type.',
     )
     toggle_off_dest = models.ForeignKey(
         'self',
@@ -128,8 +133,19 @@ class CustomDestination(models.Model):
         null=True, blank=True,
         related_name='+',
         db_column='toggle_off_dest_uuid',
-        help_text='Where calls go while the toggle is OFF (red). Another CustomDestination.',
+        help_text='Legacy OFF-branch FK to another CustomDestination. Superseded by toggle_off_type.',
     )
+
+    # ON / OFF branch destinations as a type+target triple (same shape as the
+    # simple-kind dest_type/dest_target_uuid/dest_external_number). Resolved at
+    # dialplan-gen time via _resolve_dest_action, so the BLF toggle can route to
+    # any destination — matching the extension route dropdown.
+    toggle_on_type = models.CharField(max_length=32, blank=True, default='')
+    toggle_on_target_uuid = models.CharField(max_length=64, blank=True, default='')
+    toggle_on_external = models.CharField(max_length=64, blank=True, default='')
+    toggle_off_type = models.CharField(max_length=32, blank=True, default='')
+    toggle_off_target_uuid = models.CharField(max_length=64, blank=True, default='')
+    toggle_off_external = models.CharField(max_length=64, blank=True, default='')
 
     # ── Status ────────────────────────────────────────────────────────────────
     enabled = models.BooleanField(default=True)

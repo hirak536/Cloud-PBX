@@ -1340,13 +1340,34 @@ def _toggle_custom_dest_to_dialplan_xml(cd, domain_name, ctx_name, preload=None)
                      field='destination_number',
                      expression=f'^toggle_{re.escape(uid)}$',
                      attrib={'break': 'never'})
+    # Each branch is a (type, target_uuid, external) triple — same shape as the
+    # simple-kind dest_* fields — so it can route to ANY destination type via the
+    # shared _resolve_dest_action. A tiny shim exposes the triple under the
+    # attribute names that resolver expects, inheriting the toggle's tenant.
+    class _ToggleBranch:
+        def __init__(self, parent, dtype, target, external):
+            self.dest_type = dtype or ''
+            self.dest_target_uuid = target or ''
+            self.dest_external_number = external or ''
+            self.tenant = getattr(parent, 'tenant', None)
+            self.tenant_id = getattr(parent, 'tenant_id', None)
+
+    def _branch_actions(dtype, target, external, legacy_fk, legacy_obj):
+        # Prefer the new triple; fall back to the legacy FK for un-migrated rows.
+        if dtype:
+            return _resolve_dest_action(
+                _ToggleBranch(cd, dtype, target, external), domain_name, preload=preload) or []
+        if legacy_fk:
+            return _resolve_dest_action(legacy_obj, domain_name, preload=preload) or []
+        return []
+
     on_actions = []
     off_actions = []
     try:
-        if cd.toggle_on_dest_id:
-            on_actions = _resolve_dest_action(cd.toggle_on_dest, domain_name, preload=preload) or []
-        if cd.toggle_off_dest_id:
-            off_actions = _resolve_dest_action(cd.toggle_off_dest, domain_name, preload=preload) or []
+        on_actions = _branch_actions(cd.toggle_on_type, cd.toggle_on_target_uuid,
+                                     cd.toggle_on_external, cd.toggle_on_dest_id, cd.toggle_on_dest)
+        off_actions = _branch_actions(cd.toggle_off_type, cd.toggle_off_target_uuid,
+                                      cd.toggle_off_external, cd.toggle_off_dest_id, cd.toggle_off_dest)
     except Exception as e:
         logger.warning('Toggle %s branch resolution error: %s', uid, e)
 

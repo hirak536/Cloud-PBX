@@ -2,6 +2,7 @@ import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { customDestinations as api } from '@/api'
 import { useDestinationData } from '@/hooks/useDestinationData'
+import DestinationPicker from '@/components/DestinationPicker'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -49,6 +50,13 @@ const EMPTY = {
   toggle_state: true,
   toggle_on_dest: '',
   toggle_off_dest: '',
+  // ON/OFF route as a full destination (any type), same as the ext route dropdown.
+  toggle_on_type: '',
+  toggle_on_target_uuid: '',
+  toggle_on_external: '',
+  toggle_off_type: '',
+  toggle_off_target_uuid: '',
+  toggle_off_external: '',
 }
 
 // ── Kind registry ────────────────────────────────────────────────────────────
@@ -104,7 +112,9 @@ const KIND_REGISTRY = {
     label: 'Toggle (BLF switch)',
     icon: ToggleRight,
     description: 'A BLF switch with its own dialable number. Subscribe a phone BLF key to the number: GREEN = ON (routes to the ON destination), RED = OFF (routes to the OFF destination). Pressing the key flips it.',
-    renderBody: ({ form, setForm, cdOptions, editId }) => (
+    renderBody: ({ form, setForm, destData, destLoading, editId }) => {
+      const inUse = blfNumberConflict(form.toggle_extension, destData, editId)
+      return (
       <>
         <div className="grid grid-cols-2 gap-3">
           <Field label="BLF Number *" hint='Dialable number for the BLF key, e.g. "801".'>
@@ -112,7 +122,13 @@ const KIND_REGISTRY = {
               placeholder="801"
               value={form.toggle_extension}
               onChange={e => setForm(p => ({ ...p, toggle_extension: e.target.value }))}
+              className={cn(inUse && 'border-amber-500 focus-visible:ring-amber-500')}
             />
+            {inUse && (
+              <p className="mt-1 text-xs text-amber-600">
+                Already in use by {inUse.kind} “{inUse.label}”. Pick a different number.
+              </p>
+            )}
           </Field>
           <Field label="Default State" hint="State before first toggle.">
             <div className="flex items-center gap-2 h-9">
@@ -132,41 +148,69 @@ const KIND_REGISTRY = {
           />
         </Field>
         <Field label="ON destination (green) *" hint="Where calls go while the toggle is ON.">
-          <CustomDestSelect
-            value={form.toggle_on_dest}
-            onChange={v => setForm(p => ({ ...p, toggle_on_dest: v }))}
-            options={cdOptions}
-            excludeId={editId}
+          <DestinationPicker
+            value={{ type: form.toggle_on_type, target_uuid: form.toggle_on_target_uuid, external_number: form.toggle_on_external }}
+            onChange={(d) => setForm(p => ({ ...p, toggle_on_type: d.type || '', toggle_on_target_uuid: d.target_uuid || '', toggle_on_external: d.external_number || '' }))}
+            data={destData}
+            loading={destLoading}
+            compact
+            placeholder="Select destination…"
           />
         </Field>
         <Field label="OFF destination (red) *" hint="Where calls go while the toggle is OFF.">
-          <CustomDestSelect
-            value={form.toggle_off_dest}
-            onChange={v => setForm(p => ({ ...p, toggle_off_dest: v }))}
-            options={cdOptions}
-            excludeId={editId}
+          <DestinationPicker
+            value={{ type: form.toggle_off_type, target_uuid: form.toggle_off_target_uuid, external_number: form.toggle_off_external }}
+            onChange={(d) => setForm(p => ({ ...p, toggle_off_type: d.type || '', toggle_off_target_uuid: d.target_uuid || '', toggle_off_external: d.external_number || '' }))}
+            data={destData}
+            loading={destLoading}
+            compact
+            placeholder="Select destination…"
           />
         </Field>
         <div className="flex items-start gap-2 text-xs text-blue-700 rounded-lg border border-blue-200 bg-blue-500/5 px-3 py-2">
           <ToggleRight className="h-3.5 w-3.5 shrink-0 mt-0.5" />
           <span>
             Subscribe a phone BLF key to the BLF number to see the green/red lamp;
-            pressing the key flips it. The ON and OFF destinations must be other
-            custom destinations.
+            pressing the key flips it. The ON and OFF destinations can be any
+            destination — extension, IVR, ring group, voicemail, external number,
+            or another custom destination.
           </span>
         </div>
       </>
-    ),
+      )
+    },
     // Toggle doesn't route directly via dest_type; store a hangup placeholder so
     // the shared "pick a destination" validation/columns stay satisfied.
     onSavePrep: (form) => ({
       ...form,
       callback_to_last_caller: false,
       dest_type: form.dest_type || 'hangup',
-      toggle_on_dest: form.toggle_on_dest || null,
-      toggle_off_dest: form.toggle_off_dest || null,
+      // New triple is authoritative; clear the legacy FK fields so they don't
+      // override (the dialplan prefers the triple but falls back to the FK).
+      toggle_on_dest: null,
+      toggle_off_dest: null,
+      toggle_on_target_uuid: form.toggle_on_target_uuid || '',
+      toggle_off_target_uuid: form.toggle_off_target_uuid || '',
     }),
   },
+}
+
+// Return {kind, label} if `number` is already a dialable number on this tenant
+// (an extension, ring group, IVR, or another toggle/BLF), else null. excludeId
+// is the current custom-destination uuid so editing its own number is allowed.
+function blfNumberConflict(number, data, excludeId) {
+  const n = (number || '').trim()
+  if (!n) return null
+  const ext = (data.extensions || []).find(e => String(e.extension) === n)
+  if (ext) return { kind: 'extension', label: ext.extension }
+  const rg = (data.ring_groups || []).find(r => String(r.ring_group_extension) === n)
+  if (rg) return { kind: 'ring group', label: rg.ring_group_name || n }
+  const ivr = (data.ivr_menus || []).find(i => String(i.ivr_menu_extension) === n)
+  if (ivr) return { kind: 'IVR menu', label: ivr.ivr_menu_name || n }
+  const cd = (data.custom_destinations || []).find(
+    c => c.custom_destination_uuid !== excludeId && String(c.toggle_extension || '') === n)
+  if (cd) return { kind: 'BLF toggle', label: cd.name || n }
+  return null
 }
 
 function CustomDestSelect({ value, onChange, options, excludeId }) {
@@ -606,6 +650,12 @@ export default function CustomDestinations() {
       toggle_state: r.toggle_state !== false,
       toggle_on_dest: r.toggle_on_dest || '',
       toggle_off_dest: r.toggle_off_dest || '',
+      toggle_on_type: r.toggle_on_type || '',
+      toggle_on_target_uuid: r.toggle_on_target_uuid || '',
+      toggle_on_external: r.toggle_on_external || '',
+      toggle_off_type: r.toggle_off_type || '',
+      toggle_off_target_uuid: r.toggle_off_target_uuid || '',
+      toggle_off_external: r.toggle_off_external || '',
     })
     setFormError(''); setDialog(true); loadDestData()
   }
@@ -614,8 +664,8 @@ export default function CustomDestinations() {
     if (!form.name.trim()) { setFormError('Name is required.'); return }
     if (form.kind === 'toggle') {
       if (!form.toggle_extension.trim()) { setFormError('BLF number is required.'); return }
-      if (!form.toggle_on_dest)  { setFormError('Pick an ON destination.'); return }
-      if (!form.toggle_off_dest) { setFormError('Pick an OFF destination.'); return }
+      if (!form.toggle_on_type)  { setFormError('Pick an ON destination.'); return }
+      if (!form.toggle_off_type) { setFormError('Pick an OFF destination.'); return }
     } else if (!form.dest_type) {
       setFormError('Pick a destination.'); return
     }
@@ -760,11 +810,11 @@ export default function CustomDestinations() {
       </CardContent></Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialog}>
-        <DialogContent className="w-[95vw] max-w-lg p-0 overflow-hidden">
-          <DialogHeader className="px-6 pt-5 pb-4 border-b">
+        <DialogContent className="w-[95vw] max-w-lg max-h-[90vh] flex flex-col p-0 overflow-hidden">
+          <DialogHeader className="px-6 pt-5 pb-4 border-b shrink-0">
             <DialogTitle>{editId ? 'Edit Custom Destination' : 'New Custom Destination'}</DialogTitle>
           </DialogHeader>
-          <div className="px-6 py-4 space-y-4">
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
             {formError && (
               <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">{formError}</div>
             )}
@@ -797,7 +847,7 @@ export default function CustomDestinations() {
               onChange={v => setForm(p => ({ ...p, enabled: v }))}
             />
           </div>
-          <div className="flex items-center justify-end gap-2 px-6 py-4 border-t bg-muted/30">
+          <div className="flex items-center justify-end gap-2 px-6 py-4 border-t bg-muted/30 shrink-0">
             <Button variant="outline" onClick={() => setDialog(false)}>Cancel</Button>
             <Button onClick={handleSave} disabled={saving}>
               {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
