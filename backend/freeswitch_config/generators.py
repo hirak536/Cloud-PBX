@@ -986,6 +986,8 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
     # Always tag the target extension so CDR ingest can record it
     etree.SubElement(offline_reg_cond, 'action', application='set',
                      data=f'dialed_extension={ext.extension}')
+    etree.SubElement(offline_reg_cond, 'action', application='export',
+                     data=f'ihs_dialed_ext={ext.sip_username or ext.extension}')
     # If tenant has push notifications enabled or extension has mobile push enabled,
     # park the call so the ESL listener can send a push webhook and poll for the extension to register.
     # The ESL listener will handle forwarding/hangup after the poll timeout.
@@ -1019,6 +1021,15 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
                                    field='destination_number', expression=dest_expr)
     etree.SubElement(bridge_cond, 'action', application='set',
                      data=f'dialed_extension={ext.extension}')
+    # Export the suffixed extension so it survives onto EVERY leg's CDR —
+    # including the bridge B-legs and immediate USER_BUSY/NO_ANSWER cases where
+    # destination_number is just a WebRTC session token (e.g. "pn1tnrgv") and
+    # dialed_extension/transfer_source aren't present in the posted CDR variables.
+    # `export` (no nolocal:) sets it on the current channel AND all originated
+    # legs, so CDR ingest can always read var('ihs_dialed_ext'). See _process_cdr.
+    ihs_dialed_ext = ext.sip_username or ext.extension
+    etree.SubElement(bridge_cond, 'action', application='export',
+                     data=f'ihs_dialed_ext={ihs_dialed_ext}')
     if ext.call_timeout:
         etree.SubElement(bridge_cond, 'action', application='set',
                          data=f'call_timeout={ext.call_timeout}')

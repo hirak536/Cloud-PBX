@@ -23,55 +23,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Cache of sticky DID numbers (destination_number strings) so the per-request
-# check doesn't hit the DB on every non-sticky call.  Refreshed on cache miss.
-_sticky_did_cache: set = set()
-_sticky_did_cache_built = False
-
-
-def _is_sticky_did(destination_number: str) -> bool:
-    """
-    Return True if the destination DID uses sticky last-agent routing, meaning
-    the dialplan response must NOT be cached (it encodes a per-caller transfer).
-
-    Checks two paths:
-      1. DID has callback_to_last_caller=True directly
-      2. DID points to a CustomDestination with kind='sticky_last_agent' or
-         callback_to_last_caller=True
-    """
-    global _sticky_did_cache, _sticky_did_cache_built
-    if not _sticky_did_cache_built:
-        try:
-            from apps.destinations.models import Destination
-            from apps.custom_destinations.models import CustomDestination
-            from django.db.models import Q
-            sticky_cd_ids = set(
-                CustomDestination.objects.filter(
-                    Q(kind='sticky_last_agent') | Q(callback_to_last_caller=True)
-                ).values_list('custom_destination_uuid', flat=True)
-            )
-            nums = set(
-                Destination.objects.filter(
-                    Q(callback_to_last_caller=True) |
-                    Q(dest_type='custom_destination', dest_target_uuid__in=sticky_cd_ids)
-                ).values_list('destination_number', flat=True)
-            )
-            _sticky_did_cache = nums
-            _sticky_did_cache_built = True
-        except Exception:
-            return False
-
-    if not destination_number:
-        return False
-    # Normalise: strip +1 prefix to match both E.164 and 10-digit variants.
-    import re as _re
-    digits = _re.sub(r'\D', '', destination_number)
-    if len(digits) > 10 and digits.startswith('1'):
-        digits = digits[1:]
-    return (destination_number in _sticky_did_cache or
-            digits in _sticky_did_cache or
-            f'+1{digits}' in _sticky_did_cache)
-
 
 @method_decorator(csrf_exempt, name='dispatch')
 class XmlCurlView(View):
@@ -124,29 +75,18 @@ class XmlCurlView(View):
                 # WebRTC/public-entry calls lose their extension/outbound routes.
                 user_context = request.POST.get('variable_user_context', '')
                 keep_contexts = [c for c in (req_context, user_context) if c]
-
-                # Bypass cache for sticky-routed DIDs: the correct transfer target
-                # depends on the live caller_id_number, which varies per call.
-                # Caching would serve the first caller's affinity result to everyone.
-                sticky = _is_sticky_did(destination)
-                if sticky:
+                cache_key = f'dialplan:xml:{domain}:{":".join(keep_contexts)}'
+                xml = cache.get(cache_key)
+                if xml is None:
                     xml = generate_dialplan_xml(domain, destination, caller_id, caller_name,
                                                 requested_context=keep_contexts)
-                    logger.debug('Dialplan cache SKIP (sticky DID) domain=%s destination=%s caller=%s',
-                                 domain, destination, caller_id)
+                    try:
+                        cache.set(cache_key, xml, timeout=3600)
+                    except Exception:
+                        pass  # Redis unavailable — serve uncached, don't crash
+                    logger.debug('Dialplan cache MISS domain=%s', domain)
                 else:
-                    cache_key = f'dialplan:xml:{domain}:{":".join(keep_contexts)}'
-                    xml = cache.get(cache_key)
-                    if xml is None:
-                        xml = generate_dialplan_xml(domain, destination, caller_id, caller_name,
-                                                    requested_context=keep_contexts)
-                        try:
-                            cache.set(cache_key, xml, timeout=3600)
-                        except Exception:
-                            pass  # Redis unavailable — serve uncached, don't crash
-                        logger.debug('Dialplan cache MISS domain=%s', domain)
-                    else:
-                        logger.debug('Dialplan cache HIT domain=%s', domain)
+                    logger.debug('Dialplan cache HIT domain=%s', domain)
             elif section == 'configuration':
                 # FreeSWITCH sends key_name='name' and key_value='voicemail.conf' etc.
                 config_name = request.POST.get('key_value', '')
@@ -220,8 +160,12 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
             tenant_code = context_val[len('default-'):]
         else:
             # username (e.g. 100-SIS) is the most reliable source — check it first,
-            # then fall back to sip_from_user and caller_id_number.
-            for field in (var('username'), var('sip_from_user'), var('caller_id_number')):
+            # then fall back to the dialed extension fields (e.g. 901-IHDT on a
+            # gateway-bound B-leg), sip_from_user and caller_id_number.
+            for field in (var('username'), var('sip_from_user'),
+                          var('dialed_extension'), var('sip_to_user'),
+                          var('sip_req_user'), var('destination_number'),
+                          var('caller_id_number')):
                 if field and '-' in field:
                     tenant_code = field.rsplit('-', 1)[-1]
                     break
@@ -264,38 +208,24 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                 break
 
     if tenant is None:
-        originating_uuid = var('originating_leg_uuid') or var('originator')
-        if originating_uuid:
+        # Inherit the tenant from the A-leg. Prefer originating_leg_uuid/originator,
+        # but fall back to bridge_uuid/signal_bond so B-legs (e.g. gateway-bound
+        # legs) still resolve when no originating_leg_uuid was set on this leg.
+        for originating_uuid in (var('originating_leg_uuid'), var('originator'),
+                                 var('bridge_uuid'), var('signal_bond')):
+            if not originating_uuid:
+                continue
             a_leg = XmlCdr.objects.filter(call_uuid=originating_uuid).select_related('tenant', 'domain').first()
             if a_leg and a_leg.tenant:
                 tenant = a_leg.tenant
                 if domain is None:
                     domain = a_leg.domain
-
-    # Last resort: derive tenant from the resolved domain.
-    # Skip universal/shared domains (they belong to one tenant but are used by all).
-    if tenant is None and domain is not None and not domain.domain_universal:
-        domain_tenant = getattr(domain, 'tenant', None)
-        if domain_tenant is None:
-            try:
-                domain.refresh_from_db(fields=['tenant'])
-                domain_tenant = domain.tenant
-            except Exception:
-                pass
-        if domain_tenant:
-            tenant = domain_tenant
-            logger.info(f"CDR ingest: resolved tenant {tenant.tenant_name!r} from domain {domain_name!r}")
+                break
 
     if domain is None:
         logger.warning(f"CDR ingest: could not resolve domain from domain_name={domain_name!r}")
 
     raw_direction = var('direction', 'inbound')
-    # ${ihs_direction} is stamped by our own dialplan (e.g. the outbound route)
-    # BEFORE any recording announcement or bridge runs, so it is authoritative
-    # even for calls that hang up early (during the "may be recorded" playback)
-    # and never reach the gateway bridge. FreeSWITCH's intrinsic `direction`
-    # labels these PSTN-bound A-legs 'inbound', which is wrong — trust ours.
-    ihs_direction = var('ihs_direction', '')
     context_val = var('context', '')
     caller_number = var('caller_id_number') or var('effective_caller_id_number') or var('sip_from_user') or ''
     last_app_val = var('last_app', '').lower()
@@ -303,33 +233,45 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
     originating_leg_uuid = var('originating_leg_uuid') or var('originator') or ''
     is_originating_leg = bool(originating_leg_uuid)
     bridged_to_gateway = last_app_val == 'bridge' and 'sofia/gateway/' in last_arg_val
+    # For inheriting the A-leg's direction we also accept bridge_uuid/signal_bond:
+    # a gateway-bound B-leg often carries no originating_leg_uuid but its
+    # bridge_uuid points back at the A-leg. This is used ONLY for direction —
+    # not for leg/dedup, which must stay keyed on the true originating fields.
+    a_leg_ref = (originating_leg_uuid or var('bridge_uuid')
+                 or var('signal_bond') or '')
     originating_leg_direction = None
-    if is_originating_leg:
+    if a_leg_ref:
         try:
-            origin_leg = XmlCdr.objects.filter(call_uuid=originating_leg_uuid, leg='a').only('direction').first()
+            origin_leg = XmlCdr.objects.filter(call_uuid=a_leg_ref, leg='a').only('direction').first()
             if origin_leg:
                 originating_leg_direction = origin_leg.direction
         except Exception:
             originating_leg_direction = None
 
-    if ihs_direction in ('inbound', 'outbound', 'local'):
-        direction = ihs_direction
+    # Most reliable signal: an internal extension placing a call to a PSTN/E.164
+    # number is outbound, no matter what FreeSWITCH's raw_direction says on a
+    # gateway leg. Caller is an extension (short digits, optional -TENANT suffix);
+    # destination is a long (>=7 digit) external number.
+    _caller_head = caller_number.split('-', 1)[0].lstrip('+')
+    # A real internal extension is 2-5 digits and not an all-zero/service stub.
+    caller_is_ext = (_caller_head.isdigit() and 2 <= len(_caller_head) <= 5
+                     and _caller_head.strip('0') != '')
+    _dest = (var('destination_number') or var('sip_req_user')
+             or var('sip_to_user') or '').lstrip('+')
+    # Destination is a NANP PSTN number (10 digits, or 11 starting with 1).
+    dest_is_pstn = _dest.isdigit() and (len(_dest) == 10
+                                        or (len(_dest) == 11 and _dest[0] == '1'))
+
+    if caller_is_ext and dest_is_pstn:
+        direction = 'outbound'
     elif bridged_to_gateway:
         direction = 'outbound'
-    elif is_originating_leg and originating_leg_direction in ('inbound', 'outbound'):
+    elif originating_leg_direction in ('inbound', 'outbound'):
+        # Inherit from the A-leg (found via originating_leg_uuid OR bridge_uuid).
         direction = originating_leg_direction
     elif is_originating_leg:
         caller_digits = caller_number.lstrip('+')
         direction = 'outbound' if len(caller_digits) <= 6 else 'inbound'
-    elif context_val == 'authenticated':
-        # Calls from a registered extension dialing out always land in the
-        # `authenticated` context — these are outbound regardless of what
-        # FreeSWITCH's raw direction reports (it labels callback/click-to-call
-        # A-legs as inbound).
-        direction = 'outbound'
-    elif context_val == 'fromoutside':
-        # PSTN/DID calls arriving from a carrier gateway — always inbound.
-        direction = 'inbound'
     elif context_val == 'public':
         direction = 'outbound' if len(caller_number.lstrip('+')) <= 6 else 'inbound'
     elif context_val.startswith('default-'):
@@ -337,17 +279,7 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         # outbound (extension dialing out). Trust FreeSWITCH raw_direction here.
         direction = raw_direction if raw_direction in ('inbound', 'outbound') else 'inbound'
     else:
-        # No context (FreeSWITCH stopped stamping it after the dialplan-scoping
-        # change). Infer from the numbers: a short internal extension as the
-        # caller dialing a long PSTN destination is outbound.
-        caller_digits = caller_number.lstrip('+')
-        dest_digits = (var('destination_number') or '').lstrip('+')
-        if caller_digits.isdigit() and len(caller_digits) <= 6 and len(dest_digits) >= 7:
-            direction = 'outbound'
-        elif raw_direction in ('inbound', 'outbound', 'local'):
-            direction = raw_direction
-        else:
-            direction = 'inbound'
+        direction = raw_direction if raw_direction in ('inbound', 'outbound', 'local') else 'inbound'
 
     duration = int_var('duration')
     waitsec = int_var('waitsec')
@@ -380,9 +312,18 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         head = val.split('-', 1)[0]
         return head.isdigit() and 1 <= len(head) <= 6
 
+    # Authoritative signal: the dialplan exports ihs_dialed_ext (the suffixed
+    # sip_username, e.g. "901-IHDT") onto every leg of an inbound call to an
+    # extension — including bridge B-legs and immediate USER_BUSY/NO_ANSWER legs
+    # whose destination_number is only a WebRTC session token. When present it
+    # wins over every heuristic below. See generators.py ext_*_bridge/_offline.
+    ihs_dialed_ext = var('ihs_dialed_ext')
+
     if direction == 'outbound':
         # Outbound A-leg: the dialing extension is sip_from_user.
         extension_number = sip_username_raw or sip_from_user
+    elif ihs_dialed_ext:
+        extension_number = ihs_dialed_ext
     else:
         # For B-legs of inbound calls (forked ring group dial), each B-leg's
         # `username` is the SIP username of the specific device that rang —
@@ -398,6 +339,17 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                 m = _re.search(r'sip:([^@;]+)@|/([^/@;]+)@', bridge_channel)
                 if m:
                     extension_number = m.group(1) or m.group(2)
+            # WebRTC bridge B-legs carry a SIP token (e.g. "n0kj384g") in every
+            # destination field, but the real dialed extension survives in
+            # transfer_source / transfer_history as "...:bl_xfer:202/default-IHDT/XML".
+            # That is the most reliable place to recover it.
+            if not _looks_like_internal_ext(extension_number):
+                xfer = var('transfer_source') or var('transfer_history')
+                if xfer:
+                    import re as _re2
+                    m2 = _re2.search(r'bl_xfer:(\d{1,6})/', xfer)
+                    if m2:
+                        extension_number = m2.group(1)
             # Final fallback: sip_to_user — but only if it looks like a real ext.
             # Never let PSTN numbers (+13465711217) or random SIP IDs end up in
             # extension_number; leave it blank instead.
@@ -419,39 +371,63 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         except Exception:
             pass
 
-    # Tenant recovery — last-ditch attribution so calls aren't lost to tenant=None
-    # (which makes them invisible in every tenant-scoped view). WebRTC legs arrive
-    # with an empty context and a DID (not an extension) as caller_id_number, so the
-    # earlier resolution misses them. Try every field that may carry a "-CODE" suffix,
-    # then fall back to the originating A-leg's tenant for bridged B-legs.
-    if tenant is None:
+    # Last-resort tenant recovery from the resolved extension_number. It is
+    # computed above from dialed_extension / bridge_channel / sip_to_user — fields
+    # the early suffix scan does not all see — so a leg whose only tenant signal is
+    # a suffixed dialed extension (e.g. "1003-IHDT") still resolves here instead of
+    # landing tenant=NULL and disappearing from every tenant-scoped call log.
+    if tenant is None and extension_number and '-' in extension_number:
         from core.models import Tenant
-        _valid_codes = set(Tenant.objects.values_list('tenant_code', flat=True))
+        candidate_code = extension_number.rsplit('-', 1)[-1]
+        try:
+            tenant = Tenant.objects.get(tenant_code=candidate_code)
+            if domain is None:
+                domain = tenant.domains.filter(domain_enabled=True).first()
+            logger.info("CDR ingest: recovered tenant %s from extension_number %r",
+                        candidate_code, extension_number)
+        except Tenant.DoesNotExist:
+            pass
 
-        # 1. Any field with a recognised "-TENANTCODE" suffix.
-        for candidate in (extension_number, var('destination_number'),
-                          var('sip_req_user'), var('sip_to_user')):
-            if candidate and '-' in candidate:
-                code = candidate.rsplit('-', 1)[-1]
-                if code in _valid_codes:
-                    tenant = Tenant.objects.get(tenant_code=code)
-                    logger.info("CDR ingest: recovered tenant %s from %r", code, candidate)
+    # Last-resort tenant recovery via DID match on the DIALED destination only.
+    # IMPORTANT: match the destination (the number that was CALLED), never the
+    # caller_id_number. A caller's CID can coincidentally equal some other
+    # tenant's DID — e.g. an external party calling IHDT's DID while presenting
+    # an IHS DID as caller-id — and matching the caller would mis-attribute the
+    # whole call to the wrong tenant. Only the dialed DID identifies the owner.
+    if tenant is None:
+        from apps.destinations.models import Destination
+
+        def _did_candidates(number):
+            if not number:
+                return []
+            cands = [number]
+            if number.startswith('+1'):
+                cands += [number[2:], number[1:]]
+            elif number.startswith('1') and len(number) == 11:
+                cands += ['+' + number, number[1:]]
+            else:
+                cands.append('+1' + number)
+            return cands
+
+        # rdnis = the original DID for a call that was transferred/forwarded to a
+        # token destination (WebRTC bridge leg); sip_req_user/sip_to_user carry
+        # the DID on the raw inbound leg. destination_number last (it is often a
+        # SIP session token on bridged legs). Never the caller.
+        for number in (var('rdnis'), var('sip_req_user'), var('sip_to_user'),
+                       var('destination_number')):
+            matched = False
+            for candidate in _did_candidates(number):
+                did = Destination.objects.filter(destination_number=candidate).select_related('tenant').first()
+                if did and did.tenant:
+                    tenant = did.tenant
+                    if domain is None:
+                        domain = tenant.domains.filter(domain_enabled=True).first()
+                    logger.info("CDR ingest: recovered tenant %s via dialed DID %r",
+                                tenant.tenant_code, candidate)
+                    matched = True
                     break
-
-        # 2. Bridged B-leg: inherit the tenant from its A-leg (matched by bridge_uuid).
-        if tenant is None:
-            bridge_ref = var('bridge_uuid') or var('signal_bond') or originating_leg_uuid
-            if bridge_ref:
-                a_leg = XmlCdr.objects.filter(
-                    call_uuid=bridge_ref, tenant__isnull=False
-                ).select_related('tenant', 'domain').first()
-                if a_leg:
-                    tenant = a_leg.tenant
-                    logger.info("CDR ingest: recovered tenant %s from A-leg %s",
-                                tenant.tenant_code, bridge_ref)
-
-        if tenant is not None and domain is None:
-            domain = tenant.domains.filter(domain_enabled=True).first()
+            if matched:
+                break
 
     call_uuid_val = call_uuid_fallback or var('uuid') or var('call_uuid') or None
     cdr_fields = dict(
@@ -480,7 +456,11 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         remote_media_ip=var('remote_media_ip'),
         network_addr=var('network_addr'),
         last_app=var('last_app'),
-        last_arg=var('last_arg'),
+        # Truncate to the column width (1024). Voicemail legs carry the full
+        # record-stop curl in last_arg (~400+ chars); an over-length value made
+        # the ENTIRE row insert fail, so the call was lost / left as a stale
+        # synthetic USER_BUSY row instead of being classified as voicemail.
+        last_arg=var('last_arg')[:1024],
         hangup_cause=hangup_cause_raw,
         hangup_cause_q850=int_var('hangup_cause_q850'),
         direction=direction,
@@ -520,11 +500,7 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                 f"({record.billsec}s, {record.hangup_cause})"
             )
         else:
-            record, created = XmlCdr.objects.update_or_create(
-                call_uuid=call_uuid_val,
-                leg=leg,
-                defaults=cdr_fields,
-            )
+            record = XmlCdr.objects.create(**cdr_fields)
             logger.info(
                 f"CDR ingest: saved {record.caller_id_number} -> {record.destination_number} "
                 f"({record.billsec}s, {record.hangup_cause})"
@@ -533,26 +509,23 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         # If this is a B-leg and no A-leg exists for this call, create a synthetic A-leg.
         # FreeSWITCH sometimes only posts the B-leg for voicemail flows where the
         # inbound channel CDR is not sent (e.g. transferred calls where context changes).
-        if leg == 'b' and record.bridge_uuid:
+        # A B-leg only warrants a synthetic A-leg if it carries enough routing
+        # data to stand in for the real inbound leg. FreeSWITCH's voicemail
+        # `record` application spawns internal media pseudo-legs whose
+        # destination_number is a session token (e.g. 'vqsairma'), with empty
+        # context/last_app and no resolvable tenant. Those carry nothing useful —
+        # synthesizing an A-leg from them produces a tenant=None / last_app=''
+        # row that the (call_uuid, leg='a') unique constraint then lets clobber a
+        # real A-leg, hiding the call from the tenant-scoped call logs. Skip them.
+        b_leg_is_routable = bool(record.tenant_id or record.context or last_app_val)
+        if leg == 'b' and record.bridge_uuid and b_leg_is_routable:
             # For ring groups (simultaneous), each B-leg may have a different bridge_uuid but all
             # share the same originating_leg_uuid pointing to the A-leg. Use originating_leg_uuid
             # as the primary check to avoid creating duplicate synthetic A-legs.
             a_leg_uuid = originating_leg_uuid or str(record.bridge_uuid)
             a_leg_exists = XmlCdr.objects.filter(call_uuid=a_leg_uuid, leg='a').exists()
-            # Backfill the extension onto the real A-leg. For inbound DID calls
-            # FreeSWITCH posts a real A-leg (the inbound channel) whose CDR carries
-            # NO extension — only the B-leg's `username` identifies the device that
-            # rang. The CDR list view shows leg='a' only, so without this copy the
-            # extension column is blank for every inbound call. The A-leg can be
-            # keyed by either originating_leg_uuid or the B-leg's bridge_uuid.
-            if _looks_like_internal_ext(record.extension_number):
-                XmlCdr.objects.filter(
-                    leg='a', extension_number__in=('', None),
-                    call_uuid__in=[u for u in (a_leg_uuid, str(record.bridge_uuid)) if u],
-                ).update(extension_number=record.extension_number)
             if not a_leg_exists:
                 try:
-                    from django.db import transaction
                     syn_defaults = dict(
                         domain=record.domain,
                         tenant=record.tenant,
@@ -593,13 +566,22 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                         record_path=record.record_path,
                         record_name=record.record_name,
                     )
-                    with transaction.atomic():
-                        _, syn_created = XmlCdr.objects.update_or_create(
-                            call_uuid=a_leg_uuid, leg='a',
-                            defaults=syn_defaults,
-                        )
+                    # IMPORTANT: get_or_create, NOT update_or_create. A synthetic
+                    # A-leg is a best-effort stand-in built from a B-leg's fields
+                    # (often a transfer/gateway leg with tenant=None and a SIP
+                    # transfer pseudo-extension like 'vqsairma' as destination).
+                    # It must NEVER overwrite a real A-leg: the (call_uuid, leg='a')
+                    # unique constraint means there is exactly one A-leg row, and
+                    # the real A-leg — written via update_or_create on line ~410 —
+                    # is always authoritative. Using update_or_create here let a
+                    # late-arriving garbage B-leg clobber a good real A-leg,
+                    # blanking tenant/last_app and hiding the call from call logs.
+                    _, syn_created = XmlCdr.objects.get_or_create(
+                        call_uuid=a_leg_uuid, leg='a',
+                        defaults=syn_defaults,
+                    )
                     logger.info(
-                        f"CDR ingest: {'created' if syn_created else 'updated'} synthetic A-leg for orphaned B-leg "
+                        f"CDR ingest: {'created synthetic A-leg' if syn_created else 'kept existing A-leg'} for orphaned B-leg "
                         f"{record.caller_id_number} -> {record.destination_number} bridge_uuid={record.bridge_uuid}"
                     )
                 except Exception as syn_exc:
@@ -684,14 +666,6 @@ class CdrIngestView(View):
             return HttpResponse('OK')
 
         logger.debug(f"CDR ingest raw (len={len(cdr_xml)}): {cdr_xml[:200]}")
-        try:
-            import os as _os
-            if _os.path.exists('/tmp/cdr_capture'):
-                with open('/tmp/cdr_last.xml', 'w') as _f:
-                    _f.write(cdr_xml)
-        except Exception:
-            pass
-
 
         # JSON CDR (mod_json_cdr) — parse variables and process same as XML CDR
         if cdr_xml.lstrip().startswith('{'):
@@ -745,32 +719,25 @@ class CdrIngestView(View):
             logger.error(f"CDR ingest: failed to parse XML: {e}")
             return HttpResponse('OK')
 
-        # mod_xml_cdr puts the authoritative routing context and direction on the
-        # caller_profile (<callflow><caller_profile><context>/<direction>), NOT in
-        # <variables>. FreeSWITCH does not always export a `context` channel
-        # variable, so reading only <variables> leaves context empty — which
-        # breaks direction classification. Fall back to the caller_profile.
-        # The LAST callflow is the original (earliest) leg in mod_xml_cdr output.
-        _profile_fallback = {}
-        try:
-            _profiles = root.findall('.//callflow/caller_profile')
-            if _profiles:
-                _orig = _profiles[-1]
-                for _t in ('context', 'direction'):
-                    _e = _orig.find(_t)
-                    if _e is not None and _e.text:
-                        from urllib.parse import unquote as _uq
-                        _profile_fallback[_t] = _uq(_e.text.strip())
-        except Exception:
-            pass
-
         def var(name, default=''):
             from urllib.parse import unquote
             el = root.find(f'.//variables/{name}')
             if el is not None and el.text:
                 return unquote(el.text.strip())
-            if name in _profile_fallback:
-                return _profile_fallback[name]
+            # Fallback: several routing/tenant fields (context, rdnis,
+            # destination_number, username) live in <callflow><caller_profile>
+            # but NOT in <variables> — notably on WebRTC bridge B-legs whose
+            # <variables> carry only the session token. The most recent callflow
+            # (profile_index highest, i.e. last in document order) reflects the
+            # final routing state. Read from the last caller_profile.
+            if name in ('context', 'rdnis', 'destination_number', 'username',
+                        'caller_id_number', 'caller_id_name', 'network_addr',
+                        'dialed_extension'):
+                profiles = root.findall('.//callflow/caller_profile')
+                for prof in reversed(profiles):
+                    cel = prof.find(name)
+                    if cel is not None and cel.text and cel.text.strip():
+                        return unquote(cel.text.strip())
             return default
 
         def int_var(name):

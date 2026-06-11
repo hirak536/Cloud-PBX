@@ -101,7 +101,20 @@ class Command(BaseCommand):
             ))
 
         if dry_run:
-            self.stdout.write(self.style.WARNING(f'DRY RUN — would update {total} rows. No changes written.'))
+            with connection.cursor() as cur:
+                cur.execute("""
+                    SELECT count(*)
+                    FROM v_xml_cdr b
+                    JOIN v_xml_cdr a ON a.call_uuid = b.bridge_uuid
+                    WHERE b.tenant_uuid IS NULL
+                      AND b.bridge_uuid IS NOT NULL
+                      AND a.tenant_uuid IS NOT NULL
+                """)
+                bridge_count = cur.fetchone()[0]
+            self.stdout.write(self.style.WARNING(
+                f'DRY RUN — would update {total} rows via suffix match, '
+                f'~{bridge_count} via bridge inheritance (more may cascade). No changes written.'
+            ))
             return
 
         updated = 0
@@ -115,4 +128,95 @@ class Command(BaseCommand):
                         [tenant_uuid, chunk],
                     )
                     updated += cur.rowcount
-        self.stdout.write(self.style.SUCCESS(f'Updated {updated} rows.'))
+        self.stdout.write(self.style.SUCCESS(f'Updated {updated} rows via suffix match.'))
+
+        # Second pass: inherit tenant from the bridged A-leg. A B-leg (e.g. a
+        # gateway-bound leg) often carries no resolvable suffix, but its
+        # bridge_uuid points at the A-leg channel, which already has a tenant.
+        # Loop because a freshly-filled A-leg can in turn supply its own B-leg.
+        inherited_total = 0
+        while True:
+            with transaction.atomic(), connection.cursor() as cur:
+                cur.execute("""
+                    UPDATE v_xml_cdr b
+                    SET tenant_uuid = a.tenant_uuid
+                    FROM v_xml_cdr a
+                    WHERE b.tenant_uuid IS NULL
+                      AND b.bridge_uuid IS NOT NULL
+                      AND a.call_uuid = b.bridge_uuid
+                      AND a.tenant_uuid IS NOT NULL
+                """)
+                n = cur.rowcount
+            inherited_total += n
+            self.stdout.write(f'  bridge-inheritance pass: filled {n} rows')
+            if n == 0:
+                break
+        if inherited_total:
+            self.stdout.write(self.style.SUCCESS(
+                f'Updated {inherited_total} rows via bridge_uuid A-leg inheritance.'
+            ))
+
+        # Third pass: DID match. Unanswered WebRTC ring-group forks (and similar
+        # legs) carry no suffix and their bridge A-leg is never posted, but the
+        # tenant's own DID sits in caller_id_number or destination_number. Match
+        # those against v_destinations on the last 10 digits so +1XXXXXXXXXX /
+        # 1XXXXXXXXXX / XXXXXXXXXX all line up.
+        #
+        # SELECT the candidate UUIDs first (read-only), then UPDATE in small
+        # batches keyed on xml_cdr_uuid — never a single table-wide UPDATE, which
+        # deadlocks against concurrent live FreeSWITCH CDR inserts on v_xml_cdr.
+        with connection.cursor() as cur:
+            cur.execute("""
+                WITH did AS (
+                    SELECT tenant_uuid,
+                           right(regexp_replace(destination_number,'\\D','','g'), 10) AS d10
+                    FROM v_destinations
+                    WHERE tenant_uuid IS NOT NULL
+                      AND length(regexp_replace(destination_number,'\\D','','g')) >= 10
+                )
+                SELECT c.xml_cdr_uuid, did.tenant_uuid
+                FROM v_xml_cdr c
+                JOIN did ON did.d10 IN (
+                    right(regexp_replace(COALESCE(c.destination_number,''),'\\D','','g'), 10),
+                    right(regexp_replace(COALESCE(c.caller_id_number,''),'\\D','','g'), 10)
+                )
+                WHERE c.tenant_uuid IS NULL
+            """)
+            did_rows = cur.fetchall()
+
+        did_by_tenant = {}
+        for xml_cdr_uuid, tenant_uuid in did_rows:
+            did_by_tenant.setdefault(str(tenant_uuid), []).append(xml_cdr_uuid)
+
+        did_total = 0
+        for tenant_uuid, uuids in did_by_tenant.items():
+            for i in range(0, len(uuids), batch_size):
+                chunk = uuids[i:i + batch_size]
+                with transaction.atomic(), connection.cursor() as cur:
+                    cur.execute(
+                        "UPDATE v_xml_cdr SET tenant_uuid = %s "
+                        "WHERE xml_cdr_uuid = ANY(%s) AND tenant_uuid IS NULL",
+                        [tenant_uuid, chunk],
+                    )
+                    did_total += cur.rowcount
+        if did_total:
+            self.stdout.write(self.style.SUCCESS(
+                f'Updated {did_total} rows via DID match on caller/destination number.'
+            ))
+
+        # Re-run bridge inheritance: DID-filled A-legs can now seed their B-legs.
+        while True:
+            with transaction.atomic(), connection.cursor() as cur:
+                cur.execute("""
+                    UPDATE v_xml_cdr b
+                    SET tenant_uuid = a.tenant_uuid
+                    FROM v_xml_cdr a
+                    WHERE b.tenant_uuid IS NULL
+                      AND b.bridge_uuid IS NOT NULL
+                      AND a.call_uuid = b.bridge_uuid
+                      AND a.tenant_uuid IS NOT NULL
+                """)
+                n = cur.rowcount
+            if n == 0:
+                break
+            self.stdout.write(f'  post-DID bridge-inheritance pass: filled {n} rows')
