@@ -222,9 +222,23 @@ class ClientCDRView(APIView):
     _NO_ANSWER_CAUSES = ('NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT', 'ALLOTTED_TIMEOUT',
                          'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL')
 
+    @staticmethod
+    def _exclude_transient_busy(qs):
+        """Hide bare USER_BUSY placeholder A-legs (last_app='') for a short grace
+        window after insert, so a busy->voicemail call doesn't flash "Busy"
+        before the real voicemail A-leg arrives and overwrites it. After the
+        window, genuine quick-decline busy calls surface normally."""
+        from django.utils import timezone
+        grace_cutoff = timezone.now() - timedelta(seconds=15)
+        return qs.exclude(
+            Q(hangup_cause='USER_BUSY') & Q(last_app='') &
+            Q(insert_date__gt=grace_cutoff)
+        )
+
     def _extension_only_qs(self, request, tenant):
         """Queryset scoped to tenant + date range + extension + search/number + direction — status is intentionally excluded."""
         qs = XmlCdr.objects.filter(tenant=tenant, leg='a')
+        qs = self._exclude_transient_busy(qs)
         p = request.query_params
         start_gte = p.get('start') or p.get('start_stamp__gte')
         if start_gte:
@@ -260,6 +274,9 @@ class ClientCDRView(APIView):
 
     def _filtered_qs(self, request, tenant):
         qs = XmlCdr.objects.filter(tenant=tenant, leg='a')
+        # Suppress the transient "Busy" flash before a busy->voicemail call's real
+        # A-leg arrives (see _exclude_transient_busy).
+        qs = self._exclude_transient_busy(qs)
         p = request.query_params
 
         direction = p.get('direction')

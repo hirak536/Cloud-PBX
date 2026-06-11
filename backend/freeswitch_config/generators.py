@@ -1024,9 +1024,10 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
         etree.SubElement(offline_reg_cond, 'action', application='park')
     elif cf_active and ext.forward_user_not_registered_enabled and ext.forward_user_not_registered_destination:
         _apply_fwd_dest(offline_reg_cond, ext.forward_user_not_registered_destination)
-    elif ext.voicemail_enabled:
-        _add_voicemail_actions(offline_reg_cond, domain_name, mailbox, vm)
     else:
+        # No 'forward when not registered' destination set → hang up. Do NOT
+        # default an offline/unregistered extension to voicemail; voicemail is
+        # only reached via an explicit forward_user_not_registered destination.
         etree.SubElement(offline_reg_cond, 'action', application='hangup',
                          data='USER_NOT_REGISTERED')
     elements.append(offline_el)
@@ -1128,9 +1129,10 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
         busy_cond.set('break', 'on-true')
         if has_busy_fwd:
             _apply_fwd_dest(busy_cond, ext.forward_busy_destination)
-        elif ext.voicemail_enabled:
-            _add_voicemail_actions(busy_cond, domain_name, mailbox, vm)
         else:
+            # No busy-forward destination set (or forwarding inactive) → hang up.
+            # Do NOT default to voicemail; voicemail on busy only happens when
+            # forward_busy_destination explicitly routes there.
             etree.SubElement(busy_cond, 'action', application='hangup', data='USER_BUSY')
 
         # No-answer catch-all branch
@@ -1140,15 +1142,16 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
         noanswer_cond.set('break', 'on-true')
         if has_noanswer_fwd:
             _apply_fwd_dest(noanswer_cond, ext.forward_no_answer_destination)
-        elif ext.voicemail_enabled:
-            _add_voicemail_actions(noanswer_cond, domain_name, mailbox, vm)
         else:
+            # No no-answer forward destination set → hang up. Do NOT fall through
+            # to voicemail on no-answer/hangup: voicemail on no-answer only happens
+            # when forward_no_answer_destination explicitly routes there.
             etree.SubElement(noanswer_cond, 'action', application='hangup', data='NO_ANSWER')
 
-    elif ext.voicemail_enabled:
-        # No forwarding — go straight to voicemail on any failure
-        _add_voicemail_actions(bridge_cond, domain_name, mailbox, vm)
     else:
+        # No busy/no-answer forwarding configured. On bridge failure (no-answer/
+        # hangup) just hang up — do not default to voicemail. Voicemail is only
+        # reached via an explicit forward_no_answer / forward_busy destination.
         etree.SubElement(bridge_cond, 'action', application='hangup', data='NO_ANSWER')
 
     elements.append(bridge_el)
