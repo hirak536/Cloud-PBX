@@ -235,6 +235,17 @@ def generate_directory_xml(domain_name, user=None):
         etree.SubElement(variables_u, 'variable', name='limit_max', value=call_limit)
         etree.SubElement(variables_u, 'variable', name='toll_allow', value=str(ext.toll_allow or ''))
         etree.SubElement(variables_u, 'variable', name='accountcode', value=str(ext.accountcode or ''))
+        # Per-extension effective recording decision, attached to every call this
+        # extension originates (so OUTBOUND routes can honor it — outbound routes
+        # are shared per-tenant and don't know the dialing extension at gen time).
+        # Same logic as the inbound bridge path: explicit user_record wins, else
+        # fall back to the tenant's recording_enabled. The outbound dialplan gates
+        # _add_recording_actions on ${ihs_record}.
+        if ext.user_record:
+            _ext_record = '1'
+        else:
+            _ext_record = '1' if (ext.tenant and getattr(ext.tenant, 'recording_enabled', True)) else '0'
+        etree.SubElement(variables_u, 'variable', name='ihs_record', value=_ext_record)
         # Use a per-tenant context so extensions from different tenants
         # cannot call each other (tenant isolation).
         tenant_code = ext.tenant.tenant_code if ext.tenant else None
@@ -799,13 +810,23 @@ def _outbound_route_to_xml(route):
     etree.SubElement(override_cond, 'action', application='set',
                      data='effective_caller_id_name=${sip_h_X-OverrideCID}')
 
+    # Recording — only when the dialing extension's effective record flag is on.
+    # ${ihs_record} is set per-extension in the directory (1=record, 0=don't),
+    # so this respects the per-extension toggle and the per-tenant fallback.
+    # Previously recording ran unconditionally here, so outbound calls played the
+    # "may be recorded" tone and recorded even when the extension/tenant had
+    # recording turned off. break="never" so we always fall through to the bridge.
+    rec_cond = etree.SubElement(ext_el, 'condition',
+                                field='${ihs_record}', expression='^1$')
+    rec_cond.set('break', 'never')
+    _add_recording_actions(rec_cond, '${domain_name}')
+
     # Final condition always matches — bridge using saved digits var, not $1.
     bridge_cond = etree.SubElement(ext_el, 'condition')
     gateways = [g for g in [route.gateway, route.gateway_2, route.gateway_3] if g]
     if gateways:
         prepend = route.prepend or ''
         parts = [f'sofia/gateway/{gw.gateway}/{prepend}${{outbound_digits}}' for gw in gateways]
-        _add_recording_actions(bridge_cond, '${domain_name}')
         etree.SubElement(bridge_cond, 'action', application='bridge', data='|'.join(parts))
     else:
         # No gateway configured — log and drop
