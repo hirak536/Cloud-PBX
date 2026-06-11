@@ -262,7 +262,19 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
     dest_is_pstn = _dest.isdigit() and (len(_dest) == 10
                                         or (len(_dest) == 11 and _dest[0] == '1'))
 
+    # Outbound calls where the extension dials out presenting the tenant DID as
+    # caller-id arrive with caller_id_number=<DID> (so caller_is_ext is False),
+    # but the dialing extension survives in caller_id_name as "NNN-CODE"
+    # (e.g. "901-IHDT"). Recognise that so the call is classified outbound and
+    # the extension is recovered below instead of landing blank/inbound.
+    import re as _re_cn
+    _caller_name = var('caller_id_name') or ''
+    caller_name_ext = (_caller_name
+                       if _re_cn.match(r'^\d{2,6}-[A-Za-z]+$', _caller_name) else '')
+
     if caller_is_ext and dest_is_pstn:
+        direction = 'outbound'
+    elif caller_name_ext and dest_is_pstn:
         direction = 'outbound'
     elif bridged_to_gateway:
         direction = 'outbound'
@@ -320,8 +332,13 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
     ihs_dialed_ext = var('ihs_dialed_ext')
 
     if direction == 'outbound':
-        # Outbound A-leg: the dialing extension is sip_from_user.
+        # Outbound A-leg: the dialing extension is sip_from_user. When the call
+        # presents the tenant DID as caller-id, neither username nor sip_from_user
+        # is the extension — but caller_id_name carries it as "NNN-CODE"
+        # (caller_name_ext, already suffixed). Use that as the last resort.
         extension_number = sip_username_raw or sip_from_user
+        if not _looks_like_internal_ext(extension_number) and caller_name_ext:
+            extension_number = caller_name_ext
     elif ihs_dialed_ext:
         extension_number = ihs_dialed_ext
     else:
