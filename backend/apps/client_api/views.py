@@ -240,15 +240,33 @@ class ClientCDRView(APIView):
 
     @staticmethod
     def _exclude_transient_busy(qs):
-        """Hide bare USER_BUSY placeholder A-legs (last_app='') for a short grace
-        window after insert, so a busy->voicemail call doesn't flash "Busy"
-        before the real voicemail A-leg arrives and overwrites it. After the
-        window, genuine quick-decline busy calls surface normally."""
+        """Hide transient placeholder A-legs for a short grace window after insert,
+        so a call doesn't flash a wrong status (e.g. "Busy" or "Failed") before the
+        real A-leg lands and overwrites it. After the window, genuine quick-decline
+        calls surface normally.
+
+        Two placeholder shapes are suppressed:
+          1. Bare USER_BUSY legs (last_app='') — busy->voicemail flashes "Busy".
+          2. CALL_REJECTED zero-billsec legs whose destination_number is the raw
+             FreeSWITCH channel UUID (e.g. "vlhrpp6a") rather than a real number —
+             these flash "Failed" with a UUID receiver before the answered/voicemail
+             A-leg arrives. Matched by destination_number being a non-numeric
+             channel-uuid fragment, scoped to the grace window so real CALL_REJECTED
+             calls with proper destinations are untouched.
+        """
         from django.utils import timezone
         grace_cutoff = timezone.now() - timedelta(seconds=15)
         return qs.exclude(
-            Q(hangup_cause='USER_BUSY') & Q(last_app='') &
-            Q(insert_date__gt=grace_cutoff)
+            Q(insert_date__gt=grace_cutoff) & (
+                (Q(hangup_cause='USER_BUSY') & Q(last_app='')) |
+                (
+                    Q(hangup_cause='CALL_REJECTED') & Q(billsec=0) &
+                    Q(last_app='') &
+                    # destination is a channel-uuid fragment (contains a letter),
+                    # not a real phone number / extension (digits, +, *, # only).
+                    Q(destination_number__regex=r'[a-zA-Z]')
+                )
+            )
         )
 
     def _extension_only_qs(self, request, tenant):
