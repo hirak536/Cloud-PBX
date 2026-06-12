@@ -551,8 +551,10 @@ class FaxReceiveWebhookView(View):
             # Store the real DID number; fall back to mailbox extension if DID not sent
             fax_file_destination_number=fax_did_number or fax_mailbox,
             # Inbound: station ID is the caller's number (the sender). Fall back to
-            # the remote-reported station id/header when no caller number is present.
-            fax_file_station_id=caller_id_number or fax_remote_station_id,
+            # the remote-reported station id/header, then the destination DID, so
+            # it is never stored blank.
+            fax_file_station_id=(caller_id_number or fax_remote_station_id
+                                 or fax_did_number or fax_mailbox),
             fax_file_date=timezone.now(),
         )
 

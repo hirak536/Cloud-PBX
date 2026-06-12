@@ -143,9 +143,17 @@ def poll_fax_result(self, fax_file_uuid: str, channel_uuid: str):
 
         # Station ID for outbound is our own caller ID, set at send time — do not
         # overwrite it with the remote machine's reported station ID. Only fill it
-        # here if it was somehow left blank at creation.
+        # here if it was somehow left blank at creation. For outbound prefer our
+        # own caller ID (matches send-time semantics); only then fall back to the
+        # remote-reported values.
         if not ff.fax_file_station_id:
-            fallback = fax_remote_station_id or fax_remote_id or fax_header
+            if ff.direction == 'outbound':
+                fallback = (ff.fax_file_caller_id_number
+                            or fax_local_station_id
+                            or fax_remote_station_id or fax_remote_id or fax_header)
+            else:
+                fallback = (fax_remote_station_id or fax_remote_id or fax_header
+                            or ff.fax_file_caller_id_number)
             if fallback:
                 ff.fax_file_station_id = fallback
                 update_fields.append('fax_file_station_id')
