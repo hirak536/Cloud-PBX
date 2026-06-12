@@ -69,13 +69,15 @@ const KIND_REGISTRY = {
     label: 'Simple Destination',
     icon: PhoneForwarded,
     description: 'Route directly to a target (extension, IVR, ring group, etc.).',
-    renderBody: ({ form, setForm, destData, destLoading }) => (
+    renderBody: ({ form, setForm, destData, destLoading, destSearchLoading, searchDestData }) => (
       <Field label="Destination *" hint="Where calls using this preset go.">
         <TargetPicker
           value={form}
           onChange={(v) => setForm(p => ({ ...p, ...v }))}
           data={destData}
           loading={destLoading}
+          searchLoading={destSearchLoading}
+          onSearch={searchDestData}
         />
       </Field>
     ),
@@ -86,7 +88,7 @@ const KIND_REGISTRY = {
     label: 'Route to Last Agent',
     icon: Sparkles,
     description: 'If the caller has been dialed before, send them to that same extension. Falls back to the destination below when no match exists.',
-    renderBody: ({ form, setForm, destData, destLoading, openAffinity }) => (
+    renderBody: ({ form, setForm, destData, destLoading, destSearchLoading, searchDestData, openAffinity }) => (
       <>
         <Field label="Fallback Destination *" hint="Used when no sticky agent is found for the caller.">
           <TargetPicker
@@ -94,6 +96,8 @@ const KIND_REGISTRY = {
             onChange={(v) => setForm(p => ({ ...p, ...v }))}
             data={destData}
             loading={destLoading}
+            searchLoading={destSearchLoading}
+            onSearch={searchDestData}
           />
         </Field>
         <div className="flex items-start gap-2 text-xs text-amber-700 rounded-lg border border-amber-200 bg-amber-500/5 px-3 py-2">
@@ -112,7 +116,7 @@ const KIND_REGISTRY = {
     label: 'Toggle (BLF switch)',
     icon: ToggleRight,
     description: 'A BLF switch with its own dialable number. Subscribe a phone BLF key to the number: GREEN = ON (routes to the ON destination), RED = OFF (routes to the OFF destination). Pressing the key flips it.',
-    renderBody: ({ form, setForm, destData, destLoading, editId }) => {
+    renderBody: ({ form, setForm, destData, destLoading, destSearchLoading, searchDestData, editId }) => {
       const inUse = blfNumberConflict(form.toggle_extension, destData, editId)
       return (
       <>
@@ -153,6 +157,8 @@ const KIND_REGISTRY = {
             onChange={(d) => setForm(p => ({ ...p, toggle_on_type: d.type || '', toggle_on_target_uuid: d.target_uuid || '', toggle_on_external: d.external_number || '' }))}
             data={destData}
             loading={destLoading}
+            searchLoading={destSearchLoading}
+            onSearch={searchDestData}
             compact
             placeholder="Select destination…"
           />
@@ -163,6 +169,8 @@ const KIND_REGISTRY = {
             onChange={(d) => setForm(p => ({ ...p, toggle_off_type: d.type || '', toggle_off_target_uuid: d.target_uuid || '', toggle_off_external: d.external_number || '' }))}
             data={destData}
             loading={destLoading}
+            searchLoading={destSearchLoading}
+            onSearch={searchDestData}
             compact
             placeholder="Select destination…"
           />
@@ -264,9 +272,10 @@ function targetLabel(type, targetUuid, extNumber, data) {
   return null
 }
 
-function TargetPicker({ value, onChange, data, loading }) {
+function TargetPicker({ value, onChange, data, loading, searchLoading, onSearch }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const debouncedQuery = useDebounce(query, 300)
   const ref = useRef(null)
   const inputRef = useRef(null)
 
@@ -279,17 +288,26 @@ function TargetPicker({ value, onChange, data, loading }) {
 
   useEffect(() => { if (open) requestAnimationFrame(() => inputRef.current?.focus()) }, [open])
 
-  const q = query.toLowerCase().trim()
-  const filt = (items, fields) => !q ? items
-    : items.filter(it => fields.some(f => String(it[f] || '').toLowerCase().includes(q)))
+  // Fire API search whenever the debounced query changes (server-side, so it
+  // covers every record — not just the first page loaded into memory).
+  useEffect(() => {
+    if (!open || !onSearch) return
+    onSearch(debouncedQuery)
+  }, [debouncedQuery, open])
 
-  const exts  = filt(data.extensions,    ['extension', 'effective_caller_id_name', 'description'])
-  const vms   = filt(data.voicemails,    ['voicemail_id', 'description'])
-  const ivrs  = filt(data.ivr_menus,     ['ivr_menu_name', 'ivr_menu_extension'])
-  const rgs   = filt(data.ring_groups,   ['ring_group_name', 'ring_group_extension'])
-  const confs = filt(data.conferences,   ['conference_name', 'conference_extension'])
-  const whs   = filt(data.working_hours, ['working_hours_name'])
-  const cds   = filt(data.custom_destinations || [], ['name', 'description'])
+  // When closed, reset to the unfiltered list
+  useEffect(() => {
+    if (!open && query) { setQuery(''); onSearch?.('') }
+  }, [open])
+
+  const exts  = data.extensions          || []
+  const vms   = data.voicemails          || []
+  const ivrs  = data.ivr_menus           || []
+  const rgs   = data.ring_groups         || []
+  const confs = data.conferences         || []
+  const whs   = data.working_hours       || []
+  const cds   = data.custom_destinations || []
+  const q = query.trim()
   const showNum = q.length >= 2 && /^[\d+\s().-]+$/.test(q)
 
   const pick = (type, target_uuid = '', external_number = '') => {
@@ -325,7 +343,9 @@ function TargetPicker({ value, onChange, data, loading }) {
       {open && (
         <div className="absolute z-50 mt-1 w-full min-w-[300px] rounded-xl border border-border/60 bg-card shadow-2xl">
           <div className="flex items-center gap-2 border-b px-3 py-1.5">
-            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            {searchLoading
+              ? <Loader2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground animate-spin" />
+              : <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
             <input
               ref={inputRef}
               value={query}
@@ -616,7 +636,7 @@ export default function CustomDestinations() {
   const [affinityOpen, setAffinityOpen] = useState(false)
   const [resyncing, setResyncing] = useState(false)
 
-  const { destData, destLoading, loadDestData } = useDestinationData({ withConferences: true })
+  const { destData, destLoading, destSearchLoading, loadDestData, searchDestData } = useDestinationData({ withConferences: true })
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -836,7 +856,7 @@ export default function CustomDestinations() {
 
             {/* Kind-specific body */}
             {(KIND_REGISTRY[form.kind] || KIND_REGISTRY.simple).renderBody({
-              form, setForm, destData, destLoading,
+              form, setForm, destData, destLoading, destSearchLoading, searchDestData,
               cdOptions: rows, editId,
               openAffinity: () => setAffinityOpen(true),
             })}

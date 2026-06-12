@@ -122,7 +122,7 @@ export default function RingGroups() {
   const [numStatus, setNumStatus] = useState(null)
   const [numConflict, setNumConflict] = useState('')
   const debouncedExt = useDebounce(form.ring_group_extension, 600)
-  const { destData, destLoading, loadDestData } = useDestinationData()
+  const { destData, destLoading, destSearchLoading, loadDestData, searchDestData } = useDestinationData()
 
   useEffect(() => {
     const val = debouncedExt.trim()
@@ -569,6 +569,8 @@ export default function RingGroups() {
                 onChange={val => setForm(p => ({ ...p, timeout_dest: val }))}
                 data={destData}
                 loading={destLoading}
+                searchLoading={destSearchLoading}
+                onSearch={searchDestData}
                 placeholder="Set destination…"
               />
             </div>

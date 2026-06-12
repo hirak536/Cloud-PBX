@@ -597,7 +597,7 @@ function formToPayload(f) {
 function CfDialog({ open, onClose, editItem, onSaved }) {
   const [form, setForm]       = useState(EMPTY_CF_FORM)
   const [saving, setSaving]   = useState(false)
-  const { destData, destLoading, loadDestData } = useDestinationData()
+  const { destData, destLoading, destSearchLoading, loadDestData, searchDestData } = useDestinationData()
 
   useEffect(() => {
     if (!open) return
@@ -661,7 +661,7 @@ function CfDialog({ open, onClose, editItem, onSaved }) {
             </Label>
             {destLoading
               ? <div className="h-9 rounded-md bg-muted animate-pulse" />
-              : <DestinationPicker value={form.day_dest} onChange={v => set('day_dest', v)} data={destData} />
+              : <DestinationPicker value={form.day_dest} onChange={v => set('day_dest', v)} data={destData} searchLoading={destSearchLoading} onSearch={searchDestData} />
             }
           </div>
 
@@ -672,7 +672,7 @@ function CfDialog({ open, onClose, editItem, onSaved }) {
             </Label>
             {destLoading
               ? <div className="h-9 rounded-md bg-muted animate-pulse" />
-              : <DestinationPicker value={form.night_dest} onChange={v => set('night_dest', v)} data={destData} />
+              : <DestinationPicker value={form.night_dest} onChange={v => set('night_dest', v)} data={destData} searchLoading={destSearchLoading} onSearch={searchDestData} />
             }
           </div>
 

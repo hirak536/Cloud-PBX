@@ -369,7 +369,7 @@ function stringToDest(str, destData) {
 // At create time it is rewritten to voicemail:<actual extension number> per row.
 const SELF_VOICEMAIL = 'voicemail:self'
 
-function ForwardRow({ label, enabled, onToggle, destination, onDestChange, disabled, destData, destLoading, extensionNumber, bulkMode }) {
+function ForwardRow({ label, enabled, onToggle, destination, onDestChange, disabled, destData, destLoading, destSearchLoading, searchDestData, extensionNumber, bulkMode }) {
   const destValue   = stringToDest(destination, destData)
   const handleChange = (dest) => onDestChange(destToString(dest, destData))
   // In bulk mode the per-extension number is unknown, so the button targets the SELF_VOICEMAIL sentinel.
@@ -389,6 +389,8 @@ function ForwardRow({ label, enabled, onToggle, destination, onDestChange, disab
             onChange={handleChange}
             data={destData}
             loading={destLoading}
+            searchLoading={destSearchLoading}
+            onSearch={searchDestData}
             compact
             placeholder="Select destination…"
           />
@@ -416,7 +418,7 @@ function ForwardRow({ label, enabled, onToggle, destination, onDestChange, disab
 // ── Form body (tabbed) ────────────────────────────────────────────────────────
 
 function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ringGroupList, rgLoading, activeTab, setActiveTab, bulkMode }) {
-  const { destData, destLoading, loadDestData } = useDestinationData()
+  const { destData, destLoading, destSearchLoading, loadDestData, searchDestData } = useDestinationData()
 
   useEffect(() => {
     if (activeTab === 'forwarding' || activeTab === 'configuration') loadDestData()
@@ -983,7 +985,7 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                 destination={form.forward_all_destination}
                 onDestChange={(v) => setForm(f => ({ ...f, forward_all_destination: v }))}
                 disabled={!form.call_forward_active}
-                destData={destData} destLoading={destLoading}
+                destData={destData} destLoading={destLoading} destSearchLoading={destSearchLoading} searchDestData={searchDestData}
                 extensionNumber={form.extension}
                 bulkMode={bulkMode}
               />
@@ -994,7 +996,7 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                 destination={form.forward_no_answer_destination}
                 onDestChange={(v) => setForm(f => ({ ...f, forward_no_answer_destination: v }))}
                 disabled={!form.call_forward_active}
-                destData={destData} destLoading={destLoading}
+                destData={destData} destLoading={destLoading} destSearchLoading={destSearchLoading} searchDestData={searchDestData}
                 extensionNumber={form.extension}
                 bulkMode={bulkMode}
               />
@@ -1005,7 +1007,7 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                 destination={form.forward_busy_destination}
                 onDestChange={(v) => setForm(f => ({ ...f, forward_busy_destination: v }))}
                 disabled={!form.call_forward_active}
-                destData={destData} destLoading={destLoading}
+                destData={destData} destLoading={destLoading} destSearchLoading={destSearchLoading} searchDestData={searchDestData}
                 extensionNumber={form.extension}
                 bulkMode={bulkMode}
               />
@@ -1016,7 +1018,7 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                 destination={form.forward_user_not_registered_destination}
                 onDestChange={(v) => setForm(f => ({ ...f, forward_user_not_registered_destination: v }))}
                 disabled={!form.call_forward_active}
-                destData={destData} destLoading={destLoading}
+                destData={destData} destLoading={destLoading} destSearchLoading={destSearchLoading} searchDestData={searchDestData}
                 extensionNumber={form.extension}
                 bulkMode={bulkMode}
               />
@@ -1044,6 +1046,8 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                         onChange={(d) => setForm(f => ({ ...f, forward_on_condition_destination: destToString(d, destData) }))}
                         data={destData}
                         loading={destLoading}
+                        searchLoading={destSearchLoading}
+                        onSearch={searchDestData}
                         compact
                         placeholder="Select destination…"
                       />
