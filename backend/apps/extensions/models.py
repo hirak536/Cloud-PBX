@@ -4,6 +4,7 @@ from django.db import models
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from core.models import Domain, User
+from core.validators import validate_multi_email
 
 
 class Extension(models.Model):
@@ -55,7 +56,10 @@ class Extension(models.Model):
     voicemail_enabled = models.BooleanField(default=True)
     voicemail_id = models.CharField(max_length=32, blank=True, default='')
     voicemail_password = models.CharField(max_length=32, blank=True, default='')
-    voicemail_mail_to = models.EmailField(blank=True, default='')
+    voicemail_mail_to = models.CharField(
+        max_length=512, blank=True, default='',
+        validators=[validate_multi_email],
+        help_text='One or more email addresses, separated by commas.')
     voicemail_file = models.CharField(max_length=32, default='attach',
         choices=[('attach','Attach'),('link','Link'),('none','None')])
     voicemail_local_after_email = models.BooleanField(default=True)

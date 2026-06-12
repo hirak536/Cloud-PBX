@@ -3,13 +3,15 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.filters import SearchFilter
 from django_filters.rest_framework import DjangoFilterBackend
-from core.mixins import TenantScopedViewSetMixin
+from core.mixins import TenantScopedViewSetMixin, write_audit_log
 from .models import CustomDestination, CallerExtensionAffinity
 from .serializers import (
     CustomDestinationSerializer,
     CustomDestinationListSerializer,
     CallerExtensionAffinitySerializer,
+    CallerExtensionAffinityWriteSerializer,
 )
+from .affinity import normalize_number, upsert_affinity
 
 
 class CustomDestinationViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
@@ -105,7 +107,15 @@ class CustomDestinationViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='affinity-stats')
     def affinity_stats(self, request):
-        """Tenant-scoped count + most-recent affinity mappings."""
+        """Tenant-scoped affinity mappings: total count + a paginated, searchable page.
+
+        Query params:
+            search    — match caller_number (digits-normalized) or extension_number
+            page      — 1-based page number (default 1)
+            page_size — rows per page (default 50, max 200)
+        Response keys `recent`/`total` are kept for back-compat; `total` is the
+        full tenant count, `filtered_total` is the count after search.
+        """
         import logging
         log = logging.getLogger(__name__)
 
@@ -118,7 +128,9 @@ class CustomDestinationViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
             scoped_tenant = getattr(user, 'tenant_id', None)
             if not scoped_tenant:
                 log.warning('[affinity-stats] non-superuser %s has no tenant_id', user)
-                return Response({'total': 0, 'recent': [], '_debug': {'all_total': all_total, 'reason': 'no tenant_id on user'}})
+                return Response({'total': 0, 'filtered_total': 0, 'recent': [], 'page': 1,
+                                 'page_size': 50, 'num_pages': 1,
+                                 '_debug': {'all_total': all_total, 'reason': 'no tenant_id on user'}})
             qs = qs.filter(tenant_id=scoped_tenant)
         else:
             scoped_tenant = request.query_params.get('tenant')
@@ -126,11 +138,120 @@ class CustomDestinationViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
                 qs = qs.filter(tenant_id=scoped_tenant)
 
         total = qs.count()
-        log.warning('[affinity-stats] user=%s super=%s scoped_tenant=%s all_total=%s scoped_total=%s',
-                    user, user.is_superuser, scoped_tenant, all_total, total)
-        recent = qs.order_by('-last_seen')[:50]
+
+        # Search: match extension as-typed, or the caller number by its digits so
+        # "(713) 303-4589", "7133034589", and "+1 713 303 4589" all match.
+        search = (request.query_params.get('search') or '').strip()
+        if search:
+            from django.db.models import Q
+            digits = normalize_number(search)
+            cond = Q(extension_number__icontains=search)
+            if digits:
+                cond |= Q(caller_number__icontains=digits)
+            qs = qs.filter(cond)
+
+        filtered_total = qs.count()
+
+        # Pagination
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(200, max(1, int(request.query_params.get('page_size', 50))))
+        except (TypeError, ValueError):
+            page_size = 50
+        num_pages = max(1, (filtered_total + page_size - 1) // page_size)
+        start = (page - 1) * page_size
+        rows = qs.order_by('-last_seen')[start:start + page_size]
+
+        log.warning('[affinity-stats] user=%s super=%s scoped_tenant=%s all_total=%s scoped_total=%s search=%r page=%s',
+                    user, user.is_superuser, scoped_tenant, all_total, total, search, page)
         return Response({
             'total': total,
-            'recent': CallerExtensionAffinitySerializer(recent, many=True).data,
+            'filtered_total': filtered_total,
+            'page': page,
+            'page_size': page_size,
+            'num_pages': num_pages,
+            'recent': CallerExtensionAffinitySerializer(rows, many=True).data,
             '_debug': {'all_total': all_total, 'scoped_tenant': str(scoped_tenant), 'is_superuser': user.is_superuser},
         })
+
+    # ── Manual affinity management ──────────────────────────────────────────────
+    # Manual edits are intentionally *temporary*: the outbound-CDR signal is
+    # last-write-wins, so the next outbound call from an extension to this
+    # customer will overwrite a manual mapping. Surfaced in the UI accordingly.
+
+    def _affinity_tenant(self, request):
+        """Resolve the tenant a manual affinity write applies to, mirroring the
+        scoping in affinity_stats. Returns a Tenant or None (caller handles 400)."""
+        from core.models import Tenant
+        user = request.user
+        if user.is_superuser:
+            tid = request.query_params.get('tenant') or request.data.get('tenant')
+            return Tenant.objects.filter(tenant_uuid=tid).first() if tid else None
+        return getattr(user, 'tenant', None)
+
+    @action(detail=False, methods=['post'], url_path='affinity')
+    def affinity_create(self, request):
+        """Create or overwrite a manual caller→extension mapping for the tenant."""
+        tenant = self._affinity_tenant(request)
+        if not tenant:
+            return Response({'detail': 'No tenant in scope (superusers must select one).'}, status=400)
+        ser = CallerExtensionAffinityWriteSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        caller_n = normalize_number(ser.validated_data['caller_number'])
+        if not caller_n:
+            return Response({'detail': 'caller_number could not be normalized to a valid phone number.'}, status=400)
+        # Avoid silent duplication: a number can only map to one extension. If it
+        # already exists, report a conflict so the UI can offer to edit instead.
+        existing = CallerExtensionAffinity.objects.filter(tenant=tenant, caller_number=caller_n).first()
+        if existing and not str(request.data.get('overwrite', '')).lower() in ('1', 'true', 'yes'):
+            return Response({
+                'detail': f'{caller_n} is already mapped to extension {existing.extension_number}. '
+                          f'Edit the existing row, or resend with overwrite=true.',
+                'existing': CallerExtensionAffinitySerializer(existing).data,
+            }, status=409)
+        from django.utils import timezone
+        domain = (tenant.domains.filter(domain_enabled=True).first()
+                  if hasattr(tenant, 'domains') else None)
+        obj = upsert_affinity(
+            tenant=tenant, customer=caller_n,
+            extension=ser.validated_data['extension_number'],
+            when=timezone.now(), domain=domain, source='manual_ui',
+        )
+        if not obj:
+            return Response({'detail': 'Could not save mapping.'}, status=400)
+        write_audit_log(request, 'create', obj)
+        return Response(CallerExtensionAffinitySerializer(obj).data, status=201)
+
+    @action(detail=False, methods=['patch', 'delete'], url_path='affinity/(?P<affinity_uuid>[^/.]+)')
+    def affinity_detail(self, request, affinity_uuid=None):
+        """Update the extension on, or delete, one manual affinity row (tenant-scoped)."""
+        tenant = self._affinity_tenant(request)
+        qs = CallerExtensionAffinity.objects.all()
+        if not request.user.is_superuser:
+            if not tenant:
+                return Response({'detail': 'No tenant in scope.'}, status=400)
+            qs = qs.filter(tenant=tenant)
+        elif tenant:
+            qs = qs.filter(tenant=tenant)
+        obj = qs.filter(affinity_uuid=affinity_uuid).first()
+        if not obj:
+            return Response({'detail': 'Mapping not found.'}, status=404)
+
+        if request.method == 'DELETE':
+            write_audit_log(request, 'delete', obj)
+            obj.delete()
+            return Response(status=204)
+
+        ext = (request.data.get('extension_number') or '').strip()
+        if not ext:
+            return Response({'detail': 'extension_number is required.'}, status=400)
+        from django.utils import timezone
+        obj.extension_number = ext
+        obj.last_seen = timezone.now()
+        obj.source = 'manual_ui'
+        obj.save(update_fields=['extension_number', 'last_seen', 'source', 'update_date'])
+        write_audit_log(request, 'update', obj)
+        return Response(CallerExtensionAffinitySerializer(obj).data)

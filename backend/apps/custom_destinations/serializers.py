@@ -25,6 +25,24 @@ class CallerExtensionAffinitySerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class CallerExtensionAffinityWriteSerializer(serializers.Serializer):
+    """Validates manual create/update of a caller→extension mapping.
+
+    caller_number is normalized (last 10 US digits) by the view via
+    affinity.normalize_number; extension is the dialable extension, with any
+    tenant suffix (e.g. "432-GMD") accepted and passed through to the router,
+    which strips it. Both are required and non-empty.
+    """
+    caller_number = serializers.CharField(max_length=32)
+    extension_number = serializers.CharField(max_length=32)
+
+    def validate_extension_number(self, v):
+        v = (v or '').strip()
+        if not v:
+            raise serializers.ValidationError('Extension is required.')
+        return v
+
+
 class CustomDestinationListSerializer(serializers.ModelSerializer):
     dest_type_display = serializers.CharField(source='get_dest_type_display', read_only=True)
 

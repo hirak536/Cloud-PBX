@@ -1,14 +1,16 @@
 import { useDebounce } from '@/hooks/useDebounce'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { recordings as api } from '@/api'
 import { formatDate } from '@/lib/utils'
+import { useInfiniteList } from '@/hooks/useInfiniteList'
+import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Search, FileAudio, Download, Play, Pause, Loader2,
-  ChevronLeft, ChevronRight, PhoneIncoming, PhoneOutgoing, Phone, RefreshCw,
+  PhoneIncoming, PhoneOutgoing, Phone, RefreshCw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -144,43 +146,29 @@ function fmtDur(s) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function CallRecordings() {
-  const [rows, setRows]       = useState([])
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch]   = useState('')
-  const [page, setPage]       = useState(1)
-  const [count, setCount]     = useState(0)
-  const [syncing, setSyncing] = useState(false)
-  const PAGE_SIZE = 25
+  const [search, setSearch]       = useState('')
+  const [pageSize, setPageSize]   = useState(DEFAULT_PAGE_SIZE)
+  const [syncing, setSyncing]     = useState(false)
   const debouncedSearch = useDebounce(search, 300)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const { data } = await api.callRecordings({
-        ...(debouncedSearch ? { search: debouncedSearch } : {}),
-        page,
-        page_size: PAGE_SIZE,
-        ordering: '-call_recording_start_stamp',
-      })
-      if (Array.isArray(data)) { setRows(data); setCount(data.length) }
-      else { setRows(data.results || []); setCount(data.count || 0) }
-    } finally { setLoading(false) }
-  }, [debouncedSearch, page])
+  const params = useMemo(() => ({
+    ...(debouncedSearch ? { search: debouncedSearch } : {}),
+    ordering: '-call_recording_start_stamp',
+  }), [debouncedSearch])
 
-  useEffect(() => { setPage(1) }, [search])
-  useEffect(() => { load() }, [load])
+  const {
+    rows, total: count, loading, loadingMore, hasMore, loadMore, reload,
+  } = useInfiniteList(api.callRecordings, { params, pageSize })
 
   const handleSync = async () => {
     setSyncing(true)
     try {
       await api.syncCallRecordings()
-      await load()
+      await reload()
     } finally {
       setSyncing(false)
     }
   }
-
-  const totalPages = Math.ceil(count / PAGE_SIZE)
 
   return (
     <div className="space-y-4">
@@ -199,6 +187,7 @@ export default function CallRecordings() {
         {!loading && (
           <span className="text-sm text-muted-foreground shrink-0">{count} recording{count !== 1 ? 's' : ''}</span>
         )}
+        <PageSizeSelector value={pageSize} onChange={setPageSize} />
         <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
           {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           <span className="ml-1.5">{syncing ? 'Syncing…' : 'Sync'}</span>
@@ -249,31 +238,18 @@ export default function CallRecordings() {
               </div>
             )}
           </div>
+
+          {!loading && rows.length > 0 && (
+            <InfiniteScroll
+              hasMore={hasMore}
+              loadingMore={loadingMore}
+              onLoadMore={loadMore}
+              loaded={rows.length}
+              total={count}
+            />
+          )}
         </CardContent>
       </Card>
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">Page {page} of {totalPages} · {count} total</span>
-          <div className="flex items-center gap-1">
-            <Button variant="outline" size="sm" disabled={page <= 1 || loading} onClick={() => setPage(p => p - 1)}>
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
-              const start = Math.max(1, Math.min(page - 2, totalPages - 4))
-              const p = start + i
-              return (
-                <Button key={p} variant={p === page ? 'default' : 'outline'} size="sm" className="w-8"
-                  onClick={() => setPage(p)} disabled={loading}>{p}</Button>
-              )
-            })}
-            <Button variant="outline" size="sm" disabled={page >= totalPages || loading} onClick={() => setPage(p => p + 1)}>
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

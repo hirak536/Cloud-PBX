@@ -1,5 +1,7 @@
 import { useDebounce } from '@/hooks/useDebounce'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useInfiniteList } from '@/hooks/useInfiniteList'
+import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { cdr as cdrApi, voicemails as voicemailsApi, ivrMenus as ivrMenusApi, ringGroups as ringGroupsApi, workingHours as workingHoursApi } from '@/api'
 import { useSelector } from 'react-redux'
 import { selectAuth } from '@/store'
@@ -458,16 +460,12 @@ function SummaryBar({ summary }) {
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-const PAGE_SIZE = 25
 
 export default function Cdr() {
   const { user } = useSelector(selectAuth)
   const isSuperAdmin = user?.is_superuser === true
 
-  const [rows, setRows] = useState([])
-  const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
-  const [hasMore, setHasMore] = useState(true)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebounce(search, 300)
   const [datePreset, setDatePreset] = useState('this_month')
@@ -476,14 +474,8 @@ export default function Cdr() {
   const [direction, setDirection] = useState('')
   const [hangupCause, setHangupCause] = useState('')
   const [ordering, setOrdering] = useState('-start_stamp')
-  const [initialLoading, setInitialLoading] = useState(true)
-  const [loadingMore, setLoadingMore] = useState(false)
   const [expanded, setExpanded] = useState(null)
   const [summary, setSummary] = useState(null)
-
-  const rawRef = useRef([])
-  const loadingRef = useRef(false)
-  const sentinelRef = useRef(null)
 
   // Compute date range from preset
   const getPresetRange = useCallback(() => {
@@ -513,86 +505,44 @@ export default function Cdr() {
     return { from: dateFrom, to: dateTo }
   }, [datePreset, dateFrom, dateTo])
 
-  // Build filter params
-  const buildParams = useCallback((pg) => {
+  // Build filter params (no page/page_size — useInfiniteList supplies those).
+  // Memoised so its identity only changes when an actual filter value changes,
+  // which is what drives the hook's auto-reset to page 1.
+  const listParams = useMemo(() => {
     const { from, to } = getPresetRange()
-    const params = { page: pg, page_size: PAGE_SIZE, ordering }
+    const params = { ordering }
     if (debouncedSearch) params.search = debouncedSearch
     if (from) params.start_stamp__gte = from
     if (to) params.start_stamp__lte = to + 'T23:59:59'
     if (direction) params.direction = direction
     if (hangupCause) params.hangup_cause = hangupCause
     return params
-  }, [search, getPresetRange, direction, hangupCause, ordering])
+  }, [debouncedSearch, getPresetRange, direction, hangupCause, ordering])
 
-  // Initial load / filter reset
-  const resetAndLoad = useCallback(async () => {
-    rawRef.current = []
-    setRows([])
-    setPage(1)
-    setHasMore(true)
-    setExpanded(null)
-    setInitialLoading(true)
-    loadingRef.current = true
+  // Infinite-scroll loader — rows here are the raw (ungrouped) CDR legs.
+  const {
+    rows: rawRows,
+    total,
+    loading: initialLoading,
+    loadingMore,
+    hasMore,
+    loadMore,
+  } = useInfiniteList(cdrApi.list, { params: listParams, pageSize })
 
-    try {
-      const [cdrRes, summaryRes] = await Promise.all([
-        cdrApi.list(buildParams(1)),
-        cdrApi.summary(buildParams(1)),
-      ])
+  // Leg-grouping applied to the full accumulated set of raw rows.
+  const rows = useMemo(() => groupLegs(rawRows), [rawRows])
 
-      const data = cdrRes.data
-      const list = Array.isArray(data) ? data : data.results || []
-      const count = Array.isArray(data) ? list.length : data.count || 0
-
-      rawRef.current = list
-      setRows(groupLegs(list))
-      setTotal(count)
-      setHasMore(list.length === PAGE_SIZE && list.length < count)
-      setPage(2)
-      setSummary(summaryRes.data)
-    } finally {
-      setInitialLoading(false)
-      loadingRef.current = false
-    }
-  }, [buildParams])
-
+  // Summary follows the same filters (not paginated).
   useEffect(() => {
-    resetAndLoad()
-  }, [resetAndLoad])
+    let cancelled = false
+    cdrApi.summary(listParams)
+      .then(({ data }) => { if (!cancelled) setSummary(data) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [listParams])
 
-  // Load next page
-  const loadMore = useCallback(async () => {
-    if (loadingRef.current || !hasMore) return
-    loadingRef.current = true
-    setLoadingMore(true)
-    try {
-      const { data } = await cdrApi.list(buildParams(page))
-      const list = Array.isArray(data) ? data : data.results || []
-      const count = Array.isArray(data) ? list.length : data.count || 0
-
-      rawRef.current = [...rawRef.current, ...list]
-      setRows(groupLegs(rawRef.current))
-      setTotal(count)
-      setHasMore(list.length === PAGE_SIZE && rawRef.current.length < count)
-      setPage((p) => p + 1)
-    } finally {
-      setLoadingMore(false)
-      loadingRef.current = false
-    }
-  }, [page, hasMore, buildParams])
-
-  // IntersectionObserver — trigger loadMore when sentinel scrolls into view
-  useEffect(() => {
-    const sentinel = sentinelRef.current
-    if (!sentinel) return
-    const observer = new IntersectionObserver(
-      (entries) => { if (entries[0].isIntersecting) loadMore() },
-      { rootMargin: '200px' }
-    )
-    observer.observe(sentinel)
-    return () => observer.disconnect()
-  }, [loadMore])
+  // Collapse any expanded row when filters/page size change.
+  useEffect(() => { setExpanded(null) }, [listParams, pageSize])
 
   const toggleExpand = (uuid) => setExpanded((prev) => prev === uuid ? null : uuid)
 
@@ -695,8 +645,10 @@ export default function Cdr() {
             {exporting ? 'Exporting…' : 'Export CSV'}
           </Button>
 
+          <PageSizeSelector value={pageSize} onChange={setPageSize} className="shrink-0 ml-auto" />
+
           {total > 0 && (
-            <span className="text-sm text-muted-foreground whitespace-nowrap shrink-0 ml-auto">
+            <span className="text-sm text-muted-foreground whitespace-nowrap shrink-0">
               {rows.length.toLocaleString()} {rows.length === 1 ? 'call' : 'calls'}
               {hasMore && ` (loading…)`}
             </span>
@@ -878,14 +830,15 @@ export default function Cdr() {
             </TableBody>
           </Table>
 
-          {/* Sentinel — triggers infinite scroll */}
-          {!initialLoading && hasMore && <div ref={sentinelRef} className="h-4" />}
-
-          {/* End of list */}
-          {!initialLoading && !hasMore && rows.length > 0 && (
-            <div className="text-center py-4 text-xs text-muted-foreground">
-              All {rows.length.toLocaleString()} {rows.length === 1 ? 'call' : 'calls'} loaded
-            </div>
+          {/* Infinite scroll — sentinel + footer */}
+          {!initialLoading && rows.length > 0 && (
+            <InfiniteScroll
+              hasMore={hasMore}
+              loadingMore={loadingMore}
+              onLoadMore={loadMore}
+              loaded={rows.length}
+              total={total}
+            />
           )}
         </CardContent>
       </Card>

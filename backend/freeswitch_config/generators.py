@@ -217,10 +217,12 @@ def generate_directory_xml(domain_name, user=None):
         else:
             vm_password = ext.voicemail_password or ext.password or ''
         etree.SubElement(params_u, 'param', name='vm-password', value=str(vm_password))
-        if vm and vm.voicemail_mail_to:
-            etree.SubElement(params_u, 'param', name='vm-mailto', value=vm.voicemail_mail_to)
-        elif ext.voicemail_mail_to:
-            etree.SubElement(params_u, 'param', name='vm-mailto', value=ext.voicemail_mail_to)
+        # vm-mailto accepts a comma-separated recipient list. Normalise any
+        # user-entered spacing so FreeSWITCH gets clean "a@x.com,b@y.com".
+        _mailto_raw = (vm.voicemail_mail_to if vm and vm.voicemail_mail_to else ext.voicemail_mail_to) or ''
+        _mailto = ','.join(a.strip() for a in _mailto_raw.split(',') if a.strip())
+        if _mailto:
+            etree.SubElement(params_u, 'param', name='vm-mailto', value=_mailto)
         if vm:
             etree.SubElement(params_u, 'param', name='vm-min-recording-len', value=str(vm.voicemail_min_len))
             etree.SubElement(params_u, 'param', name='vm-max-recording-len', value=str(vm.voicemail_max_len))
@@ -903,6 +905,28 @@ def _add_voicemail_actions(cond_el, domain_name, mailbox, vm):
         etree.SubElement(cond_el, 'action', application='playback',
                          data='tone_stream://%(500,0,640)')
         _add_record_and_ingest()
+
+    elif greeting == 'media_file' and vm and getattr(vm, 'voicemail_greeting_recording_id', None):
+        # Play a Media File (Recording) the user picked as the greeting.
+        rec = vm.voicemail_greeting_recording
+        fname = (rec.recording_filename or '').strip() if rec else ''
+        from django.conf import settings as _settings
+        import os as _os
+        sounds_dir = getattr(_settings, 'FREESWITCH_SOUNDS_DIR', '')
+        if fname and not (fname.startswith('/') or ':' in fname):
+            greeting_path = _os.path.join(sounds_dir, fname) if sounds_dir else fname
+        else:
+            greeting_path = fname
+        if greeting_path:
+            etree.SubElement(cond_el, 'action', application='playback', data=greeting_path)
+            etree.SubElement(cond_el, 'action', application='playback',
+                             data='tone_stream://%(500,0,640)')
+            _add_record_and_ingest()
+        else:
+            # Recording row exists but no filename — fall back to default prompt.
+            etree.SubElement(cond_el, 'action', application='phrase',
+                             data='voicemail_record_message')
+            _add_record_and_ingest()
 
     else:
         # auto_with_instructions (default) — use FreeSWITCH built-in voicemail prompt phrase
@@ -1979,6 +2003,7 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
     dialplan_vm_map = {
         (vm.tenant_id, vm.voicemail_id): vm
         for vm in VoicemailModel.objects.filter(domain=domain, voicemail_enabled=True)
+                                        .select_related('voicemail_greeting_recording')
     }
     for ext in sorted(_ext_qs, key=lambda e: e.extension):
         mailbox_id = ext.voicemail_id or ext.extension

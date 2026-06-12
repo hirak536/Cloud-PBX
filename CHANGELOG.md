@@ -3,6 +3,25 @@
 All notable changes to IHS-PBX are documented in this file.
 Newest entries on top.
 
+## 2026-06-12
+
+### Voicemail Greeting — fixed upload path & added Media File greetings
+- Fixed uploaded voicemail greetings never playing. The upload endpoint (`VoicemailViewSet.upload_name`) wrote `recorded_name.wav` to a directory keyed by the **extension number** (e.g. `…/500/`), but the dialplan plays the greeting from the directory keyed by the **voicemail UUID** (e.g. `…/676cf165-…/`). The two never matched, so FreeSWITCH found no file. Upload now writes to the UUID directory the dialplan reads from
+- This also fixes a cross-tenant collision risk: two tenants can share extension `500`, and only the per-voicemail UUID directory is unique. (`*95` record-your-name already used the UUID via the per-user `${voicemail_id}` channel variable, so record and playback now agree)
+- Migrated the existing ext-500 (GMD) greeting from `…/500/recorded_name.wav` to its UUID directory
+- New **Media File greeting** mode: a mailbox can now play a reusable file from the **Media Files** library as its greeting, instead of only the per-mailbox recorded name. Pick the media file from a dropdown in the Voicemail dialog
+  - Backend: new `media_file` greeting choice + `voicemail_greeting_recording` FK to `recordings.Recording` (migration `voicemails 0013`); dialplan plays the recording from `FREESWITCH_SOUNDS_DIR`, then the beep, then records the message
+  - Note: voicemail greetings live in FreeSWITCH voicemail storage (`/var/lib/freeswitch/storage/voicemail/…`), a separate area from the Media Files library (`FREESWITCH_SOUNDS_DIR`); the new mode lets a mailbox *reference* a library file rather than merging the two stores
+
+### Voicemail Notification — multiple email recipients
+- The voicemail notification email field (per-voicemail **and** the extension-level fallback) now accepts a **comma-separated list** of addresses; previously it was a single-address `EmailField`
+- Backend: fields changed to `CharField(512)` with a new reusable `core.validators.MultiEmailValidator` (migrations `voicemails 0014`, `extensions 0016`). The Python notification/transcript senders split the list into individual recipients (passing the raw comma string as one recipient would have failed at SMTP), and the dialplan normalises whitespace before emitting FreeSWITCH's comma-separated `vm-mailto`
+- Frontend: email inputs switched from `type="email"` (which blocks commas via HTML5 validation) to `type="text"`, with updated placeholder/hint
+
+### Destination Picker — server-side search (covers >100 records)
+- Fixed destination dropdowns only ever showing the first 100 of each type and search missing records beyond that page — e.g. searching `500` returned no voicemail when it sat past the first 100 rows. The picker filtered a single 100-row client-side page and never queried the server
+- The shared `DestinationPicker` (and the Custom Destinations page's `TargetPicker`) now debounce the query and re-fetch server-side via the existing `searchDestData`, so the search covers every record. Wired into Custom Destinations (fallback + BLF ON/OFF), Call Flows, Extensions, and Ring Groups; backward-compatible where `onSearch` is not supplied
+
 ## 2026-06-11
 
 ### BLF Toggle (Custom Destinations)

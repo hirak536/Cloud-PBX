@@ -1,7 +1,9 @@
 import { useDebounce } from '@/hooks/useDebounce'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { destinations as api, fax as faxApi } from '@/api'
 import { useDestinationData } from '@/hooks/useDestinationData'
+import { useInfiniteList } from '@/hooks/useInfiniteList'
+import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -1031,13 +1033,7 @@ function BulkAddDIDsDialog({ open, onClose, onDone }) {
 
 
 export default function Destinations() {
-  const [rows, setRows]           = useState([])
-  const [hasMore, setHasMore]     = useState(false)
-  const [loadingMore, setLoadingMore] = useState(false)
-  const nextPageRef               = useRef(1)
-  const PAGE_SIZE                 = 25
-  const sentinelRef               = useRef(null)
-  const [loading, setLoading]     = useState(true)
+  const [pageSize, setPageSize]   = useState(DEFAULT_PAGE_SIZE)
   const [search, setSearch]       = useState('')
   const debouncedSearch           = useDebounce(search, 300)
   const [dialogOpen, setDialog]   = useState(false)
@@ -1119,49 +1115,13 @@ export default function Destinations() {
     }
   }, [reloadFaxBoxes])
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    nextPageRef.current = 1
-    try {
-      const params = { page: 1, page_size: PAGE_SIZE }
-      if (debouncedSearch) params.search = debouncedSearch
-      const { data } = await api.list(params)
-      if (Array.isArray(data)) {
-        setRows(data)
-        setHasMore(false)
-      } else {
-        setRows(data.results || [])
-        setHasMore(!!data.next)
-        nextPageRef.current = 2
-      }
-    } finally { setLoading(false) }
-  }, [debouncedSearch])
-
-  const loadMore = useCallback(async () => {
-    if (loadingMore) return
-    setLoadingMore(true)
-    try {
-      const params = { page: nextPageRef.current, page_size: PAGE_SIZE }
-      if (debouncedSearch) params.search = debouncedSearch
-      const { data } = await api.list(params)
-      const results = Array.isArray(data) ? data : (data.results || [])
-      setRows(prev => [...prev, ...results])
-      setHasMore(!Array.isArray(data) && !!data.next)
-      nextPageRef.current += 1
-    } finally { setLoadingMore(false) }
-  }, [debouncedSearch, loadingMore])
-
-  useEffect(() => { load() }, [load])
-
-  useEffect(() => {
-    const el = sentinelRef.current
-    if (!el) return
-    const obs = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting && hasMore && !loadingMore) loadMore()
-    }, { threshold: 0.1 })
-    obs.observe(el)
-    return () => obs.disconnect()
-  }, [hasMore, loadingMore, loadMore])
+  const listParams = useMemo(
+    () => (debouncedSearch ? { search: debouncedSearch } : {}),
+    [debouncedSearch],
+  )
+  const {
+    rows, total, loading, loadingMore, hasMore, loadMore, reload: load,
+  } = useInfiniteList(api.list, { params: listParams, pageSize })
 
   const set = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
 
@@ -1292,6 +1252,7 @@ export default function Destinations() {
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input placeholder="Search DIDs…" className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
+        <PageSizeSelector value={pageSize} onChange={setPageSize} />
         <Button variant="outline" size="sm" onClick={() => setBulkOpen(true)}>
           <Layers className="h-4 w-4 mr-1" />Bulk Add
         </Button>
@@ -1360,16 +1321,17 @@ export default function Destinations() {
                     </TableRow>
                   ))
             }
-            {/* infinite scroll sentinel */}
-            {!loading && hasMore && (
-              <TableRow ref={sentinelRef}>
-                <TableCell colSpan={5} className="py-3 text-center">
-                  {loadingMore && <Loader2 className="h-4 w-4 animate-spin mx-auto text-muted-foreground" />}
-                </TableCell>
-              </TableRow>
-            )}
           </TableBody>
         </Table>
+        {!loading && rows.length > 0 && (
+          <InfiniteScroll
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            onLoadMore={loadMore}
+            loaded={rows.length}
+            total={total}
+          />
+        )}
       </CardContent></Card>
 
       {/* dialog */}

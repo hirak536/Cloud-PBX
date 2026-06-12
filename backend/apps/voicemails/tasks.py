@@ -10,6 +10,13 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
+def _split_emails(value):
+    """Split a comma-separated voicemail_mail_to into a clean recipient list."""
+    if not value:
+        return []
+    return [a.strip() for a in str(value).split(',') if a.strip()]
+
+
 def _get_wav_duration(file_path: str) -> int:
     """Return WAV duration in seconds (minimum 1 for non-empty files), or 0 on error."""
     try:
@@ -140,7 +147,7 @@ def _send_voicemail_email(vm, message_uuid: str, file_path: str, cid_name: str, 
         subject=subject,
         body=text_body,
         from_email=settings.EMAIL_HOST_USER,
-        to=[vm.voicemail_mail_to],
+        to=_split_emails(vm.voicemail_mail_to),
         reply_to=[reply_to] if reply_to else None,
         connection=smtp_connection,
     )
@@ -637,7 +644,7 @@ def send_voicemail_notification(
             subject=subject,
             body=body,
             from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[vm.voicemail_mail_to],
+            to=_split_emails(vm.voicemail_mail_to),
         )
         if vm.voicemail_file == 'attach':
             if os.path.isfile(file_path):

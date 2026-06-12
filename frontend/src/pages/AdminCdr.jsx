@@ -1,5 +1,7 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useMemo, useState } from 'react'
 import { cdr as cdrApi } from '@/api'
+import { useInfiniteList } from '@/hooks/useInfiniteList'
+import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,47 +33,32 @@ function DirectionBadge({ direction, context }) {
   return <span className="flex items-center gap-1 text-xs text-green-600"><PhoneIncoming className="h-3.5 w-3.5" /> In</span>
 }
 
-const PAGE_SIZE = 50
-
 export default function AdminCdr() {
-  const [records, setRecords] = useState([])
-  const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
-  const [page, setPage] = useState(1)
-  const [total, setTotal] = useState(0)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [exporting, setExporting] = useState(false)
 
-  const fetchRecords = useCallback(async () => {
-    setLoading(true)
-    try {
-      const params = {
-        tenant: null,   // opt out of per-tenant scoping — show all tenants
-        page,
-        page_size: PAGE_SIZE,
-        leg: 'a',
-      }
-      if (search) params.search = search
-      if (startDate) params.start_stamp__gte = startDate
-      if (endDate) params.end_date = endDate
-      const res = await cdrApi.list(params)
-      const data = res.data
-      if (data?.results !== undefined) {
-        setRecords(data.results)
-        setTotal(data.count || 0)
-      } else if (Array.isArray(data)) {
-        setRecords(data)
-        setTotal(data.length)
-      }
-    } catch (e) {
-      console.error(e)
-    } finally {
-      setLoading(false)
+  const params = useMemo(() => {
+    const p = {
+      tenant: null,   // opt out of per-tenant scoping — show all tenants
+      leg: 'a',
     }
-  }, [page, search, startDate, endDate])
+    if (search) p.search = search
+    if (startDate) p.start_stamp__gte = startDate
+    if (endDate) p.end_date = endDate
+    return p
+  }, [search, startDate, endDate])
 
-  useEffect(() => { fetchRecords() }, [fetchRecords])
+  const {
+    rows: records,
+    total,
+    loading,
+    loadingMore,
+    hasMore,
+    loadMore,
+  } = useInfiniteList(cdrApi.list, { params, pageSize })
 
   async function handleExport() {
     setExporting(true)
@@ -91,8 +78,6 @@ export default function AdminCdr() {
       setExporting(false)
     }
   }
-
-  const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
     <div className="space-y-4">
@@ -117,7 +102,7 @@ export default function AdminCdr() {
                 placeholder="Search caller, destination…"
                 className="pl-8"
                 value={search}
-                onChange={e => { setSearch(e.target.value); setPage(1) }}
+                onChange={e => setSearch(e.target.value)}
               />
             </div>
             <div className="flex items-center gap-2">
@@ -125,21 +110,22 @@ export default function AdminCdr() {
                 type="date"
                 className="w-40"
                 value={startDate}
-                onChange={e => { setStartDate(e.target.value); setPage(1) }}
+                onChange={e => setStartDate(e.target.value)}
               />
               <span className="text-muted-foreground text-sm">to</span>
               <Input
                 type="date"
                 className="w-40"
                 value={endDate}
-                onChange={e => { setEndDate(e.target.value); setPage(1) }}
+                onChange={e => setEndDate(e.target.value)}
               />
             </div>
             {(search || startDate || endDate) && (
-              <Button variant="ghost" size="sm" onClick={() => { setSearch(''); setStartDate(''); setEndDate(''); setPage(1) }}>
+              <Button variant="ghost" size="sm" onClick={() => { setSearch(''); setStartDate(''); setEndDate('') }}>
                 Clear
               </Button>
             )}
+            <PageSizeSelector value={pageSize} onChange={setPageSize} className="ml-auto" />
           </div>
         </CardContent>
       </Card>
@@ -210,24 +196,15 @@ export default function AdminCdr() {
               }
             </TableBody>
           </Table>
+          <InfiniteScroll
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            onLoadMore={loadMore}
+            loaded={records.length}
+            total={total}
+          />
         </CardContent>
       </Card>
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>{total.toLocaleString()} total records</span>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
-              Previous
-            </Button>
-            <span>Page {page} of {totalPages}</span>
-            <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

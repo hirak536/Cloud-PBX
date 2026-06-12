@@ -230,7 +230,7 @@ class CallerExtensionAffinity(models.Model):
     last_seen = models.DateTimeField(db_index=True,
         help_text='Timestamp of the most recent outbound call that set this mapping.')
     source = models.CharField(max_length=16, default='outbound',
-        help_text='outbound | manual_seed — where this mapping came from.')
+        help_text='outbound | manual_seed | manual_ui — where this mapping came from.')
 
     insert_date = models.DateTimeField(auto_now_add=True)
     update_date = models.DateTimeField(auto_now=True)

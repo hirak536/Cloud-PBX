@@ -13,7 +13,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Select } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Plus, Pencil, Trash2, Search, Loader2, ShieldCheck, Shield, User2, KeyRound, ChevronLeft, ChevronRight, Check, Eye, EyeOff, Wand2, Mail } from 'lucide-react'
+import { useInfiniteList } from '@/hooks/useInfiniteList'
+import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
+import { Plus, Pencil, Trash2, Search, Loader2, ShieldCheck, Shield, User2, KeyRound, Check, Eye, EyeOff, Wand2, Mail } from 'lucide-react'
 
 const ROLES = [
   { value: 'superuser', label: 'Superuser', description: 'Full access to all tenants' },
@@ -88,11 +90,7 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
   const { user: loggedInUser }      = useSelector(selectAuth)
   const myRole                      = roleOf(loggedInUser)
   const allowedUcTypes              = creatableUcTypes(myRole)
-  const [rows, setRows]             = useState([])
-  const [loading, setLoading]       = useState(false)
-  const [error, setError]           = useState('')
-  const [page, setPage]             = useState(1)
-  const [pagination, setPagination] = useState(null)
+  const [pageSize, setPageSize]     = useState(DEFAULT_PAGE_SIZE)
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editUser, setEditUser]     = useState(null)   // null = add mode, object = edit mode
@@ -207,26 +205,31 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
       .catch(() => setVoiceEnabled(false))
   }, [tenantUuid])
 
-  const PAGE_SIZE = 20
+  // Non-standard signature: ucUsersApi.list(tenantCode, page, pageSize).
+  const fetcher = useCallback(
+    ({ page, page_size }) => ucUsersApi.list(tenantCode, page, page_size),
+    [tenantCode],
+  )
 
-  const load = useCallback(async (p = 1) => {
-    if (!tenantCode) return
-    setLoading(true)
-    setError('')
-    try {
-      const { data } = await ucUsersApi.list(tenantCode, p, PAGE_SIZE)
-      const all = data.success ?? []
-      setRows(all.filter(u => u.userType !== 'freeswitch'))
-      setPagination(data.pagination ?? null)
-      setPage(p)
-    } catch (e) {
-      setError(e?.response?.data?.message || 'Failed to load UC users.')
-    } finally {
-      setLoading(false)
-    }
-  }, [tenantCode])
+  const {
+    rows: allRows,
+    total,
+    loading,
+    loadingMore,
+    hasMore,
+    error: loadError,
+    loadMore,
+    reload,
+  } = useInfiniteList(fetcher, {
+    pageSize,
+    enabled: !!tenantCode,
+    selectResults: (d) => d.success ?? [],
+    selectCount: (d, list) => d.pagination?.total ?? list.length,
+  })
 
-  useEffect(() => { load(1) }, [load])
+  // Hide internal freeswitch service accounts from the list.
+  const rows = allRows.filter(u => u.userType !== 'freeswitch')
+  const error = loadError ? (loadError?.response?.data?.message || 'Failed to load UC users.') : ''
 
   const openEditUser = async (u) => {
     setEditUser(u)
@@ -379,7 +382,7 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
         await ucUsersApi.create(payload)
       }
       setDialogOpen(false)
-      load(page)
+      reload()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : d?.message || Object.values(d || {}).flat().join(' ') || (editUser ? 'Failed to update user.' : 'Failed to create user.'))
@@ -413,7 +416,10 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
             </Badge>
           </div>
         ) : <div />}
-        <Button size="sm" onClick={openAddUser}><Plus className="h-4 w-4" />Add User</Button>
+        <div className="flex items-center gap-3">
+          <PageSizeSelector value={pageSize} onChange={setPageSize} />
+          <Button size="sm" onClick={openAddUser}><Plus className="h-4 w-4" />Add User</Button>
+        </div>
       </div>
 
       {error && (
@@ -516,21 +522,13 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
         </Table>
       </CardContent></Card>
 
-      {pagination && pagination.total_pages > 1 && (
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>
-            Showing {((page - 1) * PAGE_SIZE) + 1}–{Math.min(page * PAGE_SIZE, pagination.total)} of {pagination.total}
-          </span>
-          <div className="flex gap-1">
-            <Button variant="outline" size="icon" className="h-7 w-7" disabled={page <= 1} onClick={() => load(page - 1)}>
-              <ChevronLeft className="h-3.5 w-3.5" />
-            </Button>
-            <Button variant="outline" size="icon" className="h-7 w-7" disabled={page >= pagination.total_pages} onClick={() => load(page + 1)}>
-              <ChevronRight className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        </div>
-      )}
+      <InfiniteScroll
+        hasMore={hasMore}
+        loadingMore={loadingMore}
+        onLoadMore={loadMore}
+        loaded={rows.length}
+        total={total}
+      />
 
       {/* Add / Edit UC User dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

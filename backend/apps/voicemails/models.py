@@ -1,6 +1,7 @@
 import uuid
 from django.db import models
 from core.models import Domain
+from core.validators import validate_multi_email
 
 
 class Voicemail(models.Model):
@@ -8,6 +9,7 @@ class Voicemail(models.Model):
         ('auto_with_instructions', 'Automatic with Instructions'),
         ('tts_name', 'Text-to-Speech Greeting'),
         ('recorded_name', 'Recorded Name Greeting'),
+        ('media_file', 'Media File Greeting'),
     ]
     ON_NEW_MESSAGE_CHOICES = [
         ('nothing', 'Nothing special'),
@@ -37,7 +39,10 @@ class Voicemail(models.Model):
     voicemail_id = models.CharField(max_length=32)
     voicemail_password = models.CharField(max_length=32, blank=True, default='', verbose_name='PIN')
     voicemail_name = models.CharField(max_length=128, blank=True, default='', verbose_name='Name')
-    voicemail_mail_to = models.EmailField(blank=True, default='', verbose_name='Email')
+    voicemail_mail_to = models.CharField(
+        max_length=512, blank=True, default='', verbose_name='Email',
+        validators=[validate_multi_email],
+        help_text='One or more email addresses, separated by commas.')
     voicemail_pager = models.EmailField(blank=True, default='', verbose_name='Pager email')
     timezone = models.CharField(max_length=64, blank=True, default='', help_text='Leave blank to use tenant default.')
     voicemail_language = models.CharField(max_length=16, blank=True, default='', verbose_name='Language',
@@ -52,6 +57,16 @@ class Voicemail(models.Model):
                                           choices=GREETING_CHOICES, verbose_name='Greeting style')
     tts_greeting_text = models.CharField(max_length=512, blank=True, default='', verbose_name='TTS greeting text',
                                          help_text='Custom text for TTS greeting. Leave blank for default.')
+    # When voicemail_greeting == 'media_file', play this Media File (Recording) as the greeting.
+    voicemail_greeting_recording = models.ForeignKey(
+        'recordings.Recording',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='greeting_recording_uuid',
+        related_name='+',
+        verbose_name='Greeting media file',
+    )
     voicemail_play_after = models.BooleanField(default=False, verbose_name='Play a message after the other')
 
     # ── Message handling ──────────────────────────────────────────────────

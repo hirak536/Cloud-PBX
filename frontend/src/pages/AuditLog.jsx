@@ -1,6 +1,8 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useMemo, useState } from 'react'
 import { auditLogs as api } from '@/api'
 import { useDebounce } from '@/hooks/useDebounce'
+import { useInfiniteList } from '@/hooks/useInfiniteList'
+import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -92,34 +94,21 @@ function AuditRow({ row }) {
 }
 
 export default function AuditLog() {
-  const [rows, setRows] = useState([])
-  const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [actionFilter, setActionFilter] = useState('')
-  const [next, setNext] = useState(null)
-  const [prev, setPrev] = useState(null)
-  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
 
   const debouncedSearch = useDebounce(search, 400)
 
-  const load = useCallback(async (pageNum = 1) => {
-    setLoading(true)
-    try {
-      const params = { page: pageNum, page_size: 50 }
-      if (debouncedSearch) params.username = debouncedSearch
-      if (actionFilter) params.action = actionFilter
-      const { data } = await api.list(params)
-      const results = Array.isArray(data) ? data : (data.results ?? [])
-      setRows(results)
-      setNext(data.next ?? null)
-      setPrev(data.previous ?? null)
-    } finally {
-      setLoading(false)
-    }
+  const params = useMemo(() => {
+    const p = {}
+    if (debouncedSearch) p.username = debouncedSearch
+    if (actionFilter) p.action = actionFilter
+    return p
   }, [debouncedSearch, actionFilter])
 
-  useEffect(() => { setPage(1) }, [debouncedSearch, actionFilter])
-  useEffect(() => { load(page) }, [load, page])
+  const { rows, loading, loadingMore, hasMore, total, loadMore, reload } =
+    useInfiniteList(api.list, { params, pageSize })
 
   return (
     <div className="space-y-4">
@@ -145,7 +134,8 @@ export default function AuditLog() {
                 <option key={a} value={a}>{a ? a.charAt(0).toUpperCase() + a.slice(1) : 'All actions'}</option>
               ))}
             </select>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => load(page)} title="Refresh">
+            <PageSizeSelector value={pageSize} onChange={setPageSize} />
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={reload} title="Refresh">
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
           </div>
@@ -187,21 +177,15 @@ export default function AuditLog() {
               )}
             </TableBody>
           </Table>
+          <InfiniteScroll
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            onLoadMore={loadMore}
+            loaded={rows.length}
+            total={total}
+          />
         </CardContent>
       </Card>
-
-      {/* Pagination */}
-      {(prev || next) && (
-        <div className="flex items-center justify-end gap-2">
-          <Button variant="outline" size="sm" disabled={!prev} onClick={() => setPage((p) => Math.max(1, p - 1))}>
-            Previous
-          </Button>
-          <span className="text-sm text-muted-foreground">Page {page}</span>
-          <Button variant="outline" size="sm" disabled={!next} onClick={() => setPage((p) => p + 1)}>
-            Next
-          </Button>
-        </div>
-      )}
     </div>
   )
 }

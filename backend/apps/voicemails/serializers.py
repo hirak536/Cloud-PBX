@@ -47,6 +47,10 @@ class VoicemailSerializer(serializers.ModelSerializer):
     options = VoicemailOptionSerializer(many=True, read_only=True)
     domain_name = serializers.CharField(source='domain.domain_name', read_only=True)
     tenant_code = serializers.CharField(source='tenant.tenant_code', read_only=True)
+    greeting_recording_name = serializers.CharField(
+        source='voicemail_greeting_recording.recording_name', read_only=True, default=None)
+    greeting_recording_filename = serializers.CharField(
+        source='voicemail_greeting_recording.recording_filename', read_only=True, default=None)
 
     class Meta:
         model = Voicemail

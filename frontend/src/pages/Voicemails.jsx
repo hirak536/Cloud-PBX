@@ -1,6 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
-import { voicemails as voicemailsApi } from '@/api'
+import { voicemails as voicemailsApi, recordings as recordingsApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -16,11 +16,13 @@ const GREETING_LABELS = {
   auto_with_instructions: 'Automatic',
   tts_name: 'TTS',
   recorded_name: 'Recorded name',
+  media_file: 'Media file',
 }
 
 const EMPTY = {
   extension: '', password: '', name: '', enabled: true,
   voicemail_greeting: 'auto_with_instructions', tts_greeting_text: '',
+  voicemail_greeting_recording: '',
   voicemail_mail_to: '',
 }
 
@@ -38,6 +40,14 @@ export default function Voicemails() {
   const [nameFile, setNameFile] = useState(null)
   const [uploadingName, setUploadingName] = useState(false)
   const [uploadMsg, setUploadMsg] = useState('')
+  const [mediaFiles, setMediaFiles] = useState([])
+
+  // Load Media Files (recordings) once, for the media-file greeting picker.
+  useEffect(() => {
+    recordingsApi.list({ page_size: 200 })
+      .then(({ data }) => setMediaFiles(Array.isArray(data) ? data : data.results || []))
+      .catch(() => setMediaFiles([]))
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -64,6 +74,7 @@ export default function Voicemails() {
       enabled: r.voicemail_enabled !== false,
       voicemail_greeting: r.voicemail_greeting || 'auto_with_instructions',
       tts_greeting_text: r.tts_greeting_text || '',
+      voicemail_greeting_recording: r.voicemail_greeting_recording || '',
       voicemail_mail_to: r.voicemail_mail_to || '',
     })
     setFormError(''); setNameFile(null); setUploadMsg(''); setDialogOpen(true)
@@ -80,6 +91,8 @@ export default function Voicemails() {
         voicemail_enabled: form.enabled,
         voicemail_greeting: form.voicemail_greeting,
         tts_greeting_text: form.tts_greeting_text,
+        voicemail_greeting_recording:
+          form.voicemail_greeting === 'media_file' ? (form.voicemail_greeting_recording || null) : null,
         voicemail_mail_to: form.voicemail_mail_to,
         voicemail_on_new_message: form.voicemail_mail_to ? 'both' : 'nothing',
         voicemail_file: form.voicemail_mail_to ? 'attach' : 'none',
@@ -180,8 +193,29 @@ export default function Voicemails() {
                   <option value="auto_with_instructions">Automatic with instructions</option>
                   <option value="tts_name">Text-to-speech greeting</option>
                   <option value="recorded_name">Recorded name greeting</option>
+                  <option value="media_file">Media file greeting</option>
                 </Select>
               </div>
+
+              {form.voicemail_greeting === 'media_file' && (
+                <div className="space-y-1.5">
+                  <Label>Greeting media file</Label>
+                  <Select
+                    value={form.voicemail_greeting_recording || ''}
+                    onChange={(e) => setForm(f => ({ ...f, voicemail_greeting_recording: e.target.value }))}
+                  >
+                    <option value="">Select a media file…</option>
+                    {mediaFiles.map((m) => (
+                      <option key={m.recording_uuid} value={m.recording_uuid}>
+                        {m.recording_name || m.recording_filename}
+                      </option>
+                    ))}
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Upload greetings on the <span className="font-medium">Media Files</span> page, then pick one here.
+                  </p>
+                </div>
+              )}
 
               {form.voicemail_greeting === 'tts_name' && (
                 <div className="space-y-1.5">
@@ -230,12 +264,12 @@ export default function Voicemails() {
                 <div className="space-y-1.5">
                   <Label>Notification Email</Label>
                   <Input
-                    type="email"
-                    placeholder="user@example.com"
+                    type="text"
+                    placeholder="user@example.com, other@example.com"
                     value={form.voicemail_mail_to}
                     onChange={(e) => setForm(f => ({ ...f, voicemail_mail_to: e.target.value }))}
                   />
-                  <p className="text-xs text-muted-foreground">Send new voicemail notifications to this address.</p>
+                  <p className="text-xs text-muted-foreground">Send new voicemail notifications to these addresses. Separate multiple with commas.</p>
                 </div>
               </div>
             </div>

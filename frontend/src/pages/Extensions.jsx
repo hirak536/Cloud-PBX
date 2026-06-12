@@ -1,5 +1,7 @@
 import { useDebounce } from '@/hooks/useDebounce'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useInfiniteList } from '@/hooks/useInfiniteList'
+import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import { useSelector } from 'react-redux'
 import { selectTenant } from '@/store'
 import { extensions as extensionsApi, voicemails as voicemailsApi, gateways as gatewaysApi, ringGroups as ringGroupsApi, destinations as destinationsApi, freeswitch as freeswitchApi, freeswitchCache } from '@/api'
@@ -842,13 +844,13 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
             <Field
               label="Email for Voicemail"
               hint={matchedVoicemailBox
-                ? `Linked to voicemail box ${matchedVoicemailBox.voicemail_id} — changes save to both`
-                : 'Send voicemail notifications to this address'}
+                ? `Linked to voicemail box ${matchedVoicemailBox.voicemail_id} — changes save to both. Separate multiple emails with commas.`
+                : 'Send voicemail notifications to these addresses. Separate multiple with commas.'}
               span2
             >
               <Input
-                type="email"
-                placeholder="e.g. user@example.com"
+                type="text"
+                placeholder="user@example.com, other@example.com"
                 value={form.voicemail_mail_to}
                 onChange={set('voicemail_mail_to')}
                 disabled={!form.voicemail_enabled}
@@ -1516,14 +1518,10 @@ function ExtStatusBadge({ enabled, status }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-const PAGE_SIZE = 20
 
 export default function Extensions() {
-  const [rows, setRows] = useState([])
-  const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(null)
   const [copiedId, setCopiedId] = useState(null)
@@ -1560,30 +1558,24 @@ export default function Extensions() {
     finally { setRgLoading(false) }
   }, [])
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const params = { page, page_size: PAGE_SIZE }
-      if (search) params.search = search
-      const { data } = await extensionsApi.list(params)
-      const list = Array.isArray(data) ? data : data.results || []
-      setRows(list)
-      setTotal(Array.isArray(data) ? list.length : data.count || 0)
-    } finally {
-      setLoading(false)
-    }
-    // Fetch current extension status once per load (no live push). Best-effort:
-    // if FreeSWITCH is unreachable, leave the badges in the "Connecting…" state.
-    try {
-      const { data } = await freeswitchApi.extensionStatus()
-      setExtStatuses(data?.extensions || {})
-      setExtStatusLoaded(true)
-    } catch {
-      /* keep previous status; do not flip everything to offline */
-    }
-  }, [page, search])
+  const listParams = useMemo(() => (search ? { search } : {}), [search])
+  const {
+    rows, total, loading, loadingMore, hasMore, loadMore, reload: load,
+  } = useInfiniteList(extensionsApi.list, { params: listParams, pageSize })
 
-  useEffect(() => { load() }, [load])
+  // Fetch current extension status once per load (no live push). Best-effort:
+  // if FreeSWITCH is unreachable, leave the badges in the "Connecting…" state.
+  useEffect(() => {
+    let cancelled = false
+    freeswitchApi.extensionStatus()
+      .then(({ data }) => {
+        if (cancelled) return
+        setExtStatuses(data?.extensions || {})
+        setExtStatusLoaded(true)
+      })
+      .catch(() => { /* keep previous status; do not flip everything to offline */ })
+    return () => { cancelled = true }
+  }, [listParams])
 
   const openCreate = () => {
     setEditId(null)
@@ -1846,8 +1838,6 @@ export default function Extensions() {
     setTimeout(() => setCopiedId(null), 1500)
   }
 
-  const totalPages = Math.ceil(total / PAGE_SIZE)
-
   return (
     <div className="space-y-4">
 
@@ -1859,9 +1849,10 @@ export default function Extensions() {
             placeholder="Search extensions…"
             className="pl-8"
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+            onChange={(e) => setSearch(e.target.value)}
           />
         </div>
+        <PageSizeSelector value={pageSize} onChange={setPageSize} />
         <Button variant="outline" size="sm" onClick={() => extensionsApi.reload()} title="Reload FreeSWITCH XML">
           <RefreshCw className="h-4 w-4" />
         </Button>
@@ -1973,20 +1964,15 @@ export default function Extensions() {
               )}
             </TableBody>
           </Table>
+          <InfiniteScroll
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            onLoadMore={loadMore}
+            loaded={rows.length}
+            total={total}
+          />
         </CardContent>
       </Card>
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>{total} total</span>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(p => p - 1)}>Previous</Button>
-            <span className="flex items-center px-2">{page} / {totalPages}</span>
-            <Button variant="outline" size="sm" disabled={page === totalPages} onClick={() => setPage(p => p + 1)}>Next</Button>
-          </div>
-        </div>
-      )}
 
       {/* Add / Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

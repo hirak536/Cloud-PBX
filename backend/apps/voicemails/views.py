@@ -67,7 +67,11 @@ class VoicemailViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
         if not domain_name:
             return Response({'detail': 'Voicemail has no domain.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        mailbox = voicemail.voicemail_id
+        # Greeting playback in the dialplan reads from the voicemail-UUID dir
+        # (see freeswitch_config.generators._voicemail_*; storage_dir is keyed
+        # by str(vm.voicemail_uuid), NOT the extension number). Write to the
+        # same path or FreeSWITCH will never find the uploaded greeting.
+        mailbox = str(voicemail.voicemail_uuid)
         storage_dir = f'/var/lib/freeswitch/storage/voicemail/default/{domain_name}/{mailbox}'
         dest_path = os.path.join(storage_dir, 'recorded_name.wav')
 

@@ -1,4 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
+import { useInfiniteList } from '@/hooks/useInfiniteList'
+import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { customDestinations as api } from '@/api'
 import { useDestinationData } from '@/hooks/useDestinationData'
@@ -546,44 +548,154 @@ function ToggleRow({ label, hint, checked, onChange }) {
   )
 }
 
+const SOURCE_LABELS = { manual_seed: 'seeded', manual_ui: 'manual', outbound: 'outbound' }
+
 export function AffinityPanel({ open, onClose }) {
-  const [loading, setLoading] = useState(false)
-  const [data, setData] = useState({ total: 0, recent: [] })
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  // Add-row form
+  const [newCaller, setNewCaller] = useState('')
+  const [newExt, setNewExt] = useState('')
+  // Inline edit
+  const [editId, setEditId] = useState(null)
+  const [editExt, setEditExt] = useState('')
+  // Search + page size
+  const [search, setSearch] = useState('')
+  const debouncedSearch = useDebounce(search, 350)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const scrollRef = useRef(null)
+  // Full tenant total (independent of search) for the header stat.
+  const [grandTotal, setGrandTotal] = useState(0)
+
+  const params = debouncedSearch ? { search: debouncedSearch } : {}
+  const {
+    rows, total, loading, loadingMore, hasMore, loadMore, reload,
+  } = useInfiniteList(api.affinityStats, {
+    params,
+    pageSize,
+    enabled: open,
+    selectResults: (d) => d.recent || [],
+    selectCount: (d) => d.filtered_total ?? (d.recent || []).length,
+  })
+
+  // Header stat = unfiltered tenant total; refresh on open and after mutations.
+  const refreshGrandTotal = useCallback(() => {
+    api.affinityStats({ page: 1, page_size: 1 })
+      .then(({ data }) => setGrandTotal(data.total || 0))
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     if (!open) return
-    setLoading(true)
-    api.affinityStats()
-      .then(({ data }) => setData(data))
-      .catch(() => setData({ total: 0, recent: [] }))
-      .finally(() => setLoading(false))
-  }, [open])
+    setError(''); setNewCaller(''); setNewExt(''); setEditId(null)
+    refreshGrandTotal()
+  }, [open, refreshGrandTotal])
+
+  const afterMutation = () => { reload(); refreshGrandTotal() }
+
+  const add = async (overwrite = false) => {
+    if (!newCaller.trim() || !newExt.trim()) return
+    setBusy(true); setError('')
+    try {
+      await api.affinityCreate({
+        caller_number: newCaller.trim(), extension_number: newExt.trim(),
+        ...(overwrite ? { overwrite: true } : {}),
+      })
+      setNewCaller(''); setNewExt(''); afterMutation()
+    } catch (e) {
+      if (e?.response?.status === 409) {
+        const ex = e.response.data?.existing
+        const ok = window.confirm(
+          `${ex?.caller_number} is already mapped to extension ${ex?.extension_number}.\n\nOverwrite it with ${newExt.trim()}?`
+        )
+        if (ok) { setBusy(false); return add(true) }
+      } else {
+        setError(e?.response?.data?.detail || 'Could not add mapping.')
+      }
+    } finally { setBusy(false) }
+  }
+
+  const saveEdit = async (id) => {
+    if (!editExt.trim()) return
+    setBusy(true); setError('')
+    try {
+      await api.affinityUpdate(id, { extension_number: editExt.trim() })
+      setEditId(null); afterMutation()
+    } catch (e) {
+      setError(e?.response?.data?.detail || 'Could not update mapping.')
+    } finally { setBusy(false) }
+  }
+
+  const remove = async (id) => {
+    setBusy(true); setError('')
+    try {
+      await api.affinityDelete(id); afterMutation()
+    } catch (e) {
+      setError(e?.response?.data?.detail || 'Could not delete mapping.')
+    } finally { setBusy(false) }
+  }
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
-      <DialogContent className="w-[95vw] max-w-xl h-[600px] max-h-[90vh] flex flex-col p-0 overflow-hidden">
+      <DialogContent className="w-[95vw] max-w-2xl h-[640px] max-h-[90vh] flex flex-col p-0 overflow-hidden">
         <DialogHeader className="px-6 pt-5 pb-4 border-b">
           <DialogTitle className="flex items-center gap-2">
             <History className="h-4 w-4 text-primary" /> Caller → Extension Affinity
           </DialogTitle>
         </DialogHeader>
-        <div className="px-6 py-4 border-b bg-muted/30">
+        <div className="px-6 py-4 border-b bg-muted/30 flex items-center gap-4">
           <div className="flex items-center gap-3">
             <Users className="h-5 w-5 text-muted-foreground" />
             <div>
-              <p className="text-2xl font-bold">{loading ? '…' : data.total.toLocaleString()}</p>
-              <p className="text-xs text-muted-foreground">customers currently mapped to a sticky extension</p>
+              <p className="text-2xl font-bold">{grandTotal.toLocaleString()}</p>
+              <p className="text-xs text-muted-foreground">customers mapped to a sticky extension</p>
             </div>
           </div>
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search by number or extension…"
+              className="pl-8 font-mono"
+            />
+          </div>
+          <PageSizeSelector value={pageSize} onChange={setPageSize} />
         </div>
-        <div className="flex-1 overflow-y-auto">
+
+        {/* Add row */}
+        <div className="px-6 py-3 border-b flex items-end gap-2">
+          <div className="flex-1">
+            <Label className="text-xs">Customer number</Label>
+            <Input value={newCaller} onChange={e => setNewCaller(e.target.value)}
+              placeholder="e.g. 7133034589" className="font-mono" />
+          </div>
+          <div className="w-32">
+            <Label className="text-xs">Extension</Label>
+            <Input value={newExt} onChange={e => setNewExt(e.target.value)}
+              placeholder="e.g. 432" className="font-mono"
+              onKeyDown={e => { if (e.key === 'Enter') add() }} />
+          </div>
+          <Button onClick={add} disabled={busy || !newCaller.trim() || !newExt.trim()} size="sm">
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            <span className="ml-1">Add</span>
+          </Button>
+        </div>
+        {error && <div className="px-6 py-2 text-sm text-red-500 border-b">{error}</div>}
+        <p className="px-6 pt-2 text-[11px] text-muted-foreground">
+          Manual mappings are temporary — the next outbound call from an extension to this customer overwrites them.
+        </p>
+
+        <div ref={scrollRef} className="flex-1 overflow-y-auto">
           {loading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
-          ) : data.recent.length === 0 ? (
+          ) : rows.length === 0 ? (
             <div className="px-6 py-12 text-center text-sm text-muted-foreground">
-              No mappings yet. Outbound calls will populate this automatically.
+              {debouncedSearch
+                ? `No mappings match "${debouncedSearch}".`
+                : 'No mappings yet. Add one above, or outbound calls will populate this automatically.'}
             </div>
           ) : (
             <Table>
@@ -593,28 +705,73 @@ export function AffinityPanel({ open, onClose }) {
                   <TableHead>Extension</TableHead>
                   <TableHead>Source</TableHead>
                   <TableHead>Last seen</TableHead>
+                  <TableHead className="w-24 text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.recent.map(r => (
+                {rows.map(r => (
                   <TableRow key={r.affinity_uuid}>
                     <TableCell className="font-mono text-sm">{r.caller_number}</TableCell>
-                    <TableCell><span className="font-mono font-bold text-blue-500">{r.extension_number}</span></TableCell>
+                    <TableCell>
+                      {editId === r.affinity_uuid ? (
+                        <Input value={editExt} onChange={e => setEditExt(e.target.value)}
+                          className="font-mono h-8 w-28"
+                          onKeyDown={e => { if (e.key === 'Enter') saveEdit(r.affinity_uuid) }}
+                          autoFocus />
+                      ) : (
+                        <span className="font-mono font-bold text-blue-500">{r.extension_number}</span>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Badge variant="outline" className="text-xs">
-                        {r.source === 'manual_seed' ? 'seeded' : 'outbound'}
+                        {SOURCE_LABELS[r.source] || r.source}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {r.last_seen ? new Date(r.last_seen).toLocaleString() : '—'}
+                    </TableCell>
+                    <TableCell className="text-right whitespace-nowrap">
+                      {editId === r.affinity_uuid ? (
+                        <>
+                          <Button size="sm" variant="ghost" disabled={busy}
+                            onClick={() => saveEdit(r.affinity_uuid)}>Save</Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditId(null)}>
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button size="sm" variant="ghost" disabled={busy}
+                            onClick={() => { setEditId(r.affinity_uuid); setEditExt(r.extension_number) }}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button size="sm" variant="ghost" disabled={busy}
+                            onClick={() => remove(r.affinity_uuid)}>
+                            <Trash2 className="h-4 w-4 text-red-500" />
+                          </Button>
+                        </>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           )}
+          {!loading && rows.length > 0 && (
+            <InfiniteScroll
+              hasMore={hasMore}
+              loadingMore={loadingMore}
+              onLoadMore={loadMore}
+              loaded={rows.length}
+              total={total}
+              rootRef={scrollRef}
+            />
+          )}
         </div>
-        <div className="px-6 py-4 border-t flex justify-end">
+        <div className="px-6 py-4 border-t flex items-center justify-between gap-3">
+          <div className="text-xs text-muted-foreground">
+            {loading ? '' : <>{(total || 0).toLocaleString()} {debouncedSearch ? 'matching' : 'total'}</>}
+          </div>
           <Button variant="outline" onClick={onClose}>Close</Button>
         </div>
       </DialogContent>
