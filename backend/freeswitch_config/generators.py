@@ -14,6 +14,42 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 
 
+def did_is_caller_dynamic(destination_number: str) -> bool:
+    """
+    Return True if the inbound DID resolves to a destination whose routing
+    depends on the *live caller* (sticky-last-agent affinity or
+    callback-to-last-caller). Such DIDs must NOT be served from the per-domain
+    dialplan cache, because the cached XML bakes in one caller's affinity result
+    and would mis-route every subsequent caller (or hang them up).
+
+    Matches the DID the same way _destination_to_extension_xml builds its regex,
+    so '+12812715519' / '12812715519' / '2812715519' all resolve to the row.
+    """
+    if not destination_number:
+        return False
+    from apps.destinations.models import Destination
+    digits = re.sub(r'\D', '', destination_number)
+    last10 = digits[-10:] if len(digits) >= 10 else digits
+    if not last10:
+        return False
+    for dest in Destination.objects.select_related('tenant').filter(
+        destination_enabled=True, destination_number__icontains=last10
+    ):
+        if dest.callback_to_last_caller:
+            return True
+        if dest.dest_type == 'custom_destination' and dest.dest_target_uuid:
+            try:
+                from apps.custom_destinations.models import CustomDestination
+                cd = CustomDestination.objects.only(
+                    'kind', 'callback_to_last_caller'
+                ).get(custom_destination_uuid=dest.dest_target_uuid)
+                if cd.kind == 'sticky_last_agent' or cd.callback_to_last_caller:
+                    return True
+            except Exception:
+                pass
+    return False
+
+
 def _affinity_lookup(tenant_id, caller_number: str) -> str:
     """
     Return the extension number (e.g. '404') for the most recent agent who
@@ -505,12 +541,32 @@ def _resolve_dest_action(dest, domain_name, preload=None):
             return [('transfer', f'{rg.ring_group_extension} XML {_tenant_ctx(rg)}')]
 
         elif dtype == 'voicemail':
+            # target may be an Extension UUID (deposit into that extension's
+            # mailbox) OR a Voicemail UUID (a standalone mailbox not tied to a
+            # registered extension, e.g. a DID that only collects messages).
+            # Custom Destinations store the Voicemail UUID, so try both.
             from apps.extensions.models import Extension
-            ext = _pl_get('extensions', target) or Extension.objects.get(extension_uuid=target)
+            ext = _pl_get('extensions', target) or Extension.objects.filter(
+                extension_uuid=target).first()
+            if ext:
+                mailbox = ext.voicemail_id or ext.extension
+            else:
+                from apps.voicemails.models import Voicemail
+                vm = Voicemail.objects.filter(voicemail_uuid=target).first()
+                if not vm:
+                    raise Exception(
+                        f'voicemail target {target} is neither an Extension '
+                        f'nor a Voicemail row')
+                mailbox = vm.voicemail_id
+                # A standalone mailbox's domain may differ from the requested
+                # domain_name; prefer the voicemail's own domain so the box is
+                # found in voicemail.conf.
+                if vm.domain_id and vm.domain:
+                    domain_name = vm.domain.domain_name
             return [
                 ('answer', ''),
                 ('sleep', '1000'),
-                ('voicemail', f'default {domain_name} {ext.extension}'),
+                ('voicemail', f'default {domain_name} {mailbox}'),
             ]
 
         elif dtype == 'time_condition':
@@ -569,21 +625,22 @@ def _resolve_dest_action(dest, domain_name, preload=None):
                 # was passed into the dialplan generator at request time.
                 code = cd.tenant.tenant_code if cd.tenant else None
                 ctx = f'default-{code}' if code else 'default'
-                fb_app, fb_data = 'hangup', 'NORMAL_CLEARING'
-                if cd.dest_type == 'extension' and cd.dest_target_uuid:
-                    from apps.extensions.models import Extension
-                    fb_ext = Extension.objects.filter(extension_uuid=cd.dest_target_uuid).only('extension').first()
-                    if fb_ext:
-                        fb_app, fb_data = 'transfer', f'{fb_ext.extension} XML {ctx}'
-                elif cd.dest_type == 'external' and cd.dest_external_number:
-                    fb_app, fb_data = 'transfer', f'{cd.dest_external_number} XML public'
+                # Fallback (no affinity row): resolve the custom destination's own
+                # dest_type the same way a non-sticky proxy would, so voicemail /
+                # ivr / ring_group fallbacks work — not just extension/external.
+                fb_actions = [('hangup', 'NORMAL_CLEARING')]
+                if cd.dest_type and cd.dest_type != 'hangup':
+                    try:
+                        fb_actions = _resolve_dest_action(cd, domain_name, preload=preload)
+                    except Exception:
+                        fb_actions = [('hangup', 'NORMAL_CLEARING')]
                 # caller_id_number is threaded in via preload context; fall back to ''
                 # when called from a path that doesn't have it (e.g. IVR timeout).
                 _cid = preload.get('caller_id_number', '') if preload else ''
                 sticky_ext = _affinity_lookup(cd.tenant_id, _cid)
                 if sticky_ext:
                     return [('transfer', f'{sticky_ext} XML {ctx}')]
-                return [(fb_app, fb_data)]
+                return fb_actions
             # Proxy: resolve the underlying destination type
             return _resolve_dest_action(cd, domain_name, preload=preload)
 

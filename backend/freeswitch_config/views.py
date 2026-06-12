@@ -18,6 +18,7 @@ from .generators import (
     generate_configuration_xml,
     not_found_xml,
     _resolve_domain,
+    did_is_caller_dynamic,
 )
 import logging
 
@@ -75,16 +76,23 @@ class XmlCurlView(View):
                 # WebRTC/public-entry calls lose their extension/outbound routes.
                 user_context = request.POST.get('variable_user_context', '')
                 keep_contexts = [c for c in (req_context, user_context) if c]
+                # Caller-dependent DIDs (sticky-last-agent / callback-to-last-caller)
+                # must be resolved per-call: their routing depends on THIS caller's
+                # affinity row. A per-domain cache would bake in one caller's result
+                # and mis-route/hang up everyone else, so bypass the cache entirely.
+                dynamic = did_is_caller_dynamic(destination)
                 cache_key = f'dialplan:xml:{domain}:{":".join(keep_contexts)}'
-                xml = cache.get(cache_key)
+                xml = None if dynamic else cache.get(cache_key)
                 if xml is None:
                     xml = generate_dialplan_xml(domain, destination, caller_id, caller_name,
                                                 requested_context=keep_contexts)
-                    try:
-                        cache.set(cache_key, xml, timeout=3600)
-                    except Exception:
-                        pass  # Redis unavailable — serve uncached, don't crash
-                    logger.debug('Dialplan cache MISS domain=%s', domain)
+                    if not dynamic:
+                        try:
+                            cache.set(cache_key, xml, timeout=3600)
+                        except Exception:
+                            pass  # Redis unavailable — serve uncached, don't crash
+                    logger.debug('Dialplan cache %s domain=%s dest=%s',
+                                 'BYPASS' if dynamic else 'MISS', domain, destination)
                 else:
                     logger.debug('Dialplan cache HIT domain=%s', domain)
             elif section == 'configuration':
