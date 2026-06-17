@@ -5,12 +5,15 @@ from .models import Extension, ExtensionUser
 class ExtensionListSerializer(serializers.ModelSerializer):
     domain_name = serializers.CharField(source='domain.domain_name', read_only=True)
     tenant_code = serializers.CharField(source='tenant.tenant_code', read_only=True)
+    outbound_did_number = serializers.CharField(source='outbound_did.destination_number', read_only=True, default=None)
+    outbound_did_name = serializers.CharField(source='outbound_did.destination_name', read_only=True, default=None)
 
     class Meta:
         model = Extension
         fields = ['extension_uuid', 'extension', 'number_alias', 'effective_caller_id_name',
                   'effective_caller_id_number', 'voicemail_enabled', 'enabled', 'description',
-                  'sip_username', 'password', 'domain_name', 'tenant_code']
+                  'sip_username', 'password', 'domain_name', 'tenant_code',
+                  'outbound_did', 'outbound_did_number', 'outbound_did_name']
 
 
 class ExtensionSerializer(serializers.ModelSerializer):

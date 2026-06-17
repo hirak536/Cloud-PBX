@@ -11,11 +11,13 @@ from .serializers import ExtensionSerializer, ExtensionListSerializer, Extension
 
 
 class ExtensionViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
-    queryset = Extension.objects.select_related('tenant', 'domain')
+    queryset = Extension.objects.select_related('tenant', 'domain', 'outbound_did')
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['enabled', 'voicemail_enabled', 'call_group', 'user_context', 'extension']
-    search_fields = ['extension', 'number_alias', 'effective_caller_id_name', 'effective_caller_id_number']
+    search_fields = ['extension', 'number_alias', 'effective_caller_id_name',
+                     'effective_caller_id_number', 'description',
+                     'outbound_did__destination_number', 'outbound_did__destination_name']
     ordering_fields = ['extension', 'effective_caller_id_name', 'insert_date']
     ordering = ['extension']
 

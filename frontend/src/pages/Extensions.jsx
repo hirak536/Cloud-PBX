@@ -1558,7 +1558,8 @@ export default function Extensions() {
     finally { setRgLoading(false) }
   }, [])
 
-  const listParams = useMemo(() => (search ? { search } : {}), [search])
+  const debouncedSearch = useDebounce(search, 300)
+  const listParams = useMemo(() => (debouncedSearch ? { search: debouncedSearch } : {}), [debouncedSearch])
   const {
     rows, total, loading, loadingMore, hasMore, loadMore, reload: load,
   } = useInfiniteList(extensionsApi.list, { params: listParams, pageSize })
@@ -1814,6 +1815,7 @@ export default function Extensions() {
         Extension:      r.extension || '',
         Name:           r.effective_caller_id_name || '',
         'SIP Username': r.sip_username || r.extension || '',
+        DID:            r.outbound_did_number ? `${r.outbound_did_number}${r.outbound_did_name ? ` — ${r.outbound_did_name}` : ''}` : '',
         Description:    r.description || '',
         Password:       r.password || '',
         'Voicemail Enabled':    r.voicemail_enabled !== false ? 'Yes' : 'No',
@@ -1846,7 +1848,7 @@ export default function Extensions() {
         <div className="relative flex-1 max-w-xs">
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Search extensions…"
+            placeholder="Search by extension, name, description or DID…"
             className="pl-8"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -1898,6 +1900,7 @@ export default function Extensions() {
                 <TableHead>Extension</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>SIP Username</TableHead>
+                <TableHead>DID</TableHead>
                 <TableHead>Description</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-20" />
@@ -1907,12 +1910,12 @@ export default function Extensions() {
               {loading ? (
                 [...Array(6)].map((_, i) => (
                   <TableRow key={i}>
-                    {[...Array(6)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
+                    {[...Array(7)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
                   </TableRow>
                 ))
               ) : rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">No extensions found.</TableCell>
+                  <TableCell colSpan={7} className="text-center py-10 text-muted-foreground">No extensions found.</TableCell>
                 </TableRow>
               ) : (
                 rows.map((row) => {
@@ -1922,6 +1925,11 @@ export default function Extensions() {
                       <TableCell className="font-mono font-semibold">{row.extension}</TableCell>
                       <TableCell>{row.effective_caller_id_name || '—'}</TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">{row.sip_username || row.extension}</TableCell>
+                      <TableCell className="text-sm">
+                        {row.outbound_did_number
+                          ? <span className="font-mono">{row.outbound_did_number}{row.outbound_did_name ? ` — ${row.outbound_did_name}` : ''}</span>
+                          : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
                       <TableCell className="text-muted-foreground text-sm">{row.description || '—'}</TableCell>
                       <TableCell>
                         <ExtStatusBadge

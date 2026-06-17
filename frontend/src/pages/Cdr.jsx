@@ -452,9 +452,10 @@ function LegsTable({ aLeg }) {
   if (legs === null) {
     return <div className="px-4 py-3 text-xs text-muted-foreground">Loading legs…</div>
   }
-  if (legs.length === 0) {
-    return <div className="px-4 py-3 text-xs text-muted-foreground">No per-member legs recorded for this call.</div>
-  }
+  // No B-legs means nothing was rung/bridged (e.g. a call that went straight to
+  // voicemail). The A-leg itself carries the call's outcome, so show it as the
+  // single row instead of an empty-state message.
+  const rows = legs.length === 0 ? [aLeg] : legs
 
   return (
     <div className="px-2 py-2">
@@ -471,7 +472,7 @@ function LegsTable({ aLeg }) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {legs.map(leg => (
+          {rows.map(leg => (
             <TableRow key={leg.xml_cdr_uuid} className="hover:bg-muted/50">
               <TableCell className="text-xs whitespace-nowrap">{formatDate(leg.start_stamp)}</TableCell>
               <TableCell className="text-xs">

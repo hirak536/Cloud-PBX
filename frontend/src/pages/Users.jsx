@@ -1,5 +1,5 @@
 import { useDebounce } from '@/hooks/useDebounce'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useSelector } from 'react-redux'
 import { selectTenant, selectAuth } from '@/store'
 import { roleOf, creatableRoles, GRANTABLE_PAGES, GRANTABLE_PATHS } from '@/lib/permissions'
@@ -15,7 +15,9 @@ import { Select } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useInfiniteList } from '@/hooks/useInfiniteList'
 import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
-import { Plus, Pencil, Trash2, Search, Loader2, ShieldCheck, Shield, User2, KeyRound, Check, Eye, EyeOff, Wand2, Mail } from 'lucide-react'
+import ExtensionPicker from '@/components/ExtensionPicker'
+import { Plus, Pencil, Trash2, Search, Loader2, ShieldCheck, Shield, User2, KeyRound, Check, Eye, EyeOff, Wand2, Mail, ChevronDown, X } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 const ROLES = [
   { value: 'superuser', label: 'Superuser', description: 'Full access to all tenants' },
@@ -101,6 +103,16 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
   const [extensions, setExtensions]   = useState([])
   const [dids, setDids]               = useState([])
   const [loadingOpts, setLoadingOpts] = useState(false)
+  const [didSearch, setDidSearch]     = useState('')
+  const [didOpen, setDidOpen]         = useState(false)
+  const didBoxRef                     = useRef(null)
+
+  useEffect(() => {
+    if (!didOpen) return
+    const h = (e) => { if (!didBoxRef.current?.contains(e.target)) setDidOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [didOpen])
   const [showPassword, setShowPassword] = useState(false)
   const [voiceEnabled, setVoiceEnabled] = useState(null) // null = unknown (still loading)
   const [company, setCompany] = useState(null)
@@ -246,6 +258,8 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
       is_active:    u.is_active ?? true,
     })
     setFormError('')
+    setDidSearch('')
+    setDidOpen(false)
     setDialogOpen(true)
     setLoadingOpts(true)
     try {
@@ -290,6 +304,8 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
     setEditUser(null)
     setForm({ ...EMPTY_UC_FORM, userType: allowedUcTypes.length === 1 ? allowedUcTypes[0] : '' })
     setFormError('')
+    setDidSearch('')
+    setDidOpen(false)
     setDialogOpen(true)
     setLoadingOpts(true)
     try {
@@ -708,17 +724,15 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
                 : extensions.length === 0
                   ? <p className="text-sm text-muted-foreground">No extensions available for this tenant.</p>
                   : (
-                    <Select
+                    <ExtensionPicker
+                      extensions={extensions}
                       value={form.extensionId}
-                      onChange={e => setForm(p => ({ ...p, extensionId: e.target.value }))}
-                    >
-                      <option value="">Select extension</option>
-                      {extensions.map(ext => (
-                        <option key={ext.id ?? ext.extension_uuid} value={ext.id ?? ext.extension_uuid}>
-                          {ext.extension}{ext.effective_caller_id_name ? ` — ${ext.effective_caller_id_name}` : ''}
-                        </option>
-                      ))}
-                    </Select>
+                      onChange={(uuid) => {
+                        const ext = extensions.find(e => String(e.extension_uuid) === String(uuid))
+                        setForm(p => ({ ...p, extensionId: ext ? String(ext.id ?? ext.extension_uuid) : '' }))
+                      }}
+                      placeholder="Select extension"
+                    />
                   )}
             </div>}
 
@@ -729,31 +743,81 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
                 ? <Skeleton className="h-24 w-full" />
                 : dids.length === 0
                   ? <p className="text-sm text-muted-foreground">No DIDs available for this tenant.</p>
-                  : (
-                    <div className="border rounded-md max-h-40 overflow-y-auto divide-y">
-                      {dids.map(did => {
-                        const checked = form.didIds.includes(did.destination_uuid)
-                        return (
-                          <label
-                            key={did.destination_uuid}
-                            className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/50 select-none"
-                          >
+                  : (() => {
+                    const q = didSearch.trim().toLowerCase()
+                    const filteredDids = q
+                      ? dids.filter(d =>
+                          String(d.destination_number ?? '').toLowerCase().includes(q) ||
+                          String(d.destination_name ?? '').toLowerCase().includes(q))
+                      : dids
+                    const selectedCount = form.didIds.length
+                    return (
+                    <div ref={didBoxRef} className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setDidOpen(o => !o)}
+                        className={cn(
+                          'flex h-9 w-full items-center justify-between gap-2 rounded-xl border border-input bg-background px-3 py-1 text-sm shadow-sm',
+                          'hover:border-ring/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors',
+                        )}
+                      >
+                        <span className={cn('truncate', selectedCount === 0 && 'text-muted-foreground')}>
+                          {selectedCount === 0 ? 'Select DIDs' : `${selectedCount} DID${selectedCount > 1 ? 's' : ''} selected`}
+                        </span>
+                        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      </button>
+
+                      {didOpen && (
+                        <div className="absolute z-50 w-full mt-1 rounded-xl border border-border/60 bg-card shadow-2xl shadow-black/10 animate-dropdown-in">
+                          <div className="flex items-center gap-2 border-b px-3 py-2">
+                            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                             <input
-                              type="checkbox"
-                              className="h-4 w-4 shrink-0 rounded border-input accent-primary"
-                              checked={checked}
-                              onChange={() => toggleDid(did.destination_uuid)}
+                              autoFocus
+                              value={didSearch}
+                              onChange={e => setDidSearch(e.target.value)}
+                              placeholder="Search DIDs…"
+                              className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
                             />
-                            <span className="text-sm font-mono">{did.destination_number}</span>
-                            {did.destination_name && (
-                              <span className="text-xs text-muted-foreground truncate">{did.destination_name}</span>
+                            {didSearch && (
+                              <button type="button" onClick={() => setDidSearch('')}>
+                                <X className="h-3 w-3 text-muted-foreground" />
+                              </button>
                             )}
-                            {checked && <Check className="h-3.5 w-3.5 text-primary ml-auto shrink-0" />}
-                          </label>
-                        )
-                      })}
+                          </div>
+                          <div className="max-h-48 overflow-y-auto p-1">
+                            {filteredDids.length === 0 ? (
+                              <p className="px-3 py-3 text-sm text-muted-foreground text-center">No DIDs found</p>
+                            ) : filteredDids.map(did => {
+                              const checked = form.didIds.includes(did.destination_uuid)
+                              return (
+                                <button
+                                  key={did.destination_uuid}
+                                  type="button"
+                                  onClick={() => toggleDid(did.destination_uuid)}
+                                  className={cn(
+                                    'w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-muted text-left transition-colors',
+                                    checked && 'bg-muted',
+                                  )}
+                                >
+                                  <span className={cn(
+                                    'flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+                                    checked ? 'bg-primary border-primary' : 'border-input',
+                                  )}>
+                                    {checked && <Check className="h-3 w-3 text-primary-foreground" />}
+                                  </span>
+                                  <span className="text-sm font-mono">{did.destination_number}</span>
+                                  {did.destination_name && (
+                                    <span className="text-xs text-muted-foreground truncate">{did.destination_name}</span>
+                                  )}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  )}
+                    )
+                  })()}
             </div>
           </div>
 
