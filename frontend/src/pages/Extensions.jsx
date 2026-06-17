@@ -21,7 +21,6 @@ import {
   Plus, Pencil, Trash2, Search, RefreshCw, Loader2,
   RotateCcw, AlertCircle, CheckCircle2, ChevronDown, Check, Copy, Layers, Download,
 } from 'lucide-react'
-import * as XLSX from 'xlsx'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -1798,6 +1797,8 @@ export default function Extensions() {
   const handleExport = async () => {
     setExporting(true)
     try {
+      // Lazy-load the heavy xlsx lib so it stays out of the main bundle.
+      const XLSX = await import('xlsx')
       // Page through the API until every row is collected — the backend's default
       // pagination caps page_size at 25 and ignores larger values, so we must loop.
       const list = []

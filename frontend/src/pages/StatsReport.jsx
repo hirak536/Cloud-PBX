@@ -12,9 +12,6 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
-import * as XLSX from 'xlsx'
-import jsPDF from 'jspdf'
-import autoTable from 'jspdf-autotable'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -395,7 +392,9 @@ function buildDidSheetData(rows) {
   return [headers, ...body]
 }
 
-function exportExcel(data, rangeLabel) {
+async function exportExcel(data, rangeLabel) {
+  // Lazy-load the heavy xlsx lib so it stays out of the main bundle.
+  const XLSX = await import('xlsx')
   const wb = XLSX.utils.book_new()
 
   const uaData = buildUaSheetData(data.user_activity ?? [])
@@ -412,7 +411,12 @@ function exportExcel(data, rangeLabel) {
   toast.success('Excel file downloaded')
 }
 
-function exportPdf(data, rangeLabel) {
+async function exportPdf(data, rangeLabel) {
+  // Lazy-load the heavy pdf libs so they stay out of the main bundle.
+  const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ])
   const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a3' })
 
   doc.setFontSize(14)

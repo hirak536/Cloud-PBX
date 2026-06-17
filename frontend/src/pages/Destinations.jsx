@@ -17,7 +17,6 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { Plus, Pencil, Trash2, Search, Loader2, X, ChevronDown, PhoneForwarded, PhoneOff, Layers, AlertCircle, CheckCircle2, Sparkles, History, Download } from 'lucide-react'
 import { AffinityPanel } from './CustomDestinations'
-import * as XLSX from 'xlsx'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -1202,6 +1201,8 @@ export default function Destinations() {
   const handleExport = async () => {
     setExporting(true)
     try {
+      // Lazy-load the heavy xlsx lib so it stays out of the main bundle.
+      const XLSX = await import('xlsx')
       // Page through the API until every row is collected — the backend's default
       // pagination caps page_size at 25 and ignores larger values, so we must loop.
       const list = []
