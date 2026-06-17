@@ -63,3 +63,7 @@ sip_migration
 smtp_test.py
 docs/multi-datacenter-replication.md
 docs/two-server-sync-build.md
+debug_affinity.py
+debug_did_2812715519.py
+debug_dynamic.py
+debug_vm500.py

@@ -4,8 +4,9 @@ from .models import XmlCdr
 
 
 class XmlCdrSerializer(serializers.ModelSerializer):
-    domain_name = serializers.CharField(source='domain.domain_name', read_only=True)
-    tenant_code = serializers.CharField(source='tenant.tenant_code', read_only=True)
+    # Read from the denormalized columns (no FK join) so this works once CDRs
+    # live in a separate DB. The fields are plain model fields now, so they're
+    # serialized automatically via fields='__all__'; no source= needed.
     status = serializers.SerializerMethodField()
 
     def get_status(self, obj):

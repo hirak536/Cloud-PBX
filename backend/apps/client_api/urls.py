@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import path, re_path
 from . import views
 
 # Superuser management endpoints (JWT auth)
@@ -28,7 +28,13 @@ client_patterns = [
     path('<uuid:tenant_uuid>/cdr/<uuid:xml_cdr_uuid>/', views.ClientCDRView.as_view(), name='client-cdr-detail'),
     path('<uuid:tenant_uuid>/fax/', views.ClientFaxView.as_view(), name='client-fax'),
     path('<uuid:tenant_uuid>/fax/files/', views.ClientFaxFileView.as_view(), name='client-fax-files'),
-    path('<uuid:tenant_uuid>/fax/files/<uuid:fax_file_uuid>/', views.ClientFaxFileDetailView.as_view(), name='client-fax-file-detail'),
+    # Trailing slash optional: external API clients frequently omit it. Without this,
+    # APPEND_SLASH issues a 301 redirect, and a 301 on DELETE/POST loses the method/body
+    # so the request silently fails. Matching both forms directly avoids the redirect.
+    re_path(r'^(?P<tenant_uuid>[0-9a-f-]{36})/fax/files/(?P<fax_file_uuid>[0-9a-f-]{36})/?$',
+            views.ClientFaxFileDetailView.as_view(), name='client-fax-file-detail'),
+    re_path(r'^(?P<tenant_uuid>[0-9a-f-]{36})/fax/files/(?P<fax_file_uuid>[0-9a-f-]{36})/cancel/?$',
+            views.ClientFaxFileCancelView.as_view(), name='client-fax-file-cancel'),
     path('<uuid:tenant_uuid>/fax/files/<uuid:fax_file_uuid>/download/', views.ClientFaxFileDownloadView.as_view(), name='client-fax-file-download'),
     path('<uuid:tenant_uuid>/fax/quick-send/', views.ClientFaxQuickSendView.as_view(), name='client-fax-send'),
     path('<uuid:tenant_uuid>/fax/<uuid:fax_uuid>/', views.ClientFaxView.as_view(), name='client-fax-detail'),

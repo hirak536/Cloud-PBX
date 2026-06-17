@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { cdr as cdrApi } from '@/api'
 import { useInfiniteList } from '@/hooks/useInfiniteList'
 import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
@@ -9,7 +9,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatDuration, formatDate } from '@/lib/utils'
-import { Search, Download, Phone, PhoneIncoming, PhoneOutgoing } from 'lucide-react'
+import { Search, Download, Phone, PhoneIncoming, PhoneOutgoing, ChevronRight, ChevronDown, Loader2 } from 'lucide-react'
 
 function DispositionBadge({ status, hangupCause }) {
   const s = status || hangupCause
@@ -33,8 +33,65 @@ function DirectionBadge({ direction, context }) {
   return <span className="flex items-center gap-1 text-xs text-green-600"><PhoneIncoming className="h-3.5 w-3.5" /> In</span>
 }
 
+function LegsRow({ row, colSpan }) {
+  // Lazy-load the per-member leg breakdown for this call (e.g. each extension a
+  // ring group forked to). Fetched once on first expand, then cached in state.
+  const [state, setState] = useState({ loading: true, legs: null, error: null })
+
+  useEffect(() => {
+    let alive = true
+    cdrApi.legs(row.xml_cdr_uuid)
+      .then(res => alive && setState({ loading: false, legs: res.data || [], error: null }))
+      .catch(() => alive && setState({ loading: false, legs: [], error: 'Failed to load legs' }))
+    return () => { alive = false }
+  }, [row.xml_cdr_uuid])
+
+  return (
+    <TableRow className="bg-muted/30 hover:bg-muted/30">
+      <TableCell />
+      <TableCell colSpan={colSpan - 1} className="py-2">
+        {state.loading ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading legs…
+          </div>
+        ) : state.error ? (
+          <div className="text-xs text-destructive">{state.error}</div>
+        ) : state.legs.length === 0 ? (
+          <div className="text-xs text-muted-foreground">No per-member legs recorded for this call.</div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="h-7 text-xs">Member</TableHead>
+                <TableHead className="h-7 text-xs text-right">Duration</TableHead>
+                <TableHead className="h-7 text-xs text-right">Talk Time</TableHead>
+                <TableHead className="h-7 text-xs">Disposition</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {state.legs.map(leg => (
+                <TableRow key={leg.xml_cdr_uuid}>
+                  <TableCell className="text-xs font-medium">
+                    {row.destination_number || '—'} <span className="text-muted-foreground">»</span> {leg.extension_number || leg.destination_number || '—'}
+                  </TableCell>
+                  <TableCell className="text-right text-xs">{formatDuration(leg.duration)}</TableCell>
+                  <TableCell className="text-right text-xs">{formatDuration(leg.billsec)}</TableCell>
+                  <TableCell>
+                    <DispositionBadge status={leg.status} hangupCause={leg.hangup_cause} />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </TableCell>
+    </TableRow>
+  )
+}
+
 export default function AdminCdr() {
   const [search, setSearch] = useState('')
+  const [expanded, setExpanded] = useState(() => new Set())
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
@@ -59,6 +116,14 @@ export default function AdminCdr() {
     hasMore,
     loadMore,
   } = useInfiniteList(cdrApi.list, { params, pageSize })
+
+  function toggleExpand(id) {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
 
   async function handleExport() {
     setExporting(true)
@@ -136,6 +201,7 @@ export default function AdminCdr() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-8" />
                 <TableHead>Start</TableHead>
                 <TableHead>Caller ID</TableHead>
                 <TableHead>Source</TableHead>
@@ -151,7 +217,7 @@ export default function AdminCdr() {
               {loading
                 ? Array.from({ length: 10 }).map((_, i) => (
                     <TableRow key={i}>
-                      {Array.from({ length: 9 }).map((_, j) => (
+                      {Array.from({ length: 10 }).map((_, j) => (
                         <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
                       ))}
                     </TableRow>
@@ -159,13 +225,18 @@ export default function AdminCdr() {
                 : records.length === 0
                 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center text-muted-foreground py-10">
+                      <TableCell colSpan={10} className="text-center text-muted-foreground py-10">
                         No records found
                       </TableCell>
                     </TableRow>
                   )
-                : records.map(row => (
-                    <TableRow key={row.xml_cdr_uuid}>
+                : records.flatMap(row => [
+                    <TableRow key={row.xml_cdr_uuid} className="cursor-pointer" onClick={() => toggleExpand(row.xml_cdr_uuid)}>
+                      <TableCell className="w-8 text-muted-foreground">
+                        {expanded.has(row.xml_cdr_uuid)
+                          ? <ChevronDown className="h-4 w-4" />
+                          : <ChevronRight className="h-4 w-4" />}
+                      </TableCell>
                       <TableCell className="text-xs whitespace-nowrap">
                         {row.start_stamp ? formatDate(row.start_stamp) : '—'}
                       </TableCell>
@@ -191,8 +262,11 @@ export default function AdminCdr() {
                       <TableCell>
                         <DispositionBadge status={row.status} hangupCause={row.hangup_cause} />
                       </TableCell>
-                    </TableRow>
-                  ))
+                    </TableRow>,
+                    expanded.has(row.xml_cdr_uuid) && (
+                      <LegsRow key={`${row.xml_cdr_uuid}-legs`} row={row} colSpan={10} />
+                    ),
+                  ])
               }
             </TableBody>
           </Table>

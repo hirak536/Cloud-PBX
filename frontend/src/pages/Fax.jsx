@@ -18,7 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import {
   Plus, Search, Loader2, Send, Download,
   ArrowUpRight, ArrowDownLeft, AlertCircle, Eye, RefreshCw,
-  Pencil, Trash2, Inbox,
+  Pencil, Trash2, Inbox, Ban,
 } from 'lucide-react'
 
 const STATUS_VARIANT = { sent: 'success', received: 'success', pending: 'warning', failed: 'destructive' }
@@ -476,6 +476,19 @@ function FaxHistory() {
 
   useEffect(() => { load() }, [load])
 
+  const [cancelling, setCancelling] = useState(null)
+  const handleCancel = async (f) => {
+    if (!window.confirm('Cancel this pending fax? It will be marked failed and the transmission stopped.')) return
+    setCancelling(f.fax_file_uuid)
+    try {
+      await faxApi.cancelFile(f.fax_file_uuid)
+      toast.success('Fax cancelled')
+      load()
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || 'Could not cancel fax')
+    } finally { setCancelling(null) }
+  }
+
   const openPreview = (f) => { setPreviewFile(f); setPreviewOpen(true) }
 
   return (
@@ -591,6 +604,15 @@ function FaxHistory() {
                         </TableCell>
                         <TableCell>
                           <div className="flex justify-end gap-1">
+                            {f.fax_file_status === 'pending' && (
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                                title="Cancel pending fax" disabled={cancelling === f.fax_file_uuid}
+                                onClick={() => handleCancel(f)}>
+                                {cancelling === f.fax_file_uuid
+                                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  : <Ban className="h-3.5 w-3.5" />}
+                              </Button>
+                            )}
                             {f.fax_file_path && (
                               <Button variant="ghost" size="icon" className="h-7 w-7" title="Preview" onClick={() => openPreview(f)}>
                                 <Eye className="h-3.5 w-3.5" />

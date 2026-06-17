@@ -330,18 +330,24 @@ class ClientCDRView(APIView):
             Q(last_app='system', last_arg__contains='voicemail-messages/ingest') |
             Q(last_app='phrase', last_arg__contains='voicemail')
         )
+        # Ring-no-answer (NORMAL_CLEARING + 0 billsec) is classified NO_ANSWER/MISSED by
+        # ClientCDRSerializer.get_status, so the status filters must treat it the same way
+        # — count it as no-answer and keep it out of FAILED. Keeps the three status
+        # definitions (serializer, status_counts, this filter) in agreement.
+        _ring_no_answer_Q = Q(hangup_cause='NORMAL_CLEARING') & Q(billsec=0)
+        _any_no_answer_Q = Q(hangup_cause__in=self._NO_ANSWER_CAUSES) | _ring_no_answer_Q
         if status_filter == 'ANSWERED':
             qs = qs.filter(billsec__gt=0).exclude(_vm_Q)
         elif status_filter == 'BUSY':
             qs = qs.filter(hangup_cause='USER_BUSY')
         elif status_filter == 'NO_ANSWER':
-            qs = qs.filter(hangup_cause__in=self._NO_ANSWER_CAUSES).exclude(missed_call=True)
+            qs = qs.filter(_any_no_answer_Q).exclude(billsec__gt=0).exclude(missed_call=True).exclude(_vm_Q)
         elif status_filter == 'MISSED':
-            qs = qs.filter(hangup_cause__in=self._NO_ANSWER_CAUSES, missed_call=True).exclude(_vm_Q)
+            qs = qs.filter(_any_no_answer_Q, missed_call=True).exclude(billsec__gt=0).exclude(_vm_Q)
         elif status_filter == 'WENT_TO_VOICEMAIL':
             qs = qs.filter(_vm_Q)
         elif status_filter == 'FAILED':
-            qs = qs.filter(hangup_cause__in=self._FAILED_CAUSES)
+            qs = qs.filter(hangup_cause__in=self._FAILED_CAUSES).exclude(_any_no_answer_Q).exclude(billsec__gt=0).exclude(_vm_Q)
 
         missed = p.get('missed_call')
         if missed is not None:
@@ -430,15 +436,21 @@ class ClientCDRView(APIView):
             'NO_ANSWER', 'NO_USER_RESPONSE', 'SUBSCRIBER_ABSENT',
             'ALLOTTED_TIMEOUT', 'USER_NOT_REGISTERED', 'ORIGINATOR_CANCEL',
         ))
+        # Ring-no-answer: a NORMAL_CLEARING teardown with no talk time is a no-answer,
+        # not a failure (mirrors ClientCDRSerializer.get_status). Must be folded into the
+        # NO_ANSWER/MISSED buckets and excluded from FAILED, or the per-row status and the
+        # status_counts disagree (count short by one, FAILED over by one).
+        _ring_no_answer_Q = Q(hangup_cause='NORMAL_CLEARING') & Q(billsec=0)
+        _any_no_answer_Q = _no_answer_Q | _ring_no_answer_Q
 
         status_counts = counts_qs.aggregate(
             ANSWERED=Count('xml_cdr_uuid', filter=Q(billsec__gt=0) & ~_went_to_vm_Q),
             WENT_TO_VOICEMAIL=Count('xml_cdr_uuid', filter=_went_to_vm_Q),
             BUSY=Count('xml_cdr_uuid', filter=Q(hangup_cause='USER_BUSY')),
-            NO_ANSWER=Count('xml_cdr_uuid', filter=_no_answer_Q & ~Q(missed_call=True) & ~_went_to_vm_Q),
-            MISSED=Count('xml_cdr_uuid', filter=_no_answer_Q & Q(missed_call=True) & ~_went_to_vm_Q),
+            NO_ANSWER=Count('xml_cdr_uuid', filter=_any_no_answer_Q & ~Q(missed_call=True) & ~_went_to_vm_Q & ~Q(billsec__gt=0)),
+            MISSED=Count('xml_cdr_uuid', filter=_any_no_answer_Q & Q(missed_call=True) & ~_went_to_vm_Q & ~Q(billsec__gt=0)),
             FAILED=Count('xml_cdr_uuid', filter=(
-                ~_went_to_vm_Q & ~Q(billsec__gt=0) & ~Q(hangup_cause='USER_BUSY') & ~_no_answer_Q
+                ~_went_to_vm_Q & ~Q(billsec__gt=0) & ~Q(hangup_cause='USER_BUSY') & ~_any_no_answer_Q
             )),
         )
 
@@ -863,6 +875,53 @@ class ClientFaxQuickSendView(APIView):
         }, status=resp_status)
 
 
+def _cancel_pending_fax(tenant, fax_file_uuid, enforce_pending=True, _ff=None):
+    """Cancel a pending fax: tear down its FreeSWITCH channel and mark it terminal
+    so poll_fax_result bails. Returns the FaxFile. Shared by cancel + delete.
+
+    enforce_pending=True raises if the fax is not pending (explicit cancel intent);
+    False is used by delete, which already gated on pending and just wants teardown.
+    """
+    if _ff is not None:
+        ff = _ff
+    else:
+        try:
+            ff = FaxFile.objects.get(fax_file_uuid=fax_file_uuid, tenant=tenant)
+        except FaxFile.DoesNotExist:
+            raise NotFound('Fax file not found.')
+
+    if ff.fax_file_status != 'pending':
+        if enforce_pending:
+            raise ValidationError(
+                f'Cannot cancel a fax that is already "{ff.fax_file_status}". '
+                'Only pending faxes can be cancelled.'
+            )
+        return ff
+
+    if ff.channel_uuid:
+        try:
+            from esl.client import get_esl_client
+            get_esl_client().hangup(ff.channel_uuid, 'ORIGINATOR_CANCEL')
+        except Exception as exc:
+            logger.warning('Fax cancel: ESL hangup failed for %s: %s', ff.channel_uuid, exc)
+
+    ff.fax_file_status = 'failed'
+    ff.save(update_fields=['fax_file_status'])
+    logger.info('Fax %s cancelled (tenant %s)', fax_file_uuid, getattr(tenant, 'tenant_uuid', tenant))
+    return ff
+
+
+class ClientFaxFileCancelView(APIView):
+    authentication_classes = [TenantAPIKeyAuthentication]
+    permission_classes = [ClientAPIPermission]
+
+    def post(self, request, tenant_uuid, fax_file_uuid):
+        tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
+        ff = _cancel_pending_fax(tenant, fax_file_uuid, enforce_pending=True)
+        ctx = {'request': request, 'tenant_uuid': tenant_uuid}
+        return Response(ClientFaxFileSerializer(ff, context=ctx).data)
+
+
 class ClientFaxFileDetailView(APIView):
     authentication_classes = [TenantAPIKeyAuthentication]
     permission_classes = [ClientAPIPermission]
@@ -875,6 +934,37 @@ class ClientFaxFileDetailView(APIView):
             raise NotFound('Fax file not found.')
         ctx = {'request': request, 'tenant_uuid': tenant_uuid}
         return Response(ClientFaxFileSerializer(ff, context=ctx).data)
+
+    def post(self, request, tenant_uuid, fax_file_uuid):
+        """Cancel a fax that is still pending. No-op error once it has reached a
+        terminal status (sent/received/failed) since the transmission is done."""
+        tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
+        ff = _cancel_pending_fax(tenant, fax_file_uuid, enforce_pending=True)
+        ctx = {'request': request, 'tenant_uuid': tenant_uuid}
+        return Response(ClientFaxFileSerializer(ff, context=ctx).data)
+
+    def delete(self, request, tenant_uuid, fax_file_uuid):
+        """Delete a fax file record and its on-disk artifact. A pending fax is
+        cancelled (channel torn down) before deletion so we don't orphan a live send."""
+        tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
+        try:
+            ff = FaxFile.objects.get(fax_file_uuid=fax_file_uuid, tenant=tenant)
+        except FaxFile.DoesNotExist:
+            raise NotFound('Fax file not found.')
+
+        if ff.fax_file_status == 'pending':
+            _cancel_pending_fax(tenant, fax_file_uuid, enforce_pending=False, _ff=ff)
+
+        file_path = ff.fax_file_path
+        if file_path and os.path.isfile(file_path):
+            try:
+                os.remove(file_path)
+            except OSError as exc:
+                logger.warning('Fax delete: could not remove file %s: %s', file_path, exc)
+
+        ff.delete()
+        logger.info('Fax %s deleted by client API (tenant %s)', fax_file_uuid, tenant_uuid)
+        return Response({'status': 'deleted'}, status=status.HTTP_200_OK)
 
 
 class ClientFaxFileDownloadView(APIView):

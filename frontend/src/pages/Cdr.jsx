@@ -18,6 +18,7 @@ import {
   Phone, PhoneIncoming, PhoneOutgoing,
   Voicemail, GitBranch, Clock, Mic,
   PhoneCall, PhoneMissed, PhoneOff,
+  Network, FileDown, Info,
 } from 'lucide-react'
 
 // ─── Leg grouping ─────────────────────────────────────────────────────────────
@@ -104,7 +105,13 @@ function isVoicemailCall(last_app, last_arg) {
 }
 
 // ─── Call flow timeline ───────────────────────────────────────────────────────
-function buildCallFlow(row, vmName, bLeg, ivrMap = {}, rgMap = {}, whMap = {}) {
+// Strip the tenant suffix ("115-IHS" -> "115") for display.
+function memberLabel(b) {
+  const raw = b.extension_number || b.destination_number || ''
+  return raw.replace(/-[^-]+$/, '') || '?'
+}
+
+function buildCallFlow(row, vmName, bLeg, ivrMap = {}, rgMap = {}, whMap = {}, bLegs = []) {
   const steps = []
 
   steps.push({
@@ -132,6 +139,21 @@ function buildCallFlow(row, vmName, bLeg, ivrMap = {}, rgMap = {}, whMap = {}) {
       detail: `Ring time: ${row.waitsec}s`,
       time: null,
       color: 'text-amber-500',
+    })
+  }
+
+  // Ring-group / hunt fan-out: more than one member was dialed for this call.
+  if (bLegs.length > 1) {
+    const answered = bLegs.find(b => b.billsec > 0)
+    const detail = bLegs
+      .map(b => `${memberLabel(b)} (${b.billsec > 0 ? `${formatDuration(b.billsec)} ✓` : (b.hangup_cause || 'no answer').replace(/_/g, ' ').toLowerCase()})`)
+      .join(', ')
+    steps.push({
+      icon: PhoneCall,
+      label: `Rang ${bLegs.length} members${answered ? ` — ${memberLabel(answered)} answered` : ' — no answer'}`,
+      detail,
+      time: null,
+      color: answered ? 'text-green-500' : 'text-amber-500',
     })
   }
 
@@ -316,12 +338,216 @@ function LegDetail({ row, label }) {
   )
 }
 
+// ─── Per-leg SIP / PCAP viewer ─────────────────────────────────────────────────
+// Renders the tshark-style numbered frame summary per leg (First Leg, Second
+// Leg 0..N), sliced from the rolling SIP capture by Call-ID. Each leg offers a
+// "Download .pcap" of just that dialog (openable in sngrep/Wireshark).
+function FrameTable({ frames }) {
+  return (
+    <pre className="text-[11px] leading-snug font-mono overflow-x-auto bg-background/60 rounded border p-2">
+      {frames.map((f) => {
+        const n = String(f.n).padStart(4, ' ')
+        const t = f.time.toFixed(6).padStart(11, ' ')
+        const len = f.length != null ? String(f.length) : ''
+        return `${n}  ${t}  ${f.src} → ${f.dst}  ${f.proto} ${len} ${f.info}`
+      }).join('\n')}
+    </pre>
+  )
+}
+
+function SipPcapView({ aLeg }) {
+  const [state, setState] = useState({ loading: true, legs: null, captureEnabled: true, error: null })
+
+  useEffect(() => {
+    let alive = true
+    setState({ loading: true, legs: null, captureEnabled: true, error: null })
+    cdrApi.pcap(aLeg.xml_cdr_uuid)
+      .then(({ data }) => alive && setState({
+        loading: false, legs: data.legs || [],
+        captureEnabled: data.capture_enabled !== false, error: null,
+      }))
+      .catch(() => alive && setState({ loading: false, legs: [], captureEnabled: true, error: 'Failed to load SIP capture' }))
+    return () => { alive = false }
+  }, [aLeg.xml_cdr_uuid])
+
+  const download = async (legUuid) => {
+    try {
+      const { data } = await cdrApi.pcapDownload(aLeg.xml_cdr_uuid, legUuid)
+      const url = URL.createObjectURL(new Blob([data], { type: 'application/vnd.tcpdump.pcap' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `leg-${legUuid.slice(0, 8)}.pcap`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch { /* nothing captured / not authorized */ }
+  }
+
+  if (state.loading) {
+    return <div className="px-4 py-3 text-xs text-muted-foreground">Slicing SIP capture…</div>
+  }
+  if (state.error) {
+    return <div className="px-4 py-3 text-xs text-destructive">{state.error}</div>
+  }
+  if (!state.captureEnabled) {
+    return <div className="px-4 py-3 text-xs text-amber-600">SIP capture is not running on this server (sngrep/tcpdump unavailable).</div>
+  }
+  if (!state.legs.length) {
+    return <div className="px-4 py-3 text-xs text-muted-foreground">No SIP legs for this call.</div>
+  }
+
+  return (
+    <div className="px-3 py-2 space-y-4">
+      {state.legs.map((leg) => (
+        <div key={leg.leg_uuid}>
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-xs font-semibold flex items-center gap-1.5">
+              <Network className="h-3.5 w-3.5 text-cyan-500" />
+              {leg.label} SIP decoded
+              {leg.call_id && <span className="text-muted-foreground font-mono font-normal">· {leg.call_id}</span>}
+            </p>
+            {leg.available && (
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => download(leg.leg_uuid)}>
+                <FileDown className="h-3.5 w-3.5 mr-1" /> Download .pcap
+              </Button>
+            )}
+          </div>
+          {leg.available && leg.frames.length
+            ? <FrameTable frames={leg.frames} />
+            : <p className="text-xs text-muted-foreground italic">{leg.reason || 'No packets captured.'}</p>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ─── Expanded row: plain per-leg table (one row per member rung) ───────────────
+function LegsTable({ aLeg }) {
+  const [legs, setLegs] = useState(null)
+
+  useEffect(() => {
+    setLegs(null)
+    if (!aLeg.xml_cdr_uuid) return
+    cdrApi.legs(aLeg.xml_cdr_uuid)
+      .then(({ data }) => setLegs(Array.isArray(data) ? data : []))
+      .catch(() => setLegs([]))
+  }, [aLeg.xml_cdr_uuid])
+
+  // Label the leg's destination as "<dialed number> » <member>". For a voicemail
+  // leg show "» Voicemail <box>" instead of the device.
+  function destLabel(leg) {
+    const dialed = aLeg.destination_number || ''
+    if (isVoicemailCall(leg.last_app, leg.last_arg)) {
+      const raw = leg.extension_number || leg.destination_number || ''
+      const box = raw.replace(/-[^-]+$/, '')
+      return `${dialed} » Voicemail ${box}`
+    }
+    // Outbound: extension_number is the *calling* ext, not a callee — the leg is
+    // just the dialed number, so show it plainly (no "» member").
+    if (aLeg.direction === 'outbound') {
+      return leg.destination_number || dialed
+    }
+    return `${dialed} » ${memberLabel(leg)}`
+  }
+
+  if (legs === null) {
+    return <div className="px-4 py-3 text-xs text-muted-foreground">Loading legs…</div>
+  }
+  if (legs.length === 0) {
+    return <div className="px-4 py-3 text-xs text-muted-foreground">No per-member legs recorded for this call.</div>
+  }
+
+  return (
+    <div className="px-2 py-2">
+      <Table className="min-w-[700px]">
+        <TableHeader>
+          <TableRow>
+            <TableHead className="text-xs">Start</TableHead>
+            <TableHead className="text-xs">CallerID</TableHead>
+            <TableHead className="text-xs">Destination</TableHead>
+            <TableHead className="text-xs">Duration</TableHead>
+            <TableHead className="text-xs">Talk time</TableHead>
+            <TableHead className="text-xs">Disposition</TableHead>
+            <TableHead className="text-xs">Cost</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {legs.map(leg => (
+            <TableRow key={leg.xml_cdr_uuid} className="hover:bg-muted/50">
+              <TableCell className="text-xs whitespace-nowrap">{formatDate(leg.start_stamp)}</TableCell>
+              <TableCell className="text-xs">
+                {leg.caller_id_name ? `"${leg.caller_id_name}" ` : ''}&lt;{aLeg.caller_id_number || '—'}&gt;
+              </TableCell>
+              <TableCell className="text-xs font-mono">{destLabel(leg)}</TableCell>
+              <TableCell className="text-xs">{formatDuration(leg.duration)}</TableCell>
+              <TableCell className="text-xs">{formatDuration(leg.billsec)}</TableCell>
+              <TableCell><StatusBadge status={leg.status} /></TableCell>
+              <TableCell className="text-xs">0.00</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  )
+}
+
+// ─── Expanded row: tabbed Legs / SIP-PCAP view ─────────────────────────────────
+function ExpandedDetail({ aLeg, bLeg, bLegs = [], isSuperAdmin }) {
+  const [tab, setTab] = useState('legs')
+  const tabs = [
+    { key: 'legs', label: 'Legs' },
+    { key: 'details', label: 'Details', icon: Info },
+    { key: 'pcap', label: 'SIP / PCAP', icon: Network },
+  ]
+  return (
+    <div className="bg-muted/30 border-t">
+      <div className="flex gap-1 px-3 pt-2">
+        {tabs.map(t => {
+          const Icon = t.icon
+          const active = tab === t.key
+          return (
+            <button
+              key={t.key}
+              onClick={(e) => { e.stopPropagation(); setTab(t.key) }}
+              className={`flex items-center gap-1 text-xs px-3 py-1.5 rounded-t border-b-2 transition-colors ${
+                active ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {Icon && <Icon className="h-3.5 w-3.5" />} {t.label}
+            </button>
+          )
+        })}
+      </div>
+      {tab === 'details' && <CallDetail aLeg={aLeg} bLeg={bLeg} bLegs={bLegs} isSuperAdmin={isSuperAdmin} />}
+      {tab === 'legs' && <LegsTable aLeg={aLeg} />}
+      {tab === 'pcap' && <SipPcapView aLeg={aLeg} />}
+    </div>
+  )
+}
+
 // ─── Expanded row detail ──────────────────────────────────────────────────────
 function CallDetail({ aLeg, bLeg, bLegs = [], isSuperAdmin }) {
   const [vmName, setVmName] = useState(null)
   const [ivrMap, setIvrMap] = useState({})
   const [rgMap, setRgMap] = useState({})
   const [whMap, setWhMap] = useState({})
+  // B-legs (per-member fan-out) are not in the A-leg-only list query, so fetch
+  // them on demand. Fall back to any bLegs already grouped from the page.
+  const [fetchedLegs, setFetchedLegs] = useState(null)
+
+  useEffect(() => {
+    setFetchedLegs(null)
+    if (!aLeg.xml_cdr_uuid) return
+    cdrApi.legs(aLeg.xml_cdr_uuid)
+      .then(({ data }) => setFetchedLegs(Array.isArray(data) ? data : []))
+      .catch(() => setFetchedLegs([]))
+  }, [aLeg.xml_cdr_uuid])
+
+  // Prefer freshly fetched legs; fall back to legs grouped from the page.
+  const allBLegs = (fetchedLegs && fetchedLegs.length) ? fetchedLegs : bLegs
+  const primaryBLeg = bLeg
+    || allBLegs.find(b => b.billsec > 0)
+    || allBLegs[0]
+    || null
 
   useEffect(() => {
     // Voicemail name
@@ -367,10 +593,10 @@ function CallDetail({ aLeg, bLeg, bLegs = [], isSuperAdmin }) {
     })
   }, [aLeg.xml_cdr_uuid])
 
-  const steps = buildCallFlow(aLeg, vmName, bLeg, ivrMap, rgMap, whMap)
+  const steps = buildCallFlow(aLeg, vmName, primaryBLeg, ivrMap, rgMap, whMap, allBLegs)
 
   return (
-    <div className="px-4 py-3 bg-muted/30 border-t space-y-4">
+    <div className="px-4 py-3 space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Call flow timeline */}
         <div>
@@ -393,13 +619,13 @@ function CallDetail({ aLeg, bLeg, bLegs = [], isSuperAdmin }) {
         </div>
 
         {isSuperAdmin && (
-          <LegDetail row={aLeg} label={bLeg ? 'A-Leg (Caller)' : 'Technical Details'} />
+          <LegDetail row={aLeg} label={allBLegs.length ? 'A-Leg (Caller)' : 'Technical Details'} />
         )}
       </div>
 
-      {isSuperAdmin && bLegs.length > 0 && (
+      {isSuperAdmin && allBLegs.length > 0 && (
         <div className="border-t pt-3 space-y-4">
-          {bLegs.map((b, idx) => (
+          {allBLegs.map((b, idx) => (
             <div key={b.xml_cdr_uuid} className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <LegDetail row={b} label={bLegs.length > 1 ? `B-Leg ${idx + 1} (${b.destination_number || 'Callee'}) — ${b.hangup_cause || '?'}` : 'B-Leg (Callee)'} />
               <div>
@@ -808,7 +1034,7 @@ export default function Cdr() {
                       {isExpanded && (
                         <TableRow key={`${uuid}-detail`} className="hover:bg-transparent">
                           <TableCell colSpan={11} className="p-0">
-                            <CallDetail aLeg={aLeg} bLeg={bLeg} bLegs={bLegs || []} isSuperAdmin={isSuperAdmin} />
+                            <ExpandedDetail aLeg={aLeg} bLeg={bLeg} bLegs={bLegs} isSuperAdmin={isSuperAdmin} />
                           </TableCell>
                         </TableRow>
                       )}

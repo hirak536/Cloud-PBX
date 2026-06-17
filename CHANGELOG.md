@@ -3,6 +3,47 @@
 All notable changes to IHS-PBX are documented in this file.
 Newest entries on top.
 
+## 2026-06-17
+
+### CDR — per-leg SIP/PCAP capture & viewer
+- **New: capture and view the SIP signaling for each call leg**, the same ladder you'd see in `sngrep`, rendered per leg ("First Leg", "Second Leg 0..N") in the CDR detail. Each leg shows the numbered frame summary (`Request: INVITE …` / `Status: 200 OK …`) and a **Download .pcap** button (openable in sngrep/Wireshark)
+- **Always-on, tenant-only capture** (`deploy/sip-capture.service`): a `tcpdump` sidecar records SIP-only (no RTP) on all SIP-bound interfaces, packet-buffered (`-U`) into 5-minute rotating files in `/var/spool/sip/`. The BPF filter is **auto-derived from FreeSWITCH's configured gateways** (`deploy/gen-sip-capture-filter.sh`, regenerated on each service start): all authenticated internal/webrtc legs plus external `:5060` traffic only to/from our carrier gateways — dropping the open-internet scanner flood (cut capture volume drastically)
+- **Per-call slicing runs entirely off the ingest path.** A Celery Beat sweep (every minute, tenant calls only) slices each call's dialog out of the rolling capture **once** and stores the (tiny, ~5KB) SIP-only pcap **in the CDR row** (`sip_pcap_data`). The viewer decodes straight from the DB — no disk dependency, no per-open scan (open went from ~8–17s live-scan to ~10ms). CDR ingest does **no** pcap work, so new calls still appear in the list instantly
+  - Capture/slice: `backend/apps/xml_cdr/sip_capture.py`, `backend/apps/xml_cdr/tasks.py` (`slice_call_pcap`, `sweep_unsliced_pcaps`)
+  - API: `GET /api/v1/cdr/{uuid}/pcap/` (per-leg frame summary), `GET /api/v1/cdr/{uuid}/pcap/{leg}/download/` (raw .pcap)
+  - Decode is port-independent (reads the SIP start-line from the payload), so internal `:5080`/webrtc `:5066` legs render too — not just `:5060`
+  - sngrep 1.6.0 accepts only one `-I` input, so calls spanning a rotation boundary are sliced per-file and concatenated; a slice with no packets stays retryable until the call ages past the capture window, then is marked so the sweep skips it
+- **CDR detail now has three tabs: Legs · Details · SIP/PCAP** (`frontend/src/pages/Cdr.jsx`). "Details" surfaces the full call-flow timeline + per-leg technical fields + bridge summary
+
+### CDR — moved to its own database
+- **Call detail records now live in a separate `ihspbx_cdr` Postgres database** so they can be backed up / retained on their own schedule and so CDR volume doesn't contend with the app DB. Routed via a new `CdrRouter` (`backend/freeswitch_config/routers.py`); connection configured in `backend/config/settings/base.py` (override with `CDR_DB_*` in `.env`)
+- **Decoupled CDRs from the `tenant`/`domain` FKs** (those can't span databases). Added denormalized `tenant_uuid_val` / `tenant_code` / `domain_uuid_val` / `domain_name` columns on the CDR row (migration `0012`, backfilled), made the FKs `db_constraint=False`, and switched all reads + tenant-scoping to the denormalized columns — no cross-DB join anywhere. Ingest writes the denormalized values on every CDR
+- Migrations: `xml_cdr 0011`–`0015` (sip_call_id, denormalize tenant/domain, fk no-constraint, sip_pcap_path, sip_pcap_data)
+- The old `v_xml_cdr` table in the main DB was migrated and renamed `v_xml_cdr_migrated_20260617` (kept as a safety net; drop after verification)
+
+## 2026-06-16
+
+### Fax — Cancel & Delete
+- Added the ability to **cancel a pending fax**. Cancel tears down the in-flight FreeSWITCH channel (`uuid_kill … ORIGINATOR_CANCEL`) and marks the record `failed`, which also makes `poll_fax_result` bail on its next run. **Pending-only**: cancelling a fax that has already reached a terminal status (`sent`/`received`/`failed`) returns `400` with a clear message
+- **React admin (Fax page):** a Cancel button now appears in each fax row **only while status is `pending`**, with a confirm prompt, in-progress spinner, and success/error toast
+  - `POST /api/v1/fax/files/{fax_file_uuid}/cancel/` (new action on `FaxFileViewSet`)
+- **Client API:** added cancel + delete for external integrators
+  - `POST   /api/v1/client/{tenant_uuid}/fax/files/{fax_file_uuid}/cancel/` — cancel (pending only)
+  - `DELETE /api/v1/client/{tenant_uuid}/fax/files/{fax_file_uuid}/` — delete the record and its on-disk file (cancels first if still pending, so a live send is never orphaned)
+- **Fixed client API fax DELETE silently failing.** Requests sent without a trailing slash hit Django's `APPEND_SLASH` and received a `301` redirect; a 301 on DELETE/POST drops the method, so the request never executed (the slash form returned `204` and worked). The fax-file detail and cancel routes are now **slash-optional** (matched via `re_path`) so both forms reach the view directly with no redirect
+- **DELETE response** changed from an empty `204 No Content` to `200 OK` with `{"status": "deleted"}` so clients that parse the response body get a confirmation
+
+### Ops — runaway fax poll storm stopped
+- A fax (`5a0e5dfc…`) was stuck `pending` and `poll_fax_result` retried it **422k+ times**, saturating the Celery `default` queue and starving webhook delivery — IHDT `did.updated` webhooks were left in `pending`/`code None`. Cancelling the fax (marking it `failed`) made the poll task bail and freed the queue. The self-amplifying retry path in `poll_fax_result` is flagged as a follow-up code fix
+
+## 2026-06-15
+
+### CDR — "No Answer" vs "Failed"
+- Outbound calls that end with `NORMAL_CLEARING` and `billsec=0` (a ring-no-answer where FreeSWITCH tore down the A-leg after the bridge originate timed out) now classify as **No Answer** instead of the generic **Failed**. `backend/apps/client_api/serializers.py`
+
+### WebRTC outbound — fixed "connecting, no audio, then drops"
+- Removed `bridge_codec_string=PCMU` from the generated outbound route. It forced PCMU onto the **WebRTC (browser) leg**, which offers opus — breaking media negotiation so the caller heard silence and cancelled (`ORIGINATOR_CANCEL`). The browser A-leg now keeps its own codec and FreeSWITCH transcodes to PCMU toward the gateway; `nolocal:absolute_codec_string=PCMU` still gives the Bandwidth gateway the PCMU it requires. `backend/freeswitch_config/generators.py`
+
 ## 2026-06-12
 
 ### Voicemail Greeting — fixed upload path & added Media File greetings

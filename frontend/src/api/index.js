@@ -248,6 +248,7 @@ export const fax = {
   send: (id, formData) => api.post(`/fax/${id}/send/`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
   quickSend: (formData) => api.post('/fax/quick-send/', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
   files: (p) => api.get('/fax/files/', { params: p }),
+  cancelFile: (fileId) => api.post(`/fax/files/${fileId}/cancel/`),
 }
 
 export const devices = {
@@ -262,6 +263,10 @@ export const cdr = {
   list: (p) => api.get('/cdr/', { params: p }),
   summary: (p) => api.get('/cdr/summary/', { params: p }),
   export: (p) => api.get('/cdr/export/', { params: p, responseType: 'blob' }),
+  legs: (id) => api.get(`/cdr/${id}/legs/`),
+  pcap: (id) => api.get(`/cdr/${id}/pcap/`),
+  pcapDownload: (id, legUuid) =>
+    api.get(`/cdr/${id}/pcap/${legUuid}/download/`, { responseType: 'blob' }),
 }
 
 export const statsReport = {

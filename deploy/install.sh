@@ -34,6 +34,11 @@ systemctl enable postgresql
 sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';" 2>/dev/null || true
 sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};" 2>/dev/null || true
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
+# Separate database for call detail records (CDRs). Routed via CdrRouter; the
+# xml_cdr app's tables live here. Override the name with CDR_DB_NAME in .env.
+CDR_DB_NAME=${CDR_DB_NAME:-ihspbx_cdr}
+sudo -u postgres psql -c "CREATE DATABASE ${CDR_DB_NAME} OWNER ${DB_USER};" 2>/dev/null || true
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${CDR_DB_NAME} TO ${DB_USER};"
 
 echo "==> Cloning/copying application..."
 mkdir -p ${INSTALL_DIR}
@@ -68,6 +73,10 @@ echo "==> Running Django migrations..."
 cd ${INSTALL_DIR}/backend
 sudo -u ${APP_USER} DJANGO_SETTINGS_MODULE=config.settings.prod \
     ${INSTALL_DIR}/venv/bin/python manage.py migrate --noinput
+# The xml_cdr app is routed to the separate 'cdr' database (CdrRouter), so its
+# tables must be migrated there explicitly.
+sudo -u ${APP_USER} DJANGO_SETTINGS_MODULE=config.settings.prod \
+    ${INSTALL_DIR}/venv/bin/python manage.py migrate xml_cdr --database=cdr --noinput
 
 echo "==> Collecting static files..."
 sudo -u ${APP_USER} DJANGO_SETTINGS_MODULE=config.settings.prod \
@@ -82,9 +91,13 @@ echo "==> Installing systemd services..."
 cp ${INSTALL_DIR}/deploy/ihspbx-django.service /etc/systemd/system/ihspbx.service
 cp ${INSTALL_DIR}/deploy/ihspbx-celery.service /etc/systemd/system/ihspbx-celery.service
 cp ${INSTALL_DIR}/deploy/ihspbx-celerybeat.service /etc/systemd/system/ihspbx-celerybeat.service
+# Rolling SIP capture feeding the per-leg CDR SIP/PCAP viewer (tenant-only,
+# 5-min files). Slicing runs via the celerybeat sweep, not here.
+cp ${INSTALL_DIR}/deploy/sip-capture.service /etc/systemd/system/sip-capture.service
+chmod +x ${INSTALL_DIR}/deploy/gen-sip-capture-filter.sh
 systemctl daemon-reload
-systemctl enable ihspbx ihspbx-celery ihspbx-celerybeat
-systemctl start ihspbx ihspbx-celery ihspbx-celerybeat
+systemctl enable ihspbx ihspbx-celery ihspbx-celerybeat sip-capture
+systemctl start ihspbx ihspbx-celery ihspbx-celerybeat sip-capture
 
 echo "==> Configuring Nginx..."
 cp ${INSTALL_DIR}/deploy/nginx.conf /etc/nginx/sites-available/ihspbx

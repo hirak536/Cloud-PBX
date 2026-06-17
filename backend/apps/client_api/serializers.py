@@ -129,6 +129,16 @@ class ClientCDRSerializer(serializers.ModelSerializer):
                 return 'NO_ANSWER'
             return 'MISSED' if obj.missed_call else 'NO_ANSWER'
 
+        # Ring-no-answer: FreeSWITCH tears down the A-leg with NORMAL_CLEARING after a
+        # bridge originate times out (e.g. call_timeout reached). The originate's real
+        # cause (NO_ANSWER) is logged but not always stored on the channel, so the CDR
+        # shows NORMAL_CLEARING with zero talk time. A clean teardown with no billsec is
+        # a no-answer, not a failure.
+        if cause == 'NORMAL_CLEARING' and obj.billsec == 0:
+            if obj.direction == 'outbound':
+                return 'NO_ANSWER'
+            return 'MISSED' if obj.missed_call else 'NO_ANSWER'
+
         # Failed — call never connected
         if cause in (
             'UNALLOCATED_NUMBER', 'NO_ROUTE_TRANSIT_NET', 'NO_ROUTE_DESTINATION',

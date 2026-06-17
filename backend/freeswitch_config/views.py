@@ -455,11 +455,33 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                 break
 
     call_uuid_val = call_uuid_fallback or var('uuid') or var('call_uuid') or None
+
+    # Caller ID number capture differs by direction:
+    #  - Outbound: the number we PRESENT to the carrier is effective_caller_id_number
+    #    (set by the dialplan/X-OverrideCID). The raw caller_id_number on a WebRTC A-leg
+    #    is just the SIP username (e.g. "905-IHDT"), so preferring it stored the extension
+    #    label instead of the dialed-from DID. Prefer the effective CID on outbound.
+    #  - Inbound: caller_id_number is the real external caller, so keep the original order.
+    if direction == 'outbound':
+        caller_id_number_val = (var('effective_caller_id_number')
+                                or var('caller_id_number')
+                                or var('sip_from_user'))
+    else:
+        caller_id_number_val = (var('caller_id_number')
+                                or var('effective_caller_id_number')
+                                or var('sip_from_user'))
+
     cdr_fields = dict(
         domain=domain,
         tenant=tenant,
+        # Denormalized tenant/domain identity (Phase 1 of CDR-DB separation):
+        # carry the values on the row so the read path needs no FK join.
+        tenant_uuid_val=(tenant.tenant_uuid if tenant else None),
+        tenant_code=(tenant.tenant_code if tenant else ''),
+        domain_uuid_val=(domain.domain_uuid if domain else None),
+        domain_name=(domain.domain_name if domain else ''),
         caller_id_name=var('caller_id_name') or var('effective_caller_id_name') or var('sip_from_display') or var('sip_from_user'),
-        caller_id_number=var('caller_id_number') or var('effective_caller_id_number') or var('sip_from_user'),
+        caller_id_number=caller_id_number_val,
         extension_number=extension_number,
         caller_destination=var('caller_destination') or var('sip_req_user'),
         destination_number=var('destination_number') or var('sip_req_user') or var('sip_to_user'),
@@ -502,6 +524,10 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         call_uuid=call_uuid_val,
         leg=leg,
         bridge_uuid=var('bridge_uuid') or var('signal_bond') or originating_leg_uuid or None,
+        # SIP Call-ID for this dialog — the key used to slice this leg's packets
+        # out of the rolling SIP capture for the per-leg PCAP viewer. sip_call_id
+        # is set on inbound legs; sip_invite_call_id on gateway-bound outbound legs.
+        sip_call_id=(var('sip_call_id') or var('sip_invite_call_id') or '')[:256],
         pdd_ms=int_var('progress_mediamsec') or int_var('pdd_ms'),
         waitsec=waitsec,
         cc_queue=var('cc_queue'),
@@ -554,6 +580,10 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                     syn_defaults = dict(
                         domain=record.domain,
                         tenant=record.tenant,
+                        tenant_uuid_val=record.tenant_uuid_val,
+                        tenant_code=record.tenant_code,
+                        domain_uuid_val=record.domain_uuid_val,
+                        domain_name=record.domain_name,
                         caller_id_name=record.caller_id_name,
                         caller_id_number=record.caller_id_number,
                         extension_number=record.extension_number,

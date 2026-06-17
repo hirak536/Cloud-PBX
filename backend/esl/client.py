@@ -207,13 +207,23 @@ class FreeSwitchESL:
                         row['network_ip'] = line.split(':', 1)[1].strip()
                     elif line.startswith('Port:'):
                         row['network_port'] = line.split(':', 1)[1].strip()
+                    elif line.startswith('Ping-Status:'):
+                        row['ping_status'] = line.split(':', 1)[1].strip()
                     elif line.startswith('Ping-Time:'):
                         # e.g. "Ping-Time: 12.345" (milliseconds)
                         val = line.split(':', 1)[1].strip()
                         try:
-                            row['ping_ms'] = int(round(float(val)))
+                            ms = int(round(float(val)))
                         except (TypeError, ValueError):
-                            pass
+                            ms = None
+                        # Sofia reports a ~32000ms sentinel (and Ping-Status: Unreachable)
+                        # when the OPTIONS ping timed out with no reply — common for
+                        # WebRTC clients that don't answer server OPTIONS. That's not a
+                        # real RTT, so don't surface a number; the panel shows '—'.
+                        if ms is None or ms >= 32000 or row.get('ping_status') == 'Unreachable':
+                            row['ping_ms'] = None
+                        else:
+                            row['ping_ms'] = ms
                     elif line.startswith('Reg-Time:'):
                         # epoch seconds since the device registered
                         val = line.split(':', 1)[1].strip()

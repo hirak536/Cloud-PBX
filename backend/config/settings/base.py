@@ -149,9 +149,28 @@ DATABASES = {
             'timeout': 5,
         },
     },
+    # Separate database for call detail records (Phase 2 of CDR-DB separation).
+    # CDRs live here so they can be backed up / purged on their own schedule and
+    # so high CDR write volume doesn't contend with the app DB. Defaults to the
+    # main DB's host/user/password; override CDR_DB_* in .env to relocate it.
+    'cdr': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': config('CDR_DB_NAME', default='ihspbx_cdr'),
+        'USER': config('CDR_DB_USER', default=config('DB_USER')),
+        'PASSWORD': config('CDR_DB_PASSWORD', default=config('DB_PASSWORD')),
+        'HOST': config('CDR_DB_HOST', default=config('DB_HOST')),
+        'PORT': config('CDR_DB_PORT', default=config('DB_PORT')),
+        'CONN_MAX_AGE': 0,
+        'OPTIONS': {
+            'options': '-c search_path=public',
+        },
+    },
 }
 
-DATABASE_ROUTERS = ['freeswitch_config.routers.VoicemailSQLiteRouter']
+DATABASE_ROUTERS = [
+    'freeswitch_config.routers.VoicemailSQLiteRouter',
+    'freeswitch_config.routers.CdrRouter',
+]
 
 # Custom User Model
 AUTH_USER_MODEL = 'core.User'
@@ -245,6 +264,13 @@ CELERY_BEAT_SCHEDULE = {
     'cleanup-peer-state-history-daily': {
         'task': 'esl.tasks.cleanup_peer_state_history',
         'schedule': crontab(hour=3, minute=15),
+    },
+    # Pre-slice recently-ended calls' SIP pcap off the ingest path, so the
+    # SIP/PCAP viewer reads a tiny per-call file instead of scanning the large
+    # rolling capture on every open. Runs every minute; never touches ingest.
+    'slice-sip-pcaps-every-minute': {
+        'task': 'apps.xml_cdr.tasks.sweep_unsliced_pcaps',
+        'schedule': crontab(minute='*'),
     },
 }
 

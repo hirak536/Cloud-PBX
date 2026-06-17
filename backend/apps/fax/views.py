@@ -335,6 +335,31 @@ class FaxFileViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
         response['X-Frame-Options'] = 'SAMEORIGIN'
         return response
 
+    @action(detail=True, methods=['post'], url_path='cancel')
+    def cancel(self, request, pk=None):
+        """Cancel a fax that is still pending. Tears down the in-flight FreeSWITCH
+        channel and marks the record terminal so poll_fax_result stops retrying.
+        Only valid while the fax is pending."""
+        ff = self.get_object()
+        if ff.fax_file_status != 'pending':
+            return Response(
+                {'detail': f'Cannot cancel a fax that is already "{ff.fax_file_status}". '
+                           'Only pending faxes can be cancelled.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if ff.channel_uuid:
+            try:
+                from esl.client import get_esl_client
+                get_esl_client().hangup(ff.channel_uuid, 'ORIGINATOR_CANCEL')
+            except Exception as exc:
+                logger.warning('Fax cancel: ESL hangup failed for %s: %s', ff.channel_uuid, exc)
+
+        ff.fax_file_status = 'failed'
+        ff.save(update_fields=['fax_file_status'])
+        logger.info('Fax %s cancelled by user %s', ff.fax_file_uuid, getattr(request.user, 'id', '?'))
+        return Response(FaxFileSerializer(ff, context={'request': request}).data)
+
 
 class FaxQuickSendView(APIView):
     """

@@ -854,7 +854,12 @@ def _outbound_route_to_xml(route):
     etree.SubElement(cond, 'action', application='set', data=f'effective_caller_id_number={cid_number}')
     etree.SubElement(cond, 'action', application='set', data=f'effective_caller_id_name={cid_name}')
     # Force PCMU on leg B (toward the gateway) — Bandwidth only accepts PCMU.
-    etree.SubElement(cond, 'action', application='set', data='bridge_codec_string=PCMU')
+    # NOTE: do NOT set bridge_codec_string here. It constrains the codec the bridge
+    # negotiates on BOTH legs, which forces PCMU onto the WebRTC A-leg. Browsers offer
+    # opus; forcing PCMU there breaks media negotiation and the caller hears silence
+    # then cancels (ORIGINATOR_CANCEL). The A-leg must keep its own codec (opus/G722)
+    # and let FreeSWITCH transcode to PCMU across the bridge. Scoping PCMU to the B-leg
+    # via nolocal:absolute_codec_string already gives the gateway the PCMU it requires.
     etree.SubElement(cond, 'action', application='export', data='nolocal:absolute_codec_string=PCMU')
     # Skip entire extension if destination doesn't match; continue to CID/bridge conditions if it does.
     cond.set('break', 'on-false')
@@ -1576,6 +1581,15 @@ def _ring_group_to_dialplan_xml(rg, domain_name, ctx, preload=None):
             if timeout and timeout != call_timeout:
                 leg_vars.append(f'leg_timeout={timeout}')
 
+            # Per-leg dialed-extension stamp. Unlike `export` (one value across all
+            # legs), the [...] block scopes this to THIS fork only, so each member's
+            # B-leg CDR carries its own extension. CDR ingest prefers ihs_dialed_ext
+            # (see _process_cdr), so this is what makes the per-member log show
+            # "» 101 / » 115" instead of "?". Only for internal numeric members.
+            if re.match(r'^\d{2,10}$', number):
+                member_dialed_ext = f'{number}-{tenant_code}' if tenant_code else number
+                leg_vars.append(f'ihs_dialed_ext={member_dialed_ext}')
+
             leg_prefix = f"[{','.join(leg_vars)}]" if leg_vars else ""
 
             if re.match(r'^\d{2,10}$', number):
@@ -1611,11 +1625,14 @@ def _ring_group_to_dialplan_xml(rg, domain_name, ctx, preload=None):
             dest_timeout = dest.destination_timeout or call_timeout
             if re.match(r'^\d{2,10}$', number):
                 sip_user = f'{number}-{tenant_code}' if tenant_code else number
+                # Per-leg dialed-ext stamp (see simultaneous path) so each
+                # sequentially-dialed member's CDR carries its own extension.
+                member_prefix = f'[ihs_dialed_ext={sip_user}]'
                 if rg.ring_group_allow_fmfm:
                     ctx_name = f'default-{tenant_code}' if tenant_code else 'default'
-                    leg = f'loopback/{number}/{ctx_name}'
+                    leg = f'{member_prefix}loopback/{number}/{ctx_name}'
                 else:
-                    leg = f'user/{sip_user}@{domain_name}'
+                    leg = f'{member_prefix}user/{sip_user}@{domain_name}'
             else:
                 gw = _get_default_gateway(domain_name)
                 if gw:
