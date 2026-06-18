@@ -1,0 +1,18 @@
+<configuration name="lua.conf" description="LUA Configuration">
+  <settings>
+    <!--
+      IHS-PBX: drive toggle / Call-Flow BLF lamps via the FusionPBX 'flow+' proto.
+      Requires deploy/freeswitch/scripts/blf_subscribe.lua to be copied into the
+      FreeSWITCH script_dir (e.g. /usr/share/freeswitch/scripts/).
+
+      A bare "<ext>@domain" presence cannot light a virtual BLF key (FreeSWITCH
+      renders an unregistered entity as closed). blf_subscribe.lua answers
+      PRESENCE_PROBE for proto=flow and publishes the lamp from the mod_db key
+      call_flow_status/*<ext>-<TENANT>@<domain>, which the dialplan / Django keep
+      in sync. Phone BLF key Value must be:  flow+*<ext>-<TENANT>  (e.g. flow+*800-IHDT).
+
+      Start without a full restart:  fs_cli -x 'luarun blf_subscribe.lua flow'
+    -->
+    <param name="startup-script" value="blf_subscribe.lua flow"/>
+  </settings>
+</configuration>

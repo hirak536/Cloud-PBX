@@ -170,36 +170,112 @@ class CustomDestination(models.Model):
 
     @property
     def toggle_presence_id(self):
-        """Presence identity a phone BLF key subscribes to (number@domain)."""
-        domain_name = self.domain.domain_name if self.domain_id else ''
-        return f'{self.toggle_extension}@{domain_name}'
+        """The 'flow+' presence identity a phone BLF key subscribes to.
+
+        A bare '<ext>@domain' presence cannot light a virtual lamp — FreeSWITCH
+        renders any unregistered entity as closed. So we use the FusionPBX
+        'flow+' feature-code proto, served by scripts/blf_subscribe.lua, which
+        DOES light. Phone programs BLF value 'flow+*<ext>' (e.g. flow+*800).
+        """
+        return f'flow+*{self._flow_code}@{self._domain_name}'
+
+    @property
+    def _domain_name(self):
+        return self.domain.domain_name if self.domain_id else ''
+
+    @property
+    def _flow_code(self):
+        """Tenant-suffixed feature code, e.g. '800-IHDT', for multi-tenant
+        isolation (mirrors how extensions/parking suffix the tenant code).
+        Falls back to the bare extension when the toggle has no tenant."""
+        code = self.tenant.tenant_code if self.tenant_id else None
+        return f'{self.toggle_extension}-{code}' if code else self.toggle_extension
+
+    @property
+    def toggle_flow_state_key(self):
+        """mod_db key blf_subscribe.lua reads to decide the lamp state."""
+        return f'call_flow_status/*{self._flow_code}@{self._domain_name}'
 
     def push_toggle_state(self):
-        """Write self.toggle_state into FreeSWITCH and republish presence.
+        """Write self.toggle_state into FreeSWITCH and republish the BLF lamp.
 
-        Makes the live phone lamp match the DB source of truth. Safe to call
-        repeatedly (idempotent) — used on UI flips and on reboot/resync so a
-        rebooted phone showing the wrong colour gets corrected.
-        Returns True on success, False if ESL is unavailable (state still saved
-        in the DB and will resync on the next dialplan route / resync call).
+        Uses the FusionPBX 'flow+' proto (blf_subscribe.lua) — the only
+        mechanism proven to light a virtual BLF on this platform. Lamp polarity:
+        we want ON=green (unlit), OFF=red (lit), so we publish 'confirmed' (lit)
+        when OFF and 'terminated' (unlit) when ON — i.e. light when NOT on.
+        Returns True on success, False if ESL is unavailable.
         """
         if self.kind != 'toggle' or not self.toggle_extension:
             return False
         import logging
         log = logging.getLogger(__name__)
         val = 'true' if self.toggle_state else 'false'
-        # 'confirmed' lights the lamp (green/ON), 'terminated' clears it (red/OFF).
-        state = 'confirmed' if self.toggle_state else 'terminated'
-        status = 'Active (ON)' if self.toggle_state else 'Idle (OFF)'
         try:
             from esl.client import get_esl_client
             esl = get_esl_client()
+            # 1. routing state (unchanged) + the flow-proto state the Lua reads.
             esl.api(f'db insert/{self.toggle_db_key}/{val}')
-            esl.presence_in(self.toggle_presence_id, status=status, state=state)
+            esl.api(f'db insert/{self.toggle_flow_state_key}/{val}')
+            # 2. Re-publish the lamp by firing a PRESENCE_PROBE, which the running
+            #    blf_subscribe.lua answers using the SAME path as the phone's
+            #    initial subscribe — the only publish that actually reaches the
+            #    phone. A direct PRESENCE_IN from here does NOT generate a NOTIFY
+            #    (the subscription is owned by the flow proto), which is why the
+            #    lamp only updated on first subscribe before. The Lua reads the
+            #    mod_db key we just wrote and publishes the correct colour.
+            pid = self.toggle_presence_id
+            esl.sendevent('PRESENCE_PROBE', {
+                'proto': 'flow',
+                'from': pid,
+                'to': pid,
+                'expires': '3600',
+                'event_type': 'presence',
+            })
             return True
         except Exception as exc:
             log.warning('push_toggle_state failed for %s: %s', self.custom_destination_uuid, exc)
             return False
+
+
+class ToggleEvent(models.Model):
+    """Audit log of toggle (BLF switch) state changes.
+
+    These flips are intentionally kept OUT of the call CDR (they are not real
+    calls). Instead each ON/OFF change is recorded here and surfaced on the
+    custom destination page, so there is a separate history of who/what flipped
+    a toggle and when.
+    """
+    SOURCE_CHOICES = [
+        ('blf',  'Phone BLF key'),
+        ('ui',   'Web UI'),
+        ('api',  'API'),
+        ('dialplan', 'Dialplan'),
+        ('resync', 'Resync'),
+    ]
+    toggle_event_uuid = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    custom_destination = models.ForeignKey(
+        CustomDestination,
+        on_delete=models.CASCADE,
+        db_column='custom_destination_uuid',
+        related_name='toggle_events',
+    )
+    tenant = models.ForeignKey(
+        'core.Tenant', on_delete=models.CASCADE, null=True, blank=True,
+        db_column='tenant_uuid', related_name='toggle_events',
+    )
+    new_state = models.BooleanField(help_text='True = ON, False = OFF after the flip.')
+    source = models.CharField(max_length=16, choices=SOURCE_CHOICES, default='ui')
+    # Who/what triggered it, when known (extension number, username, or caller id).
+    actor = models.CharField(max_length=128, blank=True, default='')
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'v_custom_destination_toggle_events'
+        ordering = ['-created']
+        indexes = [models.Index(fields=['custom_destination', '-created'])]
+
+    def __str__(self):
+        return f'{self.custom_destination_id} → {"ON" if self.new_state else "OFF"} ({self.source})'
 
 
 class CallerExtensionAffinity(models.Model):

@@ -3,6 +3,39 @@
 All notable changes to IHS-PBX are documented in this file.
 Newest entries on top.
 
+## 2026-06-18
+
+### Migration — extension & DID importer pulling from the legacy OpenAPI
+New standalone script `backend/sip2fs_migration/import_extensions_api.py` that bulk-imports a tenant's extensions and DIDs directly from the legacy PBX OpenAPI (instead of hand-built CSVs):
+
+- **Extensions** are fetched from `…/openapi.php/extensions` and created/updated against the tenant. The API does not expose passwords, so each extension gets a fresh 16-char password generated with the **same scheme as the frontend** (`Extensions.jsx::generatePassword` — ≥1 upper, ≥1 lower, ≥1 digit, 13 more alphanumeric, Fisher-Yates shuffled), using `secrets` for crypto-quality randomness. Passwords are guaranteed unique within a run.
+- **DIDs** are fetched from `…/openapi.php/dids` (derived from the same base) and mapped into `Destination`: E.164 built from `di_country`+`di_area`+`di_number`, name/comment, and fax settings (receive flag, station id, protocol, email, store) + CNAM. Deduped against existing `destination_number` and within the feed.
+- **Ergonomics:** only `--tenant` and `--api-key` are required — the OpenAPI base is defaulted (override with `--api-base`) and `--api-tenant` defaults to `--tenant`. Supports `--dry-run`, `--update`, `--extensions-only`, `--dids-only`.
+
+### Custom Destinations — Toggle (BLF switch) made fully working
+A toggle custom destination (a DB-backed ON/OFF switch that routes inbound calls to one of two destinations and shows a phone BLF lamp) was effectively non-functional. Fixed end to end:
+
+- **Routing now follows the toggle state.** A DID pointed at a `kind='toggle'` custom destination was resolving to the toggle's own `dest_type` (usually `hangup`), so inbound calls just answered and hung up regardless of ON/OFF. `_resolve_dest_action` now transfers a toggle target into its router (`transfer toggle_<uuid> XML default-<tenant>`), which follows the ON branch (`<action>`) / OFF branch (`<anti-action>`) — e.g. ON→ext 901, OFF→ext 909 (`backend/freeswitch_config/generators.py`)
+- **Key press reaching the destination but never flipping — fixed.** The router gate (`^toggle_<uuid>$`) had `break="never"`, so a plain dialled number fell through into the state conditions, matched `^true$`, and routed to the ON destination instead of the flip handler. The gate now hard-stops (default `break=on-false`) so a dialled number falls to `toggle_blf_<uuid>` and flips the state
+- **Multi-tenant dialable number.** The toggle's BLF/feature-code extension is now matched in both bare and tenant-suffixed forms (`800` and `800-IHDT`), matching how extensions/parking are dialed inside a `default-<tenant>` context
+
+### Custom Destinations — virtual BLF lamp (green/red) via FusionPBX `flow+` proto
+A bare `<ext>@domain` presence cannot light a BLF lamp for a virtual extension — FreeSWITCH renders any entity with no registration as `closed`/`Unregistered` (verified: plain presence, dialog-inject, and held-loopback all fail). Adopted the FusionPBX feature-code lamp mechanism:
+
+- **New self-contained `deploy/freeswitch/scripts/blf_subscribe.lua`** (no FusionPBX framework dependency): binds `PRESENCE_PROBE`, and for `proto=flow` publishes the lamp from the mod_db key `call_flow_status/*<ext>-<TENANT>@<domain>` using FusionPBX `turn_lamp` headers (`confirmed`=lit, `terminated`=off). Enabled as a `startup-script` in `lua.conf.xml` (`deploy/freeswitch/lua.conf.xml`)
+- **Phone BLF key Value is `flow+*<ext>-<TENANT>`** (e.g. `flow+*800-IHDT`), tenant-suffixed for multi-tenant isolation — same convention as park keys (`park+…`)
+- **Lamp polarity:** ON = green (unlit), OFF = red (lit). `CustomDestination.push_toggle_state` and the dialplan `toggle_exec` keep the `call_flow_status/*…` mod_db key in sync (`backend/apps/custom_destinations/models.py`, `backend/esl/client.py` — `presence_in` now splits the proto from the `+`)
+- **"Worked only once" — fixed.** A direct `PRESENCE_IN` does not generate a NOTIFY for a flow-proto subscription, so the lamp only updated on the phone's first subscribe. Both the UI/API push and the dialplan flip now fire a `PRESENCE_PROBE`, which the running `blf_subscribe.lua` answers via the same path as the initial subscribe — so the lamp updates on every change
+- **"No Response" on the phone — fixed.** A Grandstream BLF key press dials its full Value (`flow+*800-IHDT`), which the dialplan didn't match; the press fell through, never answered cleanly, and the phone showed "No Response" (state still flipped). The toggle BLF extension now matches the `flow+*` form, answers, plays a clear ON/OFF confirmation tone, and hangs up with `NORMAL_CLEARING`
+
+### Custom Destinations — toggle flips kept out of CDR, logged separately
+- **Toggle flips are no longer recorded as calls.** The dialplan tags the flip leg `ihs_toggle_flip=true`; CDR ingest (`backend/freeswitch_config/views.py` `_process_cdr`) detects the tag and returns early — no `XmlCdr` row
+- **New `ToggleEvent` audit log** (`backend/apps/custom_destinations/models.py`, table `v_custom_destination_toggle_events`, migration `custom_destinations 0020`) records each ON/OFF change with state, source (`blf`/`ui`/`api`), actor, and timestamp. Phone-key flips are logged during CDR ingest; UI/API flips in the `set-state` view
+- **New endpoint** `GET /api/.../custom-destinations/{uuid}/toggle-events/?limit=N` returns recent flips for display on the custom destination page
+
+### Deploy
+- Staged the BLF lamp setup for future servers: `deploy/freeswitch/scripts/blf_subscribe.lua`, `deploy/freeswitch/lua.conf.xml`, and a step in `deploy/install.sh` (copy the script, enable the `startup-script` line, program phones with `flow+*<ext>-<TENANT>`)
+
 ## 2026-06-17
 
 ### CDR — per-leg SIP/PCAP capture & viewer

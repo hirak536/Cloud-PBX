@@ -147,6 +147,7 @@ export const extensions = {
   update: (id, data) => api.put(`/extensions/${id}/`, data),
   patch: (id, data) => api.patch(`/extensions/${id}/`, data),
   delete: (id) => api.delete(`/extensions/${id}/`),
+  bulkDelete: (ids) => api.post('/extensions/bulk_delete/', { ids }),
   reload: () => api.post('/extensions/reload/'),
   checkNumber: (number, excludePk) => api.get('/extensions/check_number/', { params: { number, ...(excludePk ? { exclude_pk: excludePk } : {}) } }),
 }

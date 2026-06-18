@@ -150,9 +150,65 @@ class CacheFlushView(APIView):
         return Response({'flushed': ['dialplan:xml:*', 'directory:xml:*', 'config:xml:*']})
 
 
+def _log_toggle_flip_from_cdr(var):
+    """Record a phone-side toggle flip in the ToggleEvent log (not the CDR).
+
+    Resolves the CustomDestination from the dialed number (bare ext, -TENANT, or
+    the flow+* BLF form) and stores the resulting state, read from the dialplan's
+    db key custom_toggle/<uuid>.
+    """
+    from apps.custom_destinations.models import CustomDestination, ToggleEvent
+
+    dialed = (var('destination_number') or var('sip_req_user')
+              or var('sip_to_user') or '')
+    # Normalise the flow+* / -TENANT forms down to the bare extension.
+    code = dialed
+    if code.startswith('flow+*'):
+        code = code[len('flow+*'):]
+    ext = code.rsplit('-', 1)[0] if '-' in code else code
+    if not ext:
+        return
+
+    cd = (CustomDestination.objects
+          .filter(kind='toggle', toggle_extension=ext)
+          .select_related('tenant').first())
+    if not cd:
+        return
+
+    # New state = the dialplan's freshly-written db value (fallback to model).
+    new_state = cd.toggle_state
+    try:
+        from esl.client import get_esl_client
+        raw = get_esl_client().db_select(f'custom_toggle/{cd.custom_destination_uuid}')
+        if raw in ('true', 'false'):
+            new_state = (raw == 'true')
+            if new_state != cd.toggle_state:   # keep DB in sync with the phone flip
+                cd.toggle_state = new_state
+                cd.save(update_fields=['toggle_state'])
+    except Exception:
+        pass
+
+    actor = var('caller_id_number') or var('sip_from_user') or ''
+    ToggleEvent.objects.create(
+        custom_destination=cd, tenant=cd.tenant,
+        new_state=new_state, source='blf', actor=actor,
+    )
+
+
 def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
     """Shared CDR processing logic used by both XML and Lua CDR ingest views."""
     from apps.xml_cdr.models import XmlCdr
+
+    # Toggle (BLF switch) flips are tagged ihs_toggle_flip=true in the dialplan.
+    # They are NOT real calls, so they must never land in the CDR. Record them in
+    # the separate ToggleEvent log instead (so phone-key flips show on the custom
+    # destination page) and return early.
+    if (var('variable_ihs_toggle_flip') or var('ihs_toggle_flip')) == 'true':
+        try:
+            _log_toggle_flip_from_cdr(var)
+        except Exception as exc:  # never let logging break CDR ingest
+            logger.warning('toggle flip log failed: %s', exc)
+        return HttpResponse('OK')
 
     domain_name = var('domain_name') or var('variable_domain_name') or var('sip_to_host')
     domain = _resolve_domain(domain_name) if domain_name else None

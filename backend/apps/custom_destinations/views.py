@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.filters import SearchFilter
 from django_filters.rest_framework import DjangoFilterBackend
 from core.mixins import TenantScopedViewSetMixin, write_audit_log
-from .models import CustomDestination, CallerExtensionAffinity
+from .models import CustomDestination, CallerExtensionAffinity, ToggleEvent
 from .serializers import (
     CustomDestinationSerializer,
     CustomDestinationListSerializer,
@@ -83,11 +83,36 @@ class CustomDestinationViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
         cd.toggle_state = bool(desired)
         cd.save(update_fields=['toggle_state'])
         pushed = cd.push_toggle_state()
+        # Separate audit log (these flips are deliberately kept out of the CDR).
+        src = 'api' if getattr(request, 'auth', None) else 'ui'
+        actor = getattr(request.user, 'username', '') or ''
+        ToggleEvent.objects.create(
+            custom_destination=cd, tenant=cd.tenant,
+            new_state=cd.toggle_state, source=src, actor=actor,
+        )
         return Response({
             'custom_destination_uuid': str(cd.custom_destination_uuid),
             'state': cd.toggle_state,
             'pushed_to_freeswitch': pushed,
         })
+
+    @action(detail=True, methods=['get'], url_path='toggle-events')
+    def toggle_events(self, request, pk=None):
+        """Recent ON/OFF flips for this toggle (the separate log shown on the
+        custom destination page, since these are kept out of the CDR)."""
+        cd = self.get_object()
+        try:
+            limit = min(int(request.query_params.get('limit', 50)), 200)
+        except (TypeError, ValueError):
+            limit = 50
+        events = cd.toggle_events.all()[:limit]
+        return Response([{
+            'toggle_event_uuid': str(e.toggle_event_uuid),
+            'new_state': e.new_state,
+            'source': e.source,
+            'actor': e.actor,
+            'created': e.created.isoformat(),
+        } for e in events])
 
     @action(detail=False, methods=['post'], url_path='resync-toggles')
     def resync_toggles(self, request):

@@ -50,6 +50,26 @@ class ExtensionViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
         conflicts = check_extension_conflict(number, tenant, exclude_model=None, exclude_pk=exclude_pk)
         return Response({'available': len(conflicts) == 0, 'conflicts': conflicts})
 
+    @action(detail=False, methods=['post'], url_path='bulk_delete')
+    def bulk_delete(self, request):
+        """Delete multiple extensions at once. Payload: {"ids": [uuid, ...]}.
+
+        Scoped through get_queryset() so a tenant can only delete its own rows;
+        any id not visible to the caller is reported back as skipped.
+        """
+        ids = request.data.get('ids') or []
+        if not isinstance(ids, list) or not ids:
+            return Response({'detail': 'Provide a non-empty "ids" list.'}, status=400)
+        qs = self.get_queryset().filter(pk__in=ids)
+        found = [str(pk) for pk in qs.values_list('pk', flat=True)]
+        deleted_count = qs.count()
+        qs.delete()
+        skipped = [str(i) for i in ids if str(i) not in set(found)]
+        if deleted_count:
+            from esl.tasks import reload_xml
+            reload_xml.delay()
+        return Response({'deleted': found, 'deleted_count': deleted_count, 'skipped': skipped})
+
     @action(detail=False, methods=['get'])
     def export(self, request):
         response = HttpResponse(content_type='text/csv')

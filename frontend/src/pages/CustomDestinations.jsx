@@ -4,6 +4,8 @@ import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/component
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { customDestinations as api } from '@/api'
 import { useDestinationData } from '@/hooks/useDestinationData'
+import { useSelector } from 'react-redux'
+import { selectTenant } from '@/store'
 import DestinationPicker from '@/components/DestinationPicker'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -118,8 +120,13 @@ const KIND_REGISTRY = {
     label: 'Toggle (BLF switch)',
     icon: ToggleRight,
     description: 'A BLF switch with its own dialable number. Subscribe a phone BLF key to the number: GREEN = ON (routes to the ON destination), RED = OFF (routes to the OFF destination). Pressing the key flips it.',
-    renderBody: ({ form, setForm, destData, destLoading, destSearchLoading, searchDestData, editId }) => {
+    renderBody: ({ form, setForm, destData, destLoading, destSearchLoading, searchDestData, editId, currentTenant }) => {
       const inUse = blfNumberConflict(form.toggle_extension, destData, editId)
+      const tc = currentTenant?.tenant_code
+      // Dialable form FreeSWITCH matches inside the tenant context (e.g. 801-IHS),
+      // mirroring how extensions are dialed. Subscribe the phone's BLF key to the
+      // bare number; the lamp follows presence at <number>@domain.
+      const dialForm = (n) => (n && tc ? `${n}-${tc}` : n || '')
       return (
       <>
         <div className="grid grid-cols-2 gap-3">
@@ -133,6 +140,12 @@ const KIND_REGISTRY = {
             {inUse && (
               <p className="mt-1 text-xs text-amber-600">
                 Already in use by {inUse.kind} “{inUse.label}”. Pick a different number.
+              </p>
+            )}
+            {form.toggle_extension && tc && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Dials as <span className="font-mono text-foreground">{dialForm(form.toggle_extension)}</span> in this tenant.
+                Subscribe the BLF key to <span className="font-mono text-foreground">{form.toggle_extension}</span>.
               </p>
             )}
           </Field>
@@ -152,6 +165,11 @@ const KIND_REGISTRY = {
             value={form.toggle_feature_code}
             onChange={e => setForm(p => ({ ...p, toggle_feature_code: e.target.value }))}
           />
+          {form.toggle_feature_code && tc && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Dials as <span className="font-mono text-foreground">{dialForm(form.toggle_feature_code)}</span> in this tenant.
+            </p>
+          )}
         </Field>
         <Field label="ON destination (green) *" hint="Where calls go while the toggle is ON.">
           <DestinationPicker
@@ -780,6 +798,7 @@ export function AffinityPanel({ open, onClose }) {
 }
 
 export default function CustomDestinations() {
+  const { currentTenant } = useSelector(selectTenant)
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -1014,7 +1033,7 @@ export default function CustomDestinations() {
             {/* Kind-specific body */}
             {(KIND_REGISTRY[form.kind] || KIND_REGISTRY.simple).renderBody({
               form, setForm, destData, destLoading, destSearchLoading, searchDestData,
-              cdOptions: rows, editId,
+              cdOptions: rows, editId, currentTenant,
               openAffinity: () => setAffinityOpen(true),
             })}
 

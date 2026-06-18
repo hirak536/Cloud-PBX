@@ -8,6 +8,7 @@ from django.conf import settings
 from lxml import etree
 import logging
 import re
+import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -413,6 +414,33 @@ def generate_directory_xml(domain_name, user=None):
             slot_vars = etree.SubElement(slot_user, 'variables')
             etree.SubElement(slot_vars, 'variable', name='presence_id', value=f'park+{slot_ext}@{domain_name}')
 
+    # Add toggle (BLF switch) custom destinations as REGISTRABLE directory users.
+    # Unlike parking slots (which get presence from mod_valet_parking), a toggle's
+    # presence comes from our own PRESENCE_IN pushes — and FreeSWITCH only honours
+    # those for an entity that has a real registration. So the toggle user gets a
+    # password: a phantom device (softphone/ATA) registers as <ext>-<tenant>, which
+    # anchors the entity so push_toggle_state() can drive the lamp green/red.
+    # Password is derived deterministically from the UUID (no DB column needed;
+    # regen stays idempotent). number-alias lets a bare-<ext> dial/subscribe resolve.
+    if not user:
+        from apps.custom_destinations.models import CustomDestination
+        toggles = CustomDestination.objects.select_related('tenant').filter(
+            domain=domain, kind='toggle').exclude(toggle_extension='')
+        for cd in toggles:
+            tc = cd.tenant.tenant_code if cd.tenant_id else None
+            t_ext = f'{cd.toggle_extension}-{tc}' if tc else str(cd.toggle_extension)
+            t_pass = uuid.uuid5(uuid.NAMESPACE_OID, str(cd.custom_destination_uuid)).hex
+            t_ctx = f'default-{tc}' if tc else 'default'
+            t_user = etree.SubElement(users_el, 'user', id=t_ext,
+                                      attrib={'number-alias': str(cd.toggle_extension)})
+            t_params = etree.SubElement(t_user, 'params')
+            etree.SubElement(t_params, 'param', name='password', value=t_pass)
+            t_vars = etree.SubElement(t_user, 'variables')
+            etree.SubElement(t_vars, 'variable', name='user_context', value=t_ctx)
+            # Presence published at the BARE number (phones subscribe to bare 800).
+            etree.SubElement(t_vars, 'variable', name='presence_id',
+                             value=f'{cd.toggle_extension}@{domain_name}')
+
     return etree.tostring(root, pretty_print=True, xml_declaration=True, encoding='UTF-8').decode()
 
 
@@ -620,6 +648,14 @@ def _resolve_dest_action(dest, domain_name, preload=None):
         elif dtype == 'custom_destination':
             from apps.custom_destinations.models import CustomDestination
             cd = _pl_get('custom_dests', target) or CustomDestination.objects.get(custom_destination_uuid=target)
+            if cd.kind == 'toggle':
+                # Route through the toggle router so the call follows the current
+                # ON/OFF branch. Without this it fell through to cd.dest_type
+                # (often 'hangup'), so an inbound DID just answered and hung up
+                # instead of honouring the green/red state.
+                code = cd.tenant.tenant_code if cd.tenant_id else None
+                ctx = f'default-{code}' if code else 'default'
+                return [('transfer', f'toggle_{cd.custom_destination_uuid} XML {ctx}')]
             if cd.kind == 'sticky_last_agent' and cd.tenant_id:
                 # Sticky-routing resolved in Python using the caller_id_number that
                 # was passed into the dialplan generator at request time.
@@ -1404,9 +1440,15 @@ def _toggle_custom_dest_to_dialplan_xml(cd, domain_name, ctx_name, preload=None)
     uid = str(cd.custom_destination_uuid)
     ext = cd.toggle_extension
     fc = cd.toggle_feature_code
-    # Presence at <ext>@domain so a standard BLF subscription to the number works,
-    # exactly like subscribing a key to a real extension.
-    presence_id = f'{ext}@{domain_name}'
+    # Lamp uses the FusionPBX 'flow+' proto (served by scripts/blf_subscribe.lua);
+    # a bare <ext>@domain presence cannot light a virtual key. The feature code is
+    # tenant-suffixed (flow+*<ext>-<tenant>) for multi-tenant isolation, matching
+    # extensions/parking. Phone BLF value is 'flow+*<ext>-<tenant>' (e.g.
+    # flow+*800-IHDT). blf_subscribe.lua reads state from call_flow_status/*<code>@dom.
+    _tc = cd.tenant.tenant_code if cd.tenant_id else None
+    flow_code = f'{ext}-{_tc}' if _tc else ext
+    presence_id = f'flow+*{flow_code}@{domain_name}'
+    flow_state_key = f'call_flow_status/*{flow_code}@{domain_name}'
     db_key = f'custom_toggle/{uid}'
     # The stored value is 'true' (ON) or 'false' (OFF). When mod_db has no value
     # yet (fresh FreeSWITCH, or after a flush), seed it from the DB canonical
@@ -1422,10 +1464,15 @@ def _toggle_custom_dest_to_dialplan_xml(cd, domain_name, ctx_name, preload=None)
     # Other destinations transfer to toggle_route_<uuid>; it picks the branch by
     # current state. This is the routing path, NOT the BLF lamp (no hint here).
     route_el = etree.Element('extension', name=f'toggle_route_{uid}')
+    # Gate on the internal routing token ONLY. This MUST hard-stop (break=on-false,
+    # the default) when it doesn't match: otherwise break="never" lets a plain
+    # dialled number (e.g. the BLF key press dialling 800) fall through into the
+    # state conditions below, match ^true$, and get routed to the ON destination —
+    # so the key press hits the destination and never reaches toggle_blf_<uuid> to
+    # flip the state. (This was the "green goes to destination, never turns red" bug.)
     etree.SubElement(route_el, 'condition',
                      field='destination_number',
-                     expression=f'^toggle_{re.escape(uid)}$',
-                     attrib={'break': 'never'})
+                     expression=f'^toggle_{re.escape(uid)}$')
     # Each branch is a (type, target_uuid, external) triple — same shape as the
     # simple-kind dest_* fields — so it can route to ANY destination type via the
     # shared _resolve_dest_action. A tiny shim exposes the triple under the
@@ -1481,40 +1528,80 @@ def _toggle_custom_dest_to_dialplan_xml(cd, domain_name, ctx_name, preload=None)
 
     # ── 2. BLF extension (the dialable number + lamp) ────────────────────────
     # hint=presence_id drives the lamp; dialing the number flips the toggle.
-    blf_dial_exprs = [re.escape(ext)]
+    # Inside a tenant context the dialled number is suffixed with the tenant
+    # code (e.g. 801-IHS), exactly like extensions and parking slots — see
+    # member_dialed_ext / slot_ext. Without this the toggle never matches in a
+    # multi-tenant setup. We accept both forms so a phone configured with the
+    # bare number still works.
+    tenant_code = cd.tenant.tenant_code if cd.tenant_id else None
+    def _dial_forms(n):
+        forms = [re.escape(n)]
+        if tenant_code:
+            forms.append(re.escape(f'{n}-{tenant_code}'))
+        return forms
+    blf_dial_exprs = _dial_forms(ext)
     if fc:
-        blf_dial_exprs.append(re.escape(fc))
-    blf_el = etree.Element('extension', name=f'toggle_blf_{uid}',
-                           attrib={'hint': presence_id})
+        blf_dial_exprs.extend(_dial_forms(fc))
+    # CRITICAL: a Grandstream BLF key PRESS dials its full Value, i.e.
+    # 'flow+*800-IHDT' — not the bare number. If we don't match that, the press
+    # falls through, never answers cleanly, and the phone shows "No Response"
+    # (even though the toggle still flips). Match the flow+ form too.
+    blf_dial_exprs.append(re.escape(f'flow+*{flow_code}'))
+    # No 'hint' attr: the lamp is served by blf_subscribe.lua via the phone's
+    # direct SUBSCRIBE to flow+*<ext>, not by an internal dialplan hint.
+    blf_el = etree.Element('extension', name=f'toggle_blf_{uid}')
     blf_cond = etree.SubElement(blf_el, 'condition',
                                 field='destination_number',
                                 expression=f'^({"|".join(blf_dial_exprs)})$')
+    # Mark this leg so CDR ingest skips it — a toggle flip is not a real call.
+    etree.SubElement(blf_cond, 'action', application='set',
+                     data='ihs_toggle_flip=true')
     etree.SubElement(blf_cond, 'action', application='answer')
-    etree.SubElement(blf_cond, 'action', application='sleep', data='300')
+    etree.SubElement(blf_cond, 'action', application='sleep', data='200')
     etree.SubElement(blf_cond, 'action', application='execute_extension',
                      data=f'toggle_exec_{uid} XML {ctx_name}')
-    etree.SubElement(blf_cond, 'action', application='hangup')
+    # Graceful, explicit normal clearing so the phone shows a completed call,
+    # not a failure.
+    etree.SubElement(blf_cond, 'action', application='hangup',
+                     data='NORMAL_CLEARING')
     elements.append(blf_el)
 
     # ── 3. Internal flip-exec (matched by uuid, never dialled directly) ─────
+    # The lamp is served by blf_subscribe.lua on the flow+ proto. We do NOT
+    # publish presence directly here — a direct PRESENCE_IN does not generate a
+    # NOTIFY for a flow-proto subscription (lamp would only update on the phone's
+    # next re-subscribe). Instead we flip the mod_db state key and fire a
+    # PRESENCE_PROBE; the running Lua handler answers it via the same path as the
+    # initial subscribe and pushes the correct colour to the phone immediately.
+    probe = (f"Event-Name=PRESENCE_PROBE,proto=flow,event_type=presence,"
+             f"expires=3600,from={presence_id},to={presence_id}")
     exec_el = etree.Element('extension', name=f'toggle_exec_{uid}')
-    # Currently ON (true) → turn OFF, publish 'terminated' (lamp goes red).
+    # Currently ON (true) → turn OFF (RED).
     exec_cond = etree.SubElement(exec_el, 'condition',
                                  field=state_expr,
                                  expression='^true$')
+    # Clear audible confirmation so the user knows the press registered (the
+    # old single 200ms beep was easy to miss → felt like "no response").
+    #   OFF: a low descending double beep.  ON: a high ascending double beep.
+    # A short trailing sleep keeps the leg up so the tone isn't clipped before
+    # the phone plays it.
+    off_tone = 'tone_stream://%(150,80,500,400);%(300,0,400,300)'
+    on_tone  = 'tone_stream://%(150,80,600,800);%(300,0,800,1000)'
     etree.SubElement(exec_cond, 'action', application='db',
                      data=f'insert/{db_key}/false')
-    etree.SubElement(exec_cond, 'action', application='presence',
-                     data=f'terminated {presence_id}')
-    etree.SubElement(exec_cond, 'action', application='playback',
-                     data='tone_stream://%(200,0,400)')
-    # Not ON (false or empty) → turn ON, publish 'confirmed' (lamp goes green).
+    etree.SubElement(exec_cond, 'action', application='db',
+                     data=f'insert/{flow_state_key}/false')
+    etree.SubElement(exec_cond, 'action', application='event', data=probe)
+    etree.SubElement(exec_cond, 'action', application='playback', data=off_tone)
+    etree.SubElement(exec_cond, 'action', application='sleep', data='400')
+    # Not ON (false or empty) → turn ON (GREEN).
     etree.SubElement(exec_cond, 'anti-action', application='db',
                      data=f'insert/{db_key}/true')
-    etree.SubElement(exec_cond, 'anti-action', application='presence',
-                     data=f'confirmed {presence_id}')
-    etree.SubElement(exec_cond, 'anti-action', application='playback',
-                     data='tone_stream://%(200,0,800)')
+    etree.SubElement(exec_cond, 'anti-action', application='db',
+                     data=f'insert/{flow_state_key}/true')
+    etree.SubElement(exec_cond, 'anti-action', application='event', data=probe)
+    etree.SubElement(exec_cond, 'anti-action', application='playback', data=on_tone)
+    etree.SubElement(exec_cond, 'anti-action', application='sleep', data='400')
     elements.append(exec_el)
 
     return elements

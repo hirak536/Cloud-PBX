@@ -104,22 +104,36 @@ class FreeSwitchESL:
                     state: str = 'confirmed') -> str:
         """Publish a PRESENCE_IN event so subscribed BLF keys update.
 
-        presence_id: the entity, e.g. "801@domain".
-        state: 'confirmed'/'early' light the lamp (green), 'terminated' clears it (red).
+        presence_id: the entity. For feature-code lamps this is the FusionPBX
+        'flow+' form, e.g. "flow+*800@domain". The proto is the part before '+'
+        ('flow'); the published login/from is the part after it ('*800@domain').
+        For a plain id (no '+') proto defaults to 'sip'.
+        state: 'confirmed'/'early' light the lamp (red/busy), 'terminated' clears it.
+
+        Headers mirror FusionPBX presence_in.turn_lamp so behaviour matches the
+        blf_subscribe.lua handler exactly.
         """
-        proto = 'fs_toggle'
+        userid, _, domain = presence_id.partition('@')
+        if '+' in userid:
+            proto, _, after = userid.partition('+')
+            login = f'{after}@{domain}' if domain else after
+        else:
+            proto, login = 'sip', presence_id
+
         headers = {
             'proto': proto,
-            'login': presence_id,
-            'from': presence_id,
+            'login': login,
+            'from': login,
             'status': status,
-            'rpid': 'unknown',
             'event_type': 'presence',
             'alt_event_type': 'dialog',
+            'Presence-Call-Direction': 'outbound',
             'answer-state': state,
-            'presence-call-direction': 'outbound',
-            'unique-id': presence_id,
+            'unique-id': login,
         }
+        if state == 'confirmed':
+            headers['rpid'] = 'unknown'
+            headers['event_count'] = '1'
         return self.sendevent('PRESENCE_IN', headers)
 
     def db_select(self, key: str) -> str:

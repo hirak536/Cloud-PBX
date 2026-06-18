@@ -1523,6 +1523,8 @@ export default function Extensions() {
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(null)
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [bulkDeleting, setBulkDeleting] = useState(false)
   const [copiedId, setCopiedId] = useState(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -1794,6 +1796,32 @@ export default function Extensions() {
     finally { setDeleting(null) }
   }
 
+  const toggleSelected = (id) => setSelectedIds((prev) => {
+    const next = new Set(prev)
+    next.has(id) ? next.delete(id) : next.add(id)
+    return next
+  })
+
+  const allSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r.extension_uuid || r.id))
+  const toggleSelectAll = () => setSelectedIds((prev) => {
+    if (allSelected) return new Set()
+    return new Set(rows.map((r) => r.extension_uuid || r.id))
+  })
+
+  const handleBulkDelete = async () => {
+    const ids = [...selectedIds]
+    if (ids.length === 0) return
+    if (!confirm(`Delete ${ids.length} selected extension${ids.length > 1 ? 's' : ''}? This cannot be undone.`)) return
+    setBulkDeleting(true)
+    try {
+      await extensionsApi.bulkDelete(ids)
+      setSelectedIds(new Set())
+      load()
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   const handleExport = async () => {
     setExporting(true)
     try {
@@ -1898,6 +1926,19 @@ export default function Extensions() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <button
+                    type="button"
+                    onClick={toggleSelectAll}
+                    title={allSelected ? 'Deselect all' : 'Select all on this page'}
+                    className={`grid h-5 w-5 place-items-center rounded-md border transition
+                      ${allSelected
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-muted-foreground/30 text-transparent hover:border-primary/60'}`}
+                  >
+                    <Check className="h-3.5 w-3.5" strokeWidth={3} />
+                  </button>
+                </TableHead>
                 <TableHead>Extension</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>SIP Username</TableHead>
@@ -1911,18 +1952,35 @@ export default function Extensions() {
               {loading ? (
                 [...Array(6)].map((_, i) => (
                   <TableRow key={i}>
-                    {[...Array(7)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
+                    {[...Array(8)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
                   </TableRow>
                 ))
               ) : rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-10 text-muted-foreground">No extensions found.</TableCell>
+                  <TableCell colSpan={8} className="text-center py-10 text-muted-foreground">No extensions found.</TableCell>
                 </TableRow>
               ) : (
                 rows.map((row) => {
                   const id = row.extension_uuid || row.id
                   return (
-                    <TableRow key={id}>
+                    <TableRow
+                      key={id}
+                      data-selected={selectedIds.has(id) || undefined}
+                      className="group data-[selected]:bg-primary/5"
+                    >
+                      <TableCell>
+                        <button
+                          type="button"
+                          onClick={() => toggleSelected(id)}
+                          title={selectedIds.has(id) ? 'Deselect' : 'Select'}
+                          className={`grid h-5 w-5 place-items-center rounded-md border transition
+                            ${selectedIds.has(id)
+                              ? 'border-primary bg-primary text-primary-foreground opacity-100'
+                              : 'border-muted-foreground/30 text-transparent opacity-0 hover:border-primary/60 group-hover:opacity-100'}`}
+                        >
+                          <Check className="h-3.5 w-3.5" strokeWidth={3} />
+                        </button>
+                      </TableCell>
                       <TableCell className="font-mono font-semibold">{row.extension}</TableCell>
                       <TableCell>{row.effective_caller_id_name || '—'}</TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">{row.sip_username || row.extension}</TableCell>
@@ -1982,6 +2040,35 @@ export default function Extensions() {
           />
         </CardContent>
       </Card>
+
+      {/* Floating selection action bar */}
+      <div
+        className={`pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-4 transition-all duration-300
+          ${selectedIds.size > 0 ? 'translate-y-0 opacity-100' : 'translate-y-8 opacity-0'}`}
+      >
+        <div className="pointer-events-auto flex items-center gap-3 rounded-full border bg-background/95 px-5 py-2.5 shadow-xl backdrop-blur supports-[backdrop-filter]:bg-background/80">
+          <span className="grid h-6 min-w-6 place-items-center rounded-full bg-primary px-2 text-xs font-semibold text-primary-foreground">
+            {selectedIds.size}
+          </span>
+          <span className="text-sm text-muted-foreground">
+            extension{selectedIds.size === 1 ? '' : 's'} selected
+          </span>
+          <div className="mx-1 h-5 w-px bg-border" />
+          <Button variant="ghost" size="sm" className="rounded-full" onClick={() => setSelectedIds(new Set())}>
+            Clear
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            className="rounded-full"
+            onClick={handleBulkDelete}
+            disabled={bulkDeleting}
+          >
+            {bulkDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            Delete
+          </Button>
+        </div>
+      </div>
 
       {/* Add / Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
