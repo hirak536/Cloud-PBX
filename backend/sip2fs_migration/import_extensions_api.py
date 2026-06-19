@@ -128,7 +128,7 @@ def import_dids(api_base, api_tenant, api_key, tenant, domain, dry_run, allow_up
         seen_numbers.add(number)
 
         comment = (row.get('di_comment') or '').strip()
-        name = (row.get('name') or comment or local).strip()
+        name = (row.get('di_comment') or '').strip()
 
         # Fax mapping — legacy di_fax: no/auto/force/storeandforward/forcedirect...
         di_fax = (row.get('di_fax') or 'no').strip().lower()
@@ -226,10 +226,8 @@ def run(api_base, api_tenant, api_key, tenant_code, dry_run, allow_update,
             skipped += 1
             continue
 
-        if not name:
-            print(f"  SKIP  Item {i}: extension {number} — blank name, skipping")
-            skipped += 1
-            continue
+        # Blank name is allowed — fall back to the number for caller-ID/directory fields.
+        cid_name = name or number
 
         password = generate_password(seen_pwds)
         username = f"{number}-{tenant_code}"
@@ -244,10 +242,10 @@ def run(api_base, api_tenant, api_key, tenant_code, dry_run, allow_update,
                 continue
             if not dry_run:
                 existing.password = password
-                existing.effective_caller_id_name = name or existing.effective_caller_id_name
+                existing.effective_caller_id_name = cid_name
                 existing.sip_username = username or existing.sip_username
                 existing.save()
-            print(f"  UPDATE Item {i}: {number} ({name})")
+            print(f"  UPDATE Item {i}: {number} ({name or '—'})")
             updated += 1
         else:
             if not dry_run:
@@ -255,7 +253,7 @@ def run(api_base, api_tenant, api_key, tenant_code, dry_run, allow_update,
                     tenant=tenant,
                     extension=number,
                     password=password,
-                    effective_caller_id_name=name,
+                    effective_caller_id_name=cid_name,
                     effective_caller_id_number=number,
                     directory_full_name=name,
                     voicemail_enabled=True,
@@ -270,7 +268,7 @@ def run(api_base, api_tenant, api_key, tenant_code, dry_run, allow_update,
                     forward_user_not_registered_enabled=True,
                     forward_user_not_registered_destination=vm_dest,
                 )
-            print(f"  CREATE Item {i}: {number} ({name})")
+            print(f"  CREATE Item {i}: {number} ({name or '—'})")
             created += 1
 
     print()

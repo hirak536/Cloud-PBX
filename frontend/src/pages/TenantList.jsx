@@ -72,7 +72,7 @@ const TIMEZONES = [
 
 // Known webhook URL presets
 const WEBHOOK_PRESETS = [
-  { label: 'FS1-Staging', value: 'https://fsapi.ihsclients.com/company/webhook' },
+  { label: 'IHSPhone', value: 'https://api.ihsphone.com/company/webhook' },
   { label: 'Other (custom URL)', value: '__other__' },
 ]
 
