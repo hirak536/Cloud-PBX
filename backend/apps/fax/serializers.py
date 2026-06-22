@@ -27,6 +27,11 @@ class FaxSerializer(serializers.ModelSerializer):
         model = Fax
         fields = '__all__'
         read_only_fields = ['fax_uuid', 'insert_date', 'insert_user', 'update_date', 'update_user']
+        extra_kwargs = {
+            # Never expose the stored FTP password in API responses. It can be
+            # written (set/updated) but is omitted from serialized output.
+            'fax_ftp_password': {'write_only': True, 'required': False},
+        }
 
 class FaxListSerializer(serializers.ModelSerializer):
     class Meta:

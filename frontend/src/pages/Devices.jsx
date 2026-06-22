@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { devices as api } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,18 +8,23 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Plus, Pencil, Trash2, Search, Loader2 } from 'lucide-react'
 
 const EMPTY = { device_mac_address: '', device_label: '', device_vendor: '', device_model: '', device_profile_name: '', enabled: true }
 
 export default function Devices() {
+  const navigate = useNavigate()
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/devices/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebounce(search, 300)
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
@@ -36,19 +42,37 @@ export default function Devices() {
   useEffect(() => { load() }, [load])
 
   const f = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
-  const openCreate = () => { setEditId(null); setForm(EMPTY); setFormError(''); setDialogOpen(true) }
-  const openEdit = (r) => {
-    setEditId(r.device_uuid || r.id)
-    setForm({ device_mac_address: r.device_mac_address || '', device_label: r.device_label || '', device_vendor: r.device_vendor || '', device_model: r.device_model || '', device_profile_name: r.device_profile_name || '', enabled: r.device_enabled !== false })
-    setFormError(''); setDialogOpen(true)
-  }
+
+  const rowToForm = (r) => ({
+    device_mac_address: r.device_mac_address || '',
+    device_label: r.device_label || '',
+    device_vendor: r.device_vendor || '',
+    device_model: r.device_model || '',
+    device_profile_name: r.device_profile_name || '',
+    enabled: r.device_enabled !== false,
+  })
+
+  const openCreate  = () => navigate('/devices/new')
+  const openEdit    = (r) => navigate('/devices/' + r.device_uuid + '/edit')
+  const closeEditor = () => navigate('/devices')
+
+  useEffect(() => {
+    if (!editorOpen) return
+    setFormError('')
+    if (isCreate) { setEditId(null); setForm(EMPTY); return }
+    setEditId(routeId)
+    const row = rows.find(r => r.device_uuid === routeId)
+    if (row) { setForm(rowToForm(row)); return }
+    api.get(routeId).then(({data}) => setForm(rowToForm(data))).catch(() => setForm(EMPTY))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   const handleSave = async () => {
     if (!form.device_mac_address) { setFormError('MAC address is required.'); return }
     setSaving(true); setFormError('')
     try {
       editId ? await api.update(editId, form) : await api.create(form)
-      setDialogOpen(false); load()
+      load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -59,6 +83,38 @@ export default function Devices() {
     if (!confirm('Delete this device?')) return
     setDeleting(id)
     try { await api.delete(id); load() } finally { setDeleting(null) }
+  }
+
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Devices
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New Device' : 'Edit Device'}</h1>
+        </div>
+
+        <Card>
+          <div className="px-6 py-5 space-y-4">
+            {formError && <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{formError}</div>}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="col-span-2 space-y-1.5"><Label>MAC Address *</Label><Input placeholder="00:11:22:33:44:55" value={form.device_mac_address} onChange={f('device_mac_address')} /></div>
+              <div className="space-y-1.5"><Label>Label</Label><Input placeholder="Reception Phone" value={form.device_label} onChange={f('device_label')} /></div>
+              <div className="space-y-1.5"><Label>Vendor</Label><Input placeholder="Yealink" value={form.device_vendor} onChange={f('device_vendor')} /></div>
+              <div className="space-y-1.5"><Label>Model</Label><Input placeholder="T46G" value={form.device_model} onChange={f('device_model')} /></div>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" onClick={closeEditor}>Cancel</Button>
+            <Button onClick={handleSave} disabled={saving}>{saving && <Loader2 className="h-4 w-4 animate-spin" />}{isCreate ? 'Create' : 'Save'}</Button>
+          </div>
+        </Card>
+      </div>
+    )
   }
 
   return (
@@ -97,28 +153,6 @@ export default function Devices() {
           </TableBody>
         </Table>
       </CardContent></Card>
-
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-md p-0 gap-0">
-          <DialogHeader className="px-6 py-4 border-b">
-            <DialogTitle>{editId ? 'Edit Device' : 'New Device'}</DialogTitle>
-            <DialogClose onClose={() => setDialogOpen(false)} />
-          </DialogHeader>
-          <div className="px-6 py-5 space-y-4">
-          {formError && <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{formError}</div>}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2 space-y-1.5"><Label>MAC Address *</Label><Input placeholder="00:11:22:33:44:55" value={form.device_mac_address} onChange={f('device_mac_address')} /></div>
-            <div className="space-y-1.5"><Label>Label</Label><Input placeholder="Reception Phone" value={form.device_label} onChange={f('device_label')} /></div>
-            <div className="space-y-1.5"><Label>Vendor</Label><Input placeholder="Yealink" value={form.device_vendor} onChange={f('device_vendor')} /></div>
-            <div className="space-y-1.5"><Label>Model</Label><Input placeholder="T46G" value={form.device_model} onChange={f('device_model')} /></div>
-          </div>
-          </div>
-          <DialogFooter className="px-6 py-3 border-t gap-2">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving}>{saving && <Loader2 className="h-4 w-4 animate-spin" />}{editId ? 'Save' : 'Create'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

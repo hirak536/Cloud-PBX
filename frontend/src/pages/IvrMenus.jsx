@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { ivrMenus as api, extensions as extensionsApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,7 +8,6 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Plus, Pencil, Trash2, Search, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -65,11 +65,17 @@ const TABS = [
 ]
 
 export default function IvrMenus() {
+  const navigate = useNavigate()
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/ivr-menus/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows]             = useState([])
   const [loading, setLoading]       = useState(true)
   const [search, setSearch]         = useState('')
   const debouncedSearch             = useDebounce(search, 300)
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId]         = useState(null)
   const [form, setForm]             = useState(EMPTY_FORM)
   const [saving, setSaving]         = useState(false)
@@ -118,61 +124,64 @@ export default function IvrMenus() {
 
   // ── Dialog open helpers ───────────────────────────────────────────────────
 
-  const openCreate = () => {
-    setEditId(null)
-    setForm({ ...EMPTY_FORM, options: makeEmptyOptions() })
-    setFormError('')
-    setTab('settings')
-    setDialogOpen(true)
-    loadDestData()
-    loadRecordings()
-  }
-
-  const openEdit = async (r) => {
-    const id = r.ivr_menu_uuid
-    setEditId(id)
-    setForm({ ...EMPTY_FORM, options: makeEmptyOptions() })
-    setFormError('')
-    setTab('settings')
-    setDialogOpen(true)
-    loadDestData()
-    loadRecordings()
-    try {
-      const { data: d } = await api.get(id)
-      const optionsMap = makeEmptyOptions()
-      for (const opt of d.options || []) {
-        const dig = opt.ivr_menu_option_digits
-        if (Object.hasOwn(optionsMap, dig)) {
-          optionsMap[dig] = {
-            type:            opt.ivr_menu_option_dest_type || '',
-            target_uuid:     opt.ivr_menu_option_dest_target_uuid || '',
-            external_number: opt.ivr_menu_option_dest_external_number || '',
-          }
+  const detailToForm = (d) => {
+    const optionsMap = makeEmptyOptions()
+    for (const opt of d.options || []) {
+      const dig = opt.ivr_menu_option_digits
+      if (Object.hasOwn(optionsMap, dig)) {
+        optionsMap[dig] = {
+          type:            opt.ivr_menu_option_dest_type || '',
+          target_uuid:     opt.ivr_menu_option_dest_target_uuid || '',
+          external_number: opt.ivr_menu_option_dest_external_number || '',
         }
       }
-      setForm({
-        ivr_menu_name:             d.ivr_menu_name || '',
-        ivr_menu_extension:        d.ivr_menu_extension || '',
-        ivr_menu_enabled:          d.ivr_menu_enabled !== false,
-        ivr_menu_greet_long:       d.ivr_menu_greet_long || '',
-        ivr_menu_greet_short:      d.ivr_menu_greet_short || '',
-        ivr_menu_playback_count:   d.ivr_menu_playback_count ?? 1,
-        ivr_menu_timeout:          Math.round((d.ivr_menu_timeout ?? 10000) / 1000),
-        ivr_menu_loop_timeout:     d.ivr_menu_loop_timeout !== false,
-        ivr_menu_loop_invalid:     d.ivr_menu_loop_invalid !== false,
-        ivr_menu_allow_internal_dial: d.ivr_menu_allow_internal_dial || false,
-        ivr_menu_allow_custom_codes:  d.ivr_menu_allow_custom_codes  || false,
-        ivr_menu_allow_feature_codes: d.ivr_menu_allow_feature_codes || false,
-        ivr_menu_internal_dial_invalid: {
-          type:            d.ivr_menu_internal_dial_invalid_type || '',
-          target_uuid:     d.ivr_menu_internal_dial_invalid_target_uuid || '',
-          external_number: d.ivr_menu_internal_dial_invalid_external_number || '',
-        },
-        ivr_menu_description:      d.ivr_menu_description || '',
-        options: optionsMap,
-      })
-    } catch { /* keep empty if fetch fails */ }
+    }
+    return {
+      ivr_menu_name:             d.ivr_menu_name || '',
+      ivr_menu_extension:        d.ivr_menu_extension || '',
+      ivr_menu_enabled:          d.ivr_menu_enabled !== false,
+      ivr_menu_greet_long:       d.ivr_menu_greet_long || '',
+      ivr_menu_greet_short:      d.ivr_menu_greet_short || '',
+      ivr_menu_playback_count:   d.ivr_menu_playback_count ?? 1,
+      ivr_menu_timeout:          Math.round((d.ivr_menu_timeout ?? 10000) / 1000),
+      ivr_menu_loop_timeout:     d.ivr_menu_loop_timeout !== false,
+      ivr_menu_loop_invalid:     d.ivr_menu_loop_invalid !== false,
+      ivr_menu_allow_internal_dial: d.ivr_menu_allow_internal_dial || false,
+      ivr_menu_allow_custom_codes:  d.ivr_menu_allow_custom_codes  || false,
+      ivr_menu_allow_feature_codes: d.ivr_menu_allow_feature_codes || false,
+      ivr_menu_internal_dial_invalid: {
+        type:            d.ivr_menu_internal_dial_invalid_type || '',
+        target_uuid:     d.ivr_menu_internal_dial_invalid_target_uuid || '',
+        external_number: d.ivr_menu_internal_dial_invalid_external_number || '',
+      },
+      ivr_menu_description:      d.ivr_menu_description || '',
+      options: optionsMap,
+    }
   }
+
+  const openCreate  = () => navigate('/ivr-menus/new')
+  const openEdit    = (r) => navigate('/ivr-menus/' + r.ivr_menu_uuid + '/edit')
+  const closeEditor = () => navigate('/ivr-menus')
+
+  // Sync form state to the current route.
+  useEffect(() => {
+    if (!editorOpen) return
+    setFormError('')
+    setTab('settings')
+    loadDestData()
+    loadRecordings()
+    if (isCreate) {
+      setEditId(null)
+      setForm({ ...EMPTY_FORM, options: makeEmptyOptions() })
+      return
+    }
+    setEditId(routeId)
+    setForm({ ...EMPTY_FORM, options: makeEmptyOptions() })
+    api.get(routeId)
+      .then(({ data: d }) => setForm(detailToForm(d)))
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   // ── Save ──────────────────────────────────────────────────────────────────
 
@@ -210,7 +219,7 @@ export default function IvrMenus() {
         options:                   optionsPayload,
       }
       editId ? await api.update(editId, payload) : await api.create(payload)
-      setDialogOpen(false); load()
+      load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -227,77 +236,19 @@ export default function IvrMenus() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  return (
-    <div className="space-y-4">
-      {/* Toolbar */}
-      <div className="flex items-center gap-3">
-        <div className="relative flex-1 max-w-xs">
-          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input placeholder="Search IVR menus…" className="pl-8" value={search} onChange={e => setSearch(e.target.value)} />
+  // Full-page editor (routed)
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← IVR Menus
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New IVR Menu' : 'Edit IVR Menu'}</h1>
         </div>
-        <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" /> Add IVR Menu</Button>
-      </div>
 
-      {/* Table */}
-      <Card><CardContent className="p-0 overflow-x-auto">
-        <Table>
-          <TableHeader><TableRow>
-            <TableHead>Extension</TableHead>
-            <TableHead>Name</TableHead>
-            <TableHead>Timeout</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead className="w-20" />
-          </TableRow></TableHeader>
-          <TableBody>
-            {loading
-              ? [...Array(4)].map((_, i) => (
-                  <TableRow key={i}>{[...Array(5)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}</TableRow>
-                ))
-              : rows.length === 0
-                ? <TableRow><TableCell colSpan={5} className="text-center py-10 text-muted-foreground">No IVR menus found.</TableCell></TableRow>
-                : rows.map(r => {
-                    const id = r.ivr_menu_uuid
-                    return (
-                      <TableRow key={id}>
-                        <TableCell className="font-mono font-medium">{r.ivr_menu_extension || '—'}</TableCell>
-                        <TableCell>{r.ivr_menu_name}</TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {r.ivr_menu_timeout ? `${Math.round(r.ivr_menu_timeout / 1000)}s` : '—'}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={r.ivr_menu_enabled !== false ? 'success' : 'secondary'}>
-                            {r.ivr_menu_enabled !== false ? 'Active' : 'Disabled'}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex gap-1">
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
-                              onClick={() => handleDelete(id)} disabled={deleting === id}>
-                              {deleting === id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    )
-                  })
-            }
-          </TableBody>
-        </Table>
-      </CardContent></Card>
-
-      {/* Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-2xl h-[92vh] sm:h-[88vh] flex flex-col p-0 gap-0">
-
-          {/* Header */}
-          <DialogHeader className="px-6 py-4 border-b shrink-0">
-            <DialogTitle>{editId ? 'Edit IVR Menu' : 'New IVR Menu'}</DialogTitle>
-            <DialogClose onClose={() => setDialogOpen(false)} />
-          </DialogHeader>
-
+        <Card>
           {/* Tabs */}
           <div className="px-6 pt-3 border-b shrink-0">
             <div className="flex">
@@ -316,7 +267,7 @@ export default function IvrMenus() {
           </div>
 
           {/* Body */}
-          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+          <div className="px-6 py-5 space-y-5">
             {formError && (
               <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {formError}
@@ -482,13 +433,13 @@ export default function IvrMenus() {
           </div>
 
           {/* Footer */}
-          <DialogFooter className="px-6 py-3 border-t shrink-0">
+          <div className="px-6 py-3 border-t shrink-0">
             <div className="flex items-center justify-between w-full">
               <span className="text-xs text-muted-foreground">
                 Step {TABS.findIndex(t => t.id === tab) + 1} of {TABS.length}
               </span>
               <div className="flex gap-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+                <Button variant="outline" onClick={closeEditor}>Cancel</Button>
                 {TABS.findIndex(t => t.id === tab) > 0 && (
                   <Button variant="outline" onClick={() => setTab(TABS[TABS.findIndex(t => t.id === tab) - 1].id)}>
                     ← Back
@@ -501,14 +452,77 @@ export default function IvrMenus() {
                 ) : (
                   <Button onClick={handleSave} disabled={saving}>
                     {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-                    {editId ? 'Save Changes' : 'Create IVR Menu'}
+                    {isCreate ? 'Create IVR Menu' : 'Save Changes'}
                   </Button>
                 )}
               </div>
             </div>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Toolbar */}
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input placeholder="Search IVR menus…" className="pl-8" value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" /> Add IVR Menu</Button>
+      </div>
+
+      {/* Table */}
+      <Card><CardContent className="p-0 overflow-x-auto">
+        <Table>
+          <TableHeader><TableRow>
+            <TableHead>Extension</TableHead>
+            <TableHead>Name</TableHead>
+            <TableHead>Timeout</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead className="w-20" />
+          </TableRow></TableHeader>
+          <TableBody>
+            {loading
+              ? [...Array(4)].map((_, i) => (
+                  <TableRow key={i}>{[...Array(5)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}</TableRow>
+                ))
+              : rows.length === 0
+                ? <TableRow><TableCell colSpan={5} className="text-center py-10 text-muted-foreground">No IVR menus found.</TableCell></TableRow>
+                : rows.map(r => {
+                    const id = r.ivr_menu_uuid
+                    return (
+                      <TableRow key={id}>
+                        <TableCell className="font-mono font-medium">{r.ivr_menu_extension || '—'}</TableCell>
+                        <TableCell>{r.ivr_menu_name}</TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {r.ivr_menu_timeout ? `${Math.round(r.ivr_menu_timeout / 1000)}s` : '—'}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={r.ivr_menu_enabled !== false ? 'success' : 'secondary'}>
+                            {r.ivr_menu_enabled !== false ? 'Active' : 'Disabled'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                              onClick={() => handleDelete(id)} disabled={deleting === id}>
+                              {deleting === id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })
+            }
+          </TableBody>
+        </Table>
+      </CardContent></Card>
     </div>
   )
 }

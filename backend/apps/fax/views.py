@@ -604,17 +604,26 @@ class FaxReceiveWebhookView(View):
             except Exception as wh_exc:
                 logger.error(f'FaxReceiveWebhookView: failed to fire webhook: {wh_exc}')
 
-        # Email the fax to the configured fax_email address (if set)
-        if file_status == 'received' and fax.fax_email:
-            try:
-                from .tasks import send_fax_email
-                send_fax_email.apply_async(
-                    args=[str(ff.fax_file_uuid)],
-                    countdown=10,  # Give FreeSWITCH time to finish writing the file
-                )
-                logger.info(f'FaxReceiveWebhookView: queued send_fax_email for {ff.fax_file_uuid}')
-            except Exception as email_exc:
-                logger.error(f'FaxReceiveWebhookView: failed to queue send_fax_email: {email_exc}')
+        # Deliver the received fax per the box's delivery mode: email, FTP, or both.
+        # Countdown gives FreeSWITCH time to finish writing the file.
+        if file_status == 'received':
+            mode = fax.fax_delivery_mode or 'email'
+
+            if mode in ('email', 'both') and fax.fax_email:
+                try:
+                    from .tasks import send_fax_email
+                    send_fax_email.apply_async(args=[str(ff.fax_file_uuid)], countdown=10)
+                    logger.info(f'FaxReceiveWebhookView: queued send_fax_email for {ff.fax_file_uuid}')
+                except Exception as email_exc:
+                    logger.error(f'FaxReceiveWebhookView: failed to queue send_fax_email: {email_exc}')
+
+            if mode in ('ftp', 'both') and fax.fax_ftp_host:
+                try:
+                    from .tasks import upload_fax_to_ftp
+                    upload_fax_to_ftp.apply_async(args=[str(ff.fax_file_uuid)], countdown=10)
+                    logger.info(f'FaxReceiveWebhookView: queued upload_fax_to_ftp for {ff.fax_file_uuid}')
+                except Exception as ftp_exc:
+                    logger.error(f'FaxReceiveWebhookView: failed to queue upload_fax_to_ftp: {ftp_exc}')
 
         return HttpResponse('OK')
 

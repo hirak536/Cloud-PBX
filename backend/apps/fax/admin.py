@@ -27,9 +27,19 @@ class FaxAdmin(admin.ModelAdmin):
         ('Caller ID', {
             'fields': ['fax_caller_id_name', 'fax_caller_id_number'],
         }),
+        ('Delivery', {
+            'fields': ['fax_delivery_mode'],
+            'description': 'How received faxes are delivered: emailed, uploaded to FTP, or both.',
+        }),
         ('Email Delivery', {
             'fields': ['fax_email', 'fax_email_connection'],
             'description': 'Received faxes can be emailed to this address.',
+        }),
+        ('FTP Delivery', {
+            'fields': ['fax_ftp_host', 'fax_ftp_port', 'fax_ftp_use_tls',
+                       'fax_ftp_username', 'fax_ftp_password', 'fax_ftp_path'],
+            'description': 'Received faxes can be uploaded to this FTP/FTPS server.',
+            'classes': ['collapse'],
         }),
         ('Routing', {
             'fields': ['fax_forward_number', 'fax_toll_allow', 'fax_accountcode'],

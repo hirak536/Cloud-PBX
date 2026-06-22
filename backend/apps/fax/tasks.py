@@ -317,3 +317,76 @@ def send_fax_email(self, fax_file_uuid: str):
     except Exception as exc:
         logger.error('send_fax_email: failed for %s: %s', fax_file_uuid, exc)
         raise self.retry(exc=exc, countdown=30)
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def upload_fax_to_ftp(self, fax_file_uuid: str):
+    """Upload a received inbound fax to the fax box's configured FTP/FTPS server.
+
+    Converts TIFF→PDF (best effort) before upload, then stores the file under the
+    box's configured remote path using Python's stdlib ftplib.
+    """
+    from ftplib import FTP, FTP_TLS, error_perm  # noqa: PLC0415
+    from .models import FaxFile  # noqa: PLC0415
+
+    try:
+        ff = FaxFile.objects.select_related('fax').get(fax_file_uuid=fax_file_uuid)
+    except FaxFile.DoesNotExist:
+        logger.warning('upload_fax_to_ftp: FaxFile %s not found', fax_file_uuid)
+        return
+
+    fax = ff.fax
+    if not fax or not fax.fax_ftp_host:
+        logger.info('upload_fax_to_ftp: no FTP host configured — skipping %s', fax_file_uuid)
+        return
+
+    # Prefer a PDF (convert from TIFF if needed)
+    file_path = ff.fax_file_path or ''
+    if file_path.endswith('.tif'):
+        try:
+            from .utils import tiff_to_pdf
+            file_path = tiff_to_pdf(file_path)
+        except Exception as conv_err:
+            logger.warning('upload_fax_to_ftp: TIFF→PDF conversion failed for %s: %s', file_path, conv_err)
+            # Fall back to the original TIFF if conversion fails
+
+    if not file_path or not os.path.isfile(file_path):
+        logger.warning('upload_fax_to_ftp: fax file not found on disk: %s — retrying', file_path)
+        raise self.retry(exc=FileNotFoundError(f'Fax file not found: {file_path}'), countdown=30)
+
+    host = fax.fax_ftp_host
+    port = fax.fax_ftp_port or 21
+    username = fax.fax_ftp_username or 'anonymous'
+    password = fax.fax_ftp_password or ''
+    remote_path = (fax.fax_ftp_path or '').strip()
+    remote_name = os.path.basename(file_path)
+
+    try:
+        ftp = FTP_TLS() if fax.fax_ftp_use_tls else FTP()
+        ftp.connect(host, port, timeout=30)
+        ftp.login(username, password)
+        if isinstance(ftp, FTP_TLS):
+            ftp.prot_p()  # encrypt the data channel
+
+        # Change into the configured directory, creating it if missing.
+        if remote_path:
+            for segment in remote_path.strip('/').split('/'):
+                if not segment:
+                    continue
+                try:
+                    ftp.cwd(segment)
+                except error_perm:
+                    ftp.mkd(segment)
+                    ftp.cwd(segment)
+
+        with open(file_path, 'rb') as f:
+            ftp.storbinary(f'STOR {remote_name}', f)
+        ftp.quit()
+
+        logger.info(
+            'upload_fax_to_ftp: uploaded %s to %s:%d/%s for FaxFile %s',
+            remote_name, host, port, remote_path, fax_file_uuid,
+        )
+    except Exception as exc:
+        logger.error('upload_fax_to_ftp: failed for %s: %s', fax_file_uuid, exc)
+        raise self.retry(exc=exc, countdown=30)

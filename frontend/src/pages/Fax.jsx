@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { fax as faxApi, destinations as destApi } from '@/api'
 import { useSelector } from 'react-redux'
 import { selectAuth } from '@/store'
@@ -28,40 +29,43 @@ const BOX_EMPTY = {
   fax_caller_id_number: '', fax_description: '', fax_enabled: true,
 }
 
-// ─── FaxBoxDialog ────────────────────────────────────────────────────────────
+// ─── FaxBoxEditor (full-page, routed) ─────────────────────────────────────────
 
-function FaxBoxDialog({ open, onClose, editBox }) {
-  const [form, setForm] = useState(BOX_EMPTY)
+function FaxBoxEditor({ isCreate, routeId, onDone }) {
+  const [form, setForm]   = useState(BOX_EMPTY)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [dids, setDids] = useState([])
+  const [dids, setDids]   = useState([])
   const [didsLoading, setDidsLoading] = useState(false)
 
+  const seedFromBox = (box) => setForm({
+    // Single name field — prefer the existing name, fall back to the
+    // previously-separate caller ID name for older records.
+    fax_name:             box.fax_name || box.fax_caller_id_name || '',
+    fax_extension:        box.fax_extension || '',
+    fax_email:            box.fax_email || '',
+    fax_caller_id_number: box.fax_caller_id_number || '',
+    fax_description:      box.fax_description || '',
+    fax_enabled:          box.fax_enabled !== false,
+  })
+
+  // Load enabled DIDs for the caller ID picker.
   useEffect(() => {
-    if (!open) return
-    setError('')
-    // Load enabled DIDs
     setDidsLoading(true)
     destApi.list({ page_size: 500, destination_enabled: true })
       .then(res => setDids(Array.isArray(res.data) ? res.data : res.data.results || []))
       .catch(() => setDids([]))
       .finally(() => setDidsLoading(false))
+  }, [])
 
-    if (editBox) {
-      setForm({
-        // Single name field — prefer the existing name, fall back to the
-        // previously-separate caller ID name for older records.
-        fax_name:             editBox.fax_name || editBox.fax_caller_id_name || '',
-        fax_extension:        editBox.fax_extension || '',
-        fax_email:            editBox.fax_email || '',
-        fax_caller_id_number: editBox.fax_caller_id_number || '',
-        fax_description:      editBox.fax_description || '',
-        fax_enabled:          editBox.fax_enabled !== false,
-      })
-    } else {
-      setForm(BOX_EMPTY)
-    }
-  }, [open, editBox])
+  // Seed the form from the route: create → empty, edit → fetch by id.
+  useEffect(() => {
+    setError('')
+    if (isCreate) { setForm(BOX_EMPTY); return }
+    faxApi.get?.(routeId)
+      .then(({ data }) => seedFromBox(data))
+      .catch(() => setForm(BOX_EMPTY))
+  }, [isCreate, routeId])
 
   const sf = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
   const sb = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value === 'true' }))
@@ -75,14 +79,14 @@ function FaxBoxDialog({ open, onClose, editBox }) {
     // dialing). Forward number is no longer collected.
     const payload = { ...form, fax_caller_id_name: form.fax_name.trim() }
     try {
-      if (editBox) {
-        await faxApi.update(editBox.fax_uuid, payload)
-        toast.success('Fax box updated.')
-      } else {
+      if (isCreate) {
         await faxApi.create(payload)
         toast.success('Fax box created.')
+      } else {
+        await faxApi.update(routeId, payload)
+        toast.success('Fax box updated.')
       }
-      onClose(true)
+      onDone()
     } catch (err) {
       const d = err?.response?.data
       setError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -90,13 +94,17 @@ function FaxBoxDialog({ open, onClose, editBox }) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={() => { if (!saving) onClose(false) }}>
-      <DialogContent className="w-[95vw] max-w-lg flex flex-col p-0 gap-0">
-        <DialogHeader className="px-6 py-4 border-b shrink-0">
-          <DialogTitle>{editBox ? 'Edit Fax Box' : 'New Fax Box'}</DialogTitle>
-          <DialogClose onClose={() => !saving && onClose(false)} />
-        </DialogHeader>
-        <div className="space-y-4 px-6 py-5 overflow-y-auto">
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <Button variant="ghost" size="sm" onClick={onDone} className="-ml-2 gap-1">
+          ← Fax
+        </Button>
+        <span className="text-muted-foreground">/</span>
+        <h1 className="text-lg font-semibold">{isCreate ? 'New Fax Box' : 'Edit Fax Box'}</h1>
+      </div>
+
+      <Card>
+        <div className="space-y-4 px-6 py-5">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label>Name *</Label>
@@ -137,20 +145,21 @@ function FaxBoxDialog({ open, onClose, editBox }) {
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
-        <DialogFooter className="px-6 py-3 border-t shrink-0">
-          <Button variant="outline" onClick={() => onClose(false)} disabled={saving}>Cancel</Button>
-          <Button onClick={handleSave} disabled={saving}>
+
+        <div className="flex justify-end gap-2 px-6 py-3 border-t">
+          <Button variant="outline" size="sm" onClick={onDone} disabled={saving}>Cancel</Button>
+          <Button size="sm" onClick={handleSave} disabled={saving}>
             {saving ? <><Loader2 className="h-4 w-4 animate-spin" />Saving…</> : 'Save'}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+      </Card>
+    </div>
   )
 }
 
 // ─── FaxBoxes tab ────────────────────────────────────────────────────────────
 
-function FaxBoxes() {
+function FaxBoxes({ onCreate, onEdit }) {
   // Fax box create/edit lives in the DIDs page now, so this tab does not manage
   // boxes. Superusers may still delete a box from this reference list.
   const canManage = false

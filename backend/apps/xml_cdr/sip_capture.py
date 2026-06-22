@@ -25,6 +25,25 @@ from datetime import timedelta
 # Where sip-capture.service writes rolling pcap files (see deploy/sip-capture).
 SIP_CAPTURE_DIR = os.environ.get('SIP_CAPTURE_DIR', '/var/spool/sip')
 
+# HOMER (heplify-server) capture source. When enabled, per-leg SIP is sourced
+# from the homer_data PostgreSQL partitions by Call-ID — this captures TLS/wss
+# legs in cleartext (HEP taps inside mod_sofia, pre-encryption), which the
+# pcap path cannot. Falls back to the pcap slice when HOMER returns nothing.
+def _homer_settings():
+    from django.conf import settings  # noqa: PLC0415
+    return {
+        'enabled': getattr(settings, 'HOMER_ENABLED', False),
+        'host': getattr(settings, 'HOMER_DB_HOST', '127.0.0.1'),
+        'port': int(getattr(settings, 'HOMER_DB_PORT', 5432)),
+        'name': getattr(settings, 'HOMER_DB_NAME', 'homer_data'),
+        'user': getattr(settings, 'HOMER_DB_USER', 'homer'),
+        'password': getattr(settings, 'HOMER_DB_PASSWORD', ''),
+    }
+
+
+# heplify partitions SIP into hourly tables per type: hep_proto_1_<type>_<YYYYMMDD_HH00>.
+_HOMER_SIP_TYPES = ('call', 'registration', 'default')
+
 # Capture files are named sip-YYYYmmdd-HHMMSS.pcap, rotated hourly. A call can
 # straddle a rotation boundary, so we widen the file-selection window on both
 # ends by this margin before matching against a file's [start, start+rotate).
@@ -245,6 +264,117 @@ def _summarize_sip(sip_text):
     return sip_text[:120]
 
 
+def _homer_partitions(window_start, window_end):
+    """Yield candidate partition table names overlapping the call window.
+
+    heplify names partitions in UTC by hour. We widen by one hour on each side
+    to absorb clock skew and calls straddling an hour boundary.
+    """
+    from django.utils import timezone as _tz  # noqa: PLC0415
+    start = (window_start or window_end)
+    end = (window_end or window_start)
+    if not start:
+        return
+    # Normalise to UTC naive hour stamps.
+    start = (start - timedelta(hours=1))
+    end = (end + timedelta(hours=1))
+    if _tz.is_aware(start):
+        start = start.astimezone(_dt_utc()).replace(tzinfo=None)
+    if _tz.is_aware(end):
+        end = end.astimezone(_dt_utc()).replace(tzinfo=None)
+    cur = start.replace(minute=0, second=0, microsecond=0)
+    while cur <= end:
+        suffix = cur.strftime('%Y%m%d_%H00')
+        for typ in _HOMER_SIP_TYPES:
+            yield f'hep_proto_1_{typ}_{suffix}'
+        cur += timedelta(hours=1)
+
+
+def _dt_utc():
+    from datetime import timezone as _z  # noqa: PLC0415
+    return _z.utc
+
+
+def leg_sip_view_homer(call_id, window_start, window_end):
+    """Decode one leg's SIP from HOMER by Call-ID. Returns (frames, has_capture).
+
+    Queries each candidate hourly partition for rows whose data_header->>'callid'
+    matches, unions them, orders by capture time, and renders the same frame
+    rows decode_frames() produces. A missing partition table is skipped (the
+    call may predate capture, or the hour rolled). Returns ([], False) when the
+    source is disabled, unreachable, or has no matching rows.
+    """
+    cfg = _homer_settings()
+    if not cfg['enabled'] or not call_id:
+        return [], False
+    try:
+        import psycopg2  # noqa: PLC0415
+    except ImportError:
+        return [], False
+
+    tables = list(_homer_partitions(window_start, window_end))
+    if not tables:
+        return [], False
+
+    rows = []
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=cfg['host'], port=cfg['port'], dbname=cfg['name'],
+            user=cfg['user'], password=cfg['password'], connect_timeout=3,
+        )
+        with conn.cursor() as cur:
+            # Which candidate partitions actually exist (avoid 'relation does not
+            # exist' aborting the whole query).
+            cur.execute(
+                "select table_name from information_schema.tables "
+                "where table_schema='public' and table_name = any(%s)",
+                (tables,),
+            )
+            existing = [r[0] for r in cur.fetchall()]
+            if not existing:
+                return [], False
+            union = ' union all '.join(
+                f'select create_date, protocol_header, raw from public."{t}" '
+                f"where data_header->>'callid' = %s"
+                for t in existing
+            )
+            cur.execute(union + ' order by create_date', tuple([call_id] * len(existing)))
+            for create_date, proto, raw in cur.fetchall():
+                rows.append((create_date, proto or {}, raw or ''))
+    except Exception:  # noqa: BLE001 — capture source is best-effort; fall back to pcap
+        return [], False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if not rows:
+        return [], False
+
+    frames = []
+    base_ts = None
+    for create_date, proto, raw in rows:
+        startline = raw.split('\r\n', 1)[0].split('\n', 1)[0].strip()
+        if not startline:
+            continue
+        epoch = create_date.timestamp()
+        if base_ts is None:
+            base_ts = epoch
+        src = proto.get('srcIp', '')
+        dst = proto.get('dstIp', '')
+        frames.append({
+            'n': len(frames) + 1,
+            'time': round(epoch - base_ts, 6),
+            'src': src, 'dst': dst, 'proto': 'SIP',
+            'length': len(raw) if raw else None,
+            'info': _summarize_sip(startline),
+        })
+    return frames, bool(frames)
+
+
 def leg_sip_view(call_id, window_start, window_end, presliced_path=None,
                  presliced_bytes=None):
     """High-level: decode one leg's SIP. Returns (frames, has_capture).
@@ -268,6 +398,13 @@ def leg_sip_view(call_id, window_start, window_end, presliced_path=None,
 
     if presliced_path and os.path.exists(presliced_path) and os.path.getsize(presliced_path) > 24:
         return decode_frames(presliced_path), True
+
+    # Live path: prefer HOMER (captures TLS/wss legs in cleartext). Fall back to
+    # slicing the rolling pcap when HOMER is disabled/empty (e.g. calls that
+    # predate the HEP rollout).
+    homer_frames, homer_ok = leg_sip_view_homer(call_id, window_start, window_end)
+    if homer_ok:
+        return homer_frames, True
 
     with tempfile.NamedTemporaryFile(suffix='.pcap', delete=False) as tmp:
         tmp_path = tmp.name

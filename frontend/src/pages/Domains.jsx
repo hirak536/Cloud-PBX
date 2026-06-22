@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { domains as api } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,7 +8,6 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Plus, Pencil, Trash2, Search, Loader2 } from 'lucide-react'
 import { formatDate } from '@/lib/utils'
@@ -15,11 +15,20 @@ import { formatDate } from '@/lib/utils'
 const EMPTY = { domain_name: '', domain_description: '', domain_enabled: true }
 
 export default function Domains() {
+  const navigate = useNavigate()
+  // Route param drives the editor: undefined = list, /new = create, else edit by id.
+  // The `/new` route has no :id param, so detect create from the path and only
+  // use the param for edit.
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/domains/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebounce(search, 300)
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
@@ -37,19 +46,39 @@ export default function Domains() {
   useEffect(() => { load() }, [load])
 
   const f = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
-  const openCreate = () => { setEditId(null); setForm(EMPTY); setFormError(''); setDialogOpen(true) }
-  const openEdit = (r) => {
-    setEditId(r.domain_uuid || r.id)
-    setForm({ domain_name: r.domain_name || '', domain_description: r.domain_description || '', domain_enabled: r.domain_enabled !== false })
-    setFormError(''); setDialogOpen(true)
-  }
+
+  const rowToForm = (r) => ({
+    domain_name: r.domain_name || '',
+    domain_description: r.domain_description || '',
+    domain_enabled: r.domain_enabled !== false,
+  })
+
+  // Navigate to the full-page editor; the route effect below loads the form.
+  const openCreate  = () => navigate('/domains/new')
+  const openEdit    = (r) => navigate('/domains/' + r.domain_uuid + '/edit')
+  const closeEditor = () => navigate('/domains')
+
+  // Sync form state to the current route.
+  useEffect(() => {
+    if (!editorOpen) return
+    setFormError('')
+    if (isCreate) { setEditId(null); setForm(EMPTY); return }
+    setEditId(routeId)
+    const row = rows.find(r => r.domain_uuid === routeId)
+    if (row) { setForm(rowToForm(row)); return }
+    // Deep-link / refresh: fetch the row if the list isn't loaded yet.
+    api.get?.(routeId)
+      .then(({ data }) => setForm(rowToForm(data)))
+      .catch(() => { setForm(EMPTY) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate, rows])
 
   const handleSave = async () => {
     if (!form.domain_name) { setFormError('Domain name is required.'); return }
     setSaving(true); setFormError('')
     try {
       editId ? await api.update(editId, form) : await api.create(form)
-      setDialogOpen(false); load()
+      load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -60,6 +89,39 @@ export default function Domains() {
     if (!confirm('Delete this domain? This will affect all associated resources.')) return
     setDeleting(id)
     try { await api.delete(id); load() } finally { setDeleting(null) }
+  }
+
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Domains
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New Domain' : 'Edit Domain'}</h1>
+        </div>
+
+        <Card>
+          <div className="px-6 py-5 space-y-4">
+            {formError && <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{formError}</div>}
+            <div className="space-y-3">
+              <div className="space-y-1.5"><Label>Domain Name *</Label><Input placeholder="company.pbx.com" value={form.domain_name} onChange={f('domain_name')} /></div>
+              <div className="space-y-1.5"><Label>Description</Label><Input placeholder="Optional" value={form.domain_description} onChange={f('domain_description')} /></div>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" size="sm" onClick={closeEditor}>Cancel</Button>
+            <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
+              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+              {isCreate ? 'Create' : 'Save'}
+            </Button>
+          </div>
+        </Card>
+      </div>
+    )
   }
 
   return (
@@ -97,26 +159,6 @@ export default function Domains() {
           </TableBody>
         </Table>
       </CardContent></Card>
-
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-sm p-0 gap-0">
-          <DialogHeader className="px-6 py-4 border-b">
-            <DialogTitle>{editId ? 'Edit Domain' : 'New Domain'}</DialogTitle>
-            <DialogClose onClose={() => setDialogOpen(false)} />
-          </DialogHeader>
-          <div className="px-6 py-5 space-y-4">
-          {formError && <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{formError}</div>}
-          <div className="space-y-3">
-            <div className="space-y-1.5"><Label>Domain Name *</Label><Input placeholder="company.pbx.com" value={form.domain_name} onChange={f('domain_name')} /></div>
-            <div className="space-y-1.5"><Label>Description</Label><Input placeholder="Optional" value={form.domain_description} onChange={f('domain_description')} /></div>
-          </div>
-          </div>
-          <DialogFooter className="px-6 py-3 border-t gap-2">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving}>{saving && <Loader2 className="h-4 w-4 animate-spin" />}{editId ? 'Save' : 'Create'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

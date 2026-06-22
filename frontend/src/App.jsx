@@ -125,35 +125,71 @@ export default function App() {
         >
           <Route index element={page('dashboard', Dashboard)} />
           <Route path="extensions"         element={page('extensions', Extensions)} />
+          <Route path="extensions/new"      element={page('extensions', Extensions)} />
+          <Route path="extensions/:id/edit" element={page('extensions', Extensions)} />
           <Route path="ring-groups"        element={page('ring-groups', RingGroups)} />
+          <Route path="ring-groups/new"     element={page('ring-groups', RingGroups)} />
+          <Route path="ring-groups/:id/edit" element={page('ring-groups', RingGroups)} />
           <Route path="ivr-menus"          element={page('ivr-menus', IvrMenus)} />
+          <Route path="ivr-menus/new"       element={page('ivr-menus', IvrMenus)} />
+          <Route path="ivr-menus/:id/edit"  element={page('ivr-menus', IvrMenus)} />
           <Route path="call-flows"         element={page('call-flows', CallFlows)} />
+          <Route path="call-flows/new"      element={page('call-flows', CallFlows)} />
+          <Route path="call-flows/:id/edit" element={page('call-flows', CallFlows)} />
           <Route path="destinations"       element={page('destinations', Destinations)} />
+          <Route path="destinations/new"    element={page('destinations', Destinations)} />
+          <Route path="destinations/:id/edit" element={page('destinations', Destinations)} />
           <Route path="working-hours"      element={page('working-hours', WorkingHours)} />
           <Route path="custom-destinations" element={page('custom-destinations', CustomDestinations)} />
+          <Route path="custom-destinations/new" element={page('custom-destinations', CustomDestinations)} />
+          <Route path="custom-destinations/:id/edit" element={page('custom-destinations', CustomDestinations)} />
           <Route path="call-centers"       element={page('call-centers', CallCenters)} />
           <Route path="voicemails"         element={page('voicemails', Voicemails)} />
+          <Route path="voicemails/new"      element={page('voicemails', Voicemails)} />
+          <Route path="voicemails/:id/edit" element={page('voicemails', Voicemails)} />
           <Route path="voicemail-inbox"    element={page('voicemail-inbox', VoicemailInbox)} />
           <Route path="conferences"        element={page('conferences', Conferences)} />
+          <Route path="conferences/new"     element={page('conferences', Conferences)} />
+          <Route path="conferences/:id/edit" element={page('conferences', Conferences)} />
           <Route path="call-parking"       element={page('call-parking', CallParking)} />
+          <Route path="call-parking/new"    element={page('call-parking', CallParking)} />
+          <Route path="call-parking/:id/edit" element={page('call-parking', CallParking)} />
           <Route path="fax"                element={page('fax', Fax)} />
+          <Route path="fax/new"             element={page('fax', Fax)} />
+          <Route path="fax/:id/edit"        element={page('fax', Fax)} />
           <Route path="gateways"           element={page('gateways', Gateways)} />
+          <Route path="gateways/new"        element={page('gateways', Gateways)} />
+          <Route path="gateways/:id/edit"   element={page('gateways', Gateways)} />
           <Route path="outbound-routes"    element={page('outbound-routes', OutboundRoutes)} />
+          <Route path="outbound-routes/new" element={page('outbound-routes', OutboundRoutes)} />
+          <Route path="outbound-routes/:id/edit" element={page('outbound-routes', OutboundRoutes)} />
           <Route path="dialplans"          element={page('dialplans', Dialplans)} />
           <Route path="devices"            element={page('devices', Devices)} />
+          <Route path="devices/new"         element={page('devices', Devices)} />
+          <Route path="devices/:id/edit"    element={page('devices', Devices)} />
           <Route path="cdr"                element={page('cdr', Cdr)} />
           <Route path="media-files"        element={page('media-files', MediaFiles)} />
+          <Route path="media-files/new"     element={page('media-files', MediaFiles)} />
+          <Route path="media-files/:id/edit" element={page('media-files', MediaFiles)} />
           <Route path="call-recordings"    element={page('call-recordings', CallRecordings)} />
           <Route path="active-calls"       element={page('active-calls', ActiveCalls)} />
           <Route path="operator-panel"     element={<Navigate to="/registrations" replace />} />
           <Route path="freeswitch"         element={page('freeswitch', FreeSWITCH)} />
           <Route path="domains"            element={page('domains', Domains)} />
+          <Route path="domains/new"         element={page('domains', Domains)} />
+          <Route path="domains/:id/edit"    element={page('domains', Domains)} />
           <Route path="tenants"            element={page('tenants', Tenants)} />
           <Route path="tenant-list"        element={page('tenant-list', TenantList)} />
+          <Route path="tenant-list/new"     element={page('tenant-list', TenantList)} />
+          <Route path="tenant-list/:id/edit" element={page('tenant-list', TenantList)} />
           <Route path="users"              element={page('users', Users)} />
+          <Route path="users/new"           element={page('users', Users)} />
+          <Route path="users/:id/edit"      element={page('users', Users)} />
           <Route path="firewall"           element={page('firewall', Firewall)} />
           <Route path="freeswitch-log"     element={page('freeswitch-log', FreeSwitchLog)} />
           <Route path="api-keys"           element={page('api-keys', ApiKeys)} />
+          <Route path="api-keys/new"        element={page('api-keys', ApiKeys)} />
+          <Route path="api-keys/:id/edit"   element={page('api-keys', ApiKeys)} />
           <Route path="audit-log"          element={page('audit-log', AuditLog)} />
           <Route path="registrations"      element={page('registrations', Registrations)} />
           <Route path="global-active-calls" element={page('global-active-calls', GlobalActiveCalls)} />
@@ -161,6 +197,8 @@ export default function App() {
           <Route path="admin-cdr"          element={page('admin-cdr', AdminCdr)} />
           <Route path="admin-inventory"    element={page('admin-inventory', AdminInventory)} />
           <Route path="super-users"        element={page('super-users', SuperUsers)} />
+          <Route path="super-users/new"     element={page('super-users', SuperUsers)} />
+          <Route path="super-users/:id/edit" element={page('super-users', SuperUsers)} />
           <Route path="stats-report"       element={page('stats-report', StatsReport)} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

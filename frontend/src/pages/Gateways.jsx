@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { gateways as gatewaysApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,7 +8,6 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Plus, Pencil, Trash2, Search, RefreshCw, Loader2, Info } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -83,11 +83,20 @@ function Field({ label, hint, children, span2 }) {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function Gateways() {
+  const navigate = useNavigate()
+  // Route param drives the editor: undefined = list, 'new' = create, else edit by id.
+  // The `/new` route has no :id param, so detect create from the path and only
+  // use the param for edit.
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/gateways/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebounce(search, 300)
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
@@ -127,29 +136,41 @@ export default function Gateways() {
     }))
   }
 
-  const openCreate = () => {
-    setEditId(null); setForm(EMPTY); setFormError(''); setDialogOpen(true)
-  }
+  const rowToForm = (r) => ({
+    trunk_type:          r.trunk_type || 'register',
+    gateway:             r.gateway || '',
+    username:            r.username || '',
+    password:            '',        // write-only — never returned by API
+    auth_username:       r.auth_username || '',
+    from_user:           r.from_user || '',
+    proxy:               r.proxy || '',
+    from_domain:         r.from_domain || '',
+    realm:               r.realm || '',
+    register_transport:  r.register_transport || 'udp',
+    codec_prefs:         r.codec_prefs || 'PCMU,PCMA',
+    gateway_enabled:     r.gateway_enabled !== false,
+    gateway_description: r.gateway_description || '',
+  })
 
-  const openEdit = (r) => {
-    setEditId(r.gateway_uuid)
-    setForm({
-      trunk_type:          r.trunk_type || 'register',
-      gateway:             r.gateway || '',
-      username:            r.username || '',
-      password:            '',        // write-only — never returned by API
-      auth_username:       r.auth_username || '',
-      from_user:           r.from_user || '',
-      proxy:               r.proxy || '',
-      from_domain:         r.from_domain || '',
-      realm:               r.realm || '',
-      register_transport:  r.register_transport || 'udp',
-      codec_prefs:         r.codec_prefs || 'PCMU,PCMA',
-      gateway_enabled:     r.gateway_enabled !== false,
-      gateway_description: r.gateway_description || '',
-    })
-    setFormError(''); setDialogOpen(true)
-  }
+  // Navigate to the full-page editor; the route effect below loads the form.
+  const openCreate  = () => navigate('/gateways/new')
+  const openEdit    = (r) => navigate(`/gateways/${r.gateway_uuid}/edit`)
+  const closeEditor = () => navigate('/gateways')
+
+  // Sync form state to the current route.
+  useEffect(() => {
+    if (!editorOpen) return
+    setFormError('')
+    if (isCreate) { setEditId(null); setForm(EMPTY); return }
+    setEditId(routeId)
+    const row = rows.find(r => r.gateway_uuid === routeId)
+    if (row) { setForm(rowToForm(row)); return }
+    // Deep-link / refresh: fetch the row if the list isn't loaded yet.
+    gatewaysApi.get?.(routeId)
+      .then(({ data }) => setForm(rowToForm(data)))
+      .catch(() => { setForm(EMPTY) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate, rows])
 
   const handleSave = async () => {
     if (!form.gateway.trim()) { setFormError('Gateway name is required.'); return }
@@ -161,7 +182,7 @@ export default function Gateways() {
       editId
         ? await gatewaysApi.update(editId, payload)
         : await gatewaysApi.create(payload)
-      setDialogOpen(false); load()
+      load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -180,6 +201,162 @@ export default function Gateways() {
 
   const needsCredentials = form.trunk_type !== 'peer'
   const needsRegisterOptions = form.trunk_type === 'register'
+
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Trunks
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'Add VoIP Trunk' : 'Edit VoIP Trunk'}</h1>
+        </div>
+
+        <Card>
+          <div className="space-y-5 px-6 py-5">
+            {formError && (
+              <p className="rounded bg-destructive/10 border border-destructive/30 px-3 py-2 text-xs text-destructive">
+                {formError}
+              </p>
+            )}
+
+            {/* Trunk type selector */}
+            <div className="space-y-2">
+              <Label className="text-xs">Trunk Type *</Label>
+              <div className="grid grid-cols-3 gap-2">
+                {TRUNK_TYPES.map((t) => (
+                  <button
+                    key={t.value}
+                    type="button"
+                    onClick={() => setVal('trunk_type', t.value)}
+                    className={cn(
+                      'rounded-lg border p-3 text-left transition-all space-y-0.5',
+                      form.trunk_type === t.value
+                        ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                        : 'border-border hover:border-muted-foreground'
+                    )}
+                  >
+                    <p className="text-xs font-semibold">{t.label}</p>
+                    <p className="text-[10px] text-muted-foreground leading-tight">{t.desc}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Gateway Name *" span2>
+                <Input value={form.gateway} onChange={set('gateway')} placeholder="my-trunk" />
+              </Field>
+
+              <Field label="Proxy / SIP Host *" span2>
+                <Input value={form.proxy} onChange={setProxy} placeholder="sip.provider.com" />
+              </Field>
+
+              {needsCredentials && (
+                <>
+                  <Field label="Username">
+                    <Input value={form.username} onChange={set('username')} placeholder="user@provider.com" />
+                  </Field>
+                  <Field label="Password" hint={editId ? 'Leave blank to keep current.' : ''}>
+                    <Input
+                      type="password"
+                      value={form.password}
+                      onChange={set('password')}
+                      placeholder={editId ? '••••••••' : ''}
+                      autoComplete="new-password"
+                    />
+                  </Field>
+                  <Field label="Auth Username" hint="Override digest auth username. Leave blank to use Username.">
+                    <Input value={form.auth_username} onChange={set('auth_username')} placeholder="freesw" />
+                  </Field>
+                  <Field label="Realm" hint="Leave blank to use proxy host.">
+                    <Input value={form.realm} onChange={set('realm')} placeholder="sip.provider.com" />
+                  </Field>
+                </>
+              )}
+
+              {needsCredentials && (
+                <Field label="From User" hint="SIP From: header user. Leave blank to use Username.">
+                  <Input value={form.from_user} onChange={set('from_user')} placeholder="freesw" />
+                </Field>
+              )}
+
+              <Field
+                label="From Domain"
+                hint="SIP From: header domain. Defaults to proxy host."
+                span2
+              >
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={form.from_domain}
+                    onChange={set('from_domain')}
+                    placeholder={form.proxy || 'sip.provider.com'}
+                    className="flex-1"
+                  />
+                  {form.from_domain !== form.proxy && form.proxy && (
+                    <button
+                      type="button"
+                      onClick={() => setVal('from_domain', form.proxy)}
+                      className="shrink-0 text-xs text-primary hover:underline whitespace-nowrap"
+                    >
+                      Use proxy
+                    </button>
+                  )}
+                </div>
+              </Field>
+
+              {needsRegisterOptions && (
+                <>
+                  <Field label="Transport">
+                    <select
+                      value={form.register_transport}
+                      onChange={set('register_transport')}
+                      className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <option value="udp">UDP</option>
+                      <option value="tcp">TCP</option>
+                      <option value="tls">TLS</option>
+                    </select>
+                  </Field>
+                  <Field label="Codec Preferences">
+                    <Input value={form.codec_prefs} onChange={set('codec_prefs')} placeholder="PCMU,PCMA" />
+                  </Field>
+                </>
+              )}
+
+              <Field label="Description" span2>
+                <Input
+                  value={form.gateway_description}
+                  onChange={set('gateway_description')}
+                  placeholder="Optional notes"
+                />
+              </Field>
+            </div>
+
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.gateway_enabled}
+                onChange={(e) => setVal('gateway_enabled', e.target.checked)}
+                className="h-4 w-4 rounded border-input"
+              />
+              <span className="text-sm">Trunk enabled</span>
+            </label>
+          </div>
+
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" size="sm" onClick={closeEditor}>Cancel</Button>
+            <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
+              {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {isCreate ? 'Create Trunk' : 'Save Changes'}
+            </Button>
+          </div>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-4">
@@ -275,159 +452,6 @@ export default function Gateways() {
         </CardContent>
       </Card>
 
-      {/* Create / Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-lg p-0 gap-0">
-          <DialogHeader className="px-6 py-4 border-b">
-            <DialogTitle>{editId ? 'Edit VoIP Trunk' : 'Add VoIP Trunk'}</DialogTitle>
-          </DialogHeader>
-
-          <div className="space-y-5 px-6 py-5 max-h-[80vh] overflow-y-auto">
-            {formError && (
-              <p className="rounded bg-destructive/10 border border-destructive/30 px-3 py-2 text-xs text-destructive">
-                {formError}
-              </p>
-            )}
-
-            {/* Trunk type selector */}
-            <div className="space-y-2">
-              <Label className="text-xs">Trunk Type *</Label>
-              <div className="grid grid-cols-3 gap-2">
-                {TRUNK_TYPES.map((t) => (
-                  <button
-                    key={t.value}
-                    type="button"
-                    onClick={() => setVal('trunk_type', t.value)}
-                    className={cn(
-                      'rounded-lg border p-3 text-left transition-all space-y-0.5',
-                      form.trunk_type === t.value
-                        ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                        : 'border-border hover:border-muted-foreground'
-                    )}
-                  >
-                    <p className="text-xs font-semibold">{t.label}</p>
-                    <p className="text-[10px] text-muted-foreground leading-tight">{t.desc}</p>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Gateway Name *" span2>
-                <Input value={form.gateway} onChange={set('gateway')} placeholder="my-trunk" />
-              </Field>
-
-              <Field label="Proxy / SIP Host *" span2>
-                <Input value={form.proxy} onChange={setProxy} placeholder="sip.provider.com" />
-              </Field>
-
-              {/* Credentials — hidden for peer trunks */}
-              {needsCredentials && (
-                <>
-                  <Field label="Username">
-                    <Input value={form.username} onChange={set('username')} placeholder="user@provider.com" />
-                  </Field>
-                  <Field label="Password" hint={editId ? 'Leave blank to keep current.' : ''}>
-                    <Input
-                      type="password"
-                      value={form.password}
-                      onChange={set('password')}
-                      placeholder={editId ? '••••••••' : ''}
-                      autoComplete="new-password"
-                    />
-                  </Field>
-                  <Field label="Auth Username" hint="Override digest auth username. Leave blank to use Username.">
-                    <Input value={form.auth_username} onChange={set('auth_username')} placeholder="freesw" />
-                  </Field>
-                  <Field label="Realm" hint="Leave blank to use proxy host.">
-                    <Input value={form.realm} onChange={set('realm')} placeholder="sip.provider.com" />
-                  </Field>
-                </>
-              )}
-
-              {/* From User — shown for register/account trunks */}
-              {needsCredentials && (
-                <Field label="From User" hint="SIP From: header user. Leave blank to use Username.">
-                  <Input value={form.from_user} onChange={set('from_user')} placeholder="freesw" />
-                </Field>
-              )}
-
-              {/* From Domain — shown for all types; defaults to proxy */}
-              <Field
-                label="From Domain"
-                hint="SIP From: header domain. Defaults to proxy host."
-                span2
-              >
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={form.from_domain}
-                    onChange={set('from_domain')}
-                    placeholder={form.proxy || 'sip.provider.com'}
-                    className="flex-1"
-                  />
-                  {form.from_domain !== form.proxy && form.proxy && (
-                    <button
-                      type="button"
-                      onClick={() => setVal('from_domain', form.proxy)}
-                      className="shrink-0 text-xs text-primary hover:underline whitespace-nowrap"
-                    >
-                      Use proxy
-                    </button>
-                  )}
-                </div>
-              </Field>
-
-              {/* Register options — only for register trunks */}
-              {needsRegisterOptions && (
-                <>
-                  <Field label="Transport">
-                    <select
-                      value={form.register_transport}
-                      onChange={set('register_transport')}
-                      className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    >
-                      <option value="udp">UDP</option>
-                      <option value="tcp">TCP</option>
-                      <option value="tls">TLS</option>
-                    </select>
-                  </Field>
-                  <Field label="Codec Preferences">
-                    <Input value={form.codec_prefs} onChange={set('codec_prefs')} placeholder="PCMU,PCMA" />
-                  </Field>
-                </>
-              )}
-
-              <Field label="Description" span2>
-                <Input
-                  value={form.gateway_description}
-                  onChange={set('gateway_description')}
-                  placeholder="Optional notes"
-                />
-              </Field>
-            </div>
-
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.gateway_enabled}
-                onChange={(e) => setVal('gateway_enabled', e.target.checked)}
-                className="h-4 w-4 rounded border-input"
-              />
-              <span className="text-sm">Trunk enabled</span>
-            </label>
-          </div>
-
-          <div className="flex justify-end gap-2 px-6 py-3 border-t">
-            <DialogClose asChild>
-              <Button variant="outline" size="sm">Cancel</Button>
-            </DialogClose>
-            <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
-              {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {editId ? 'Save Changes' : 'Create Trunk'}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

@@ -150,6 +150,7 @@ export const extensions = {
   bulkDelete: (ids) => api.post('/extensions/bulk_delete/', { ids }),
   reload: () => api.post('/extensions/reload/'),
   checkNumber: (number, excludePk) => api.get('/extensions/check_number/', { params: { number, ...(excludePk ? { exclude_pk: excludePk } : {}) } }),
+  exportGrandstream: (p) => api.get('/extensions/export_grandstream/', { params: p, responseType: 'blob' }),
 }
 
 export const dialplans = {

@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { outboundRoutes as routesApi, gateways as gatewaysApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,7 +8,6 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Select } from '@/components/ui/select'
 import { Plus, Pencil, Trash2, Search, RefreshCw, Loader2, ArrowUpDown } from 'lucide-react'
@@ -67,12 +67,18 @@ function GatewaySelect({ value, onChange, gateways, placeholder = 'None' }) {
 }
 
 export default function OutboundRoutes() {
+  const navigate = useNavigate()
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/outbound-routes/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebounce(search, 300)
   const [gateways, setGateways] = useState([])
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
@@ -99,29 +105,32 @@ export default function OutboundRoutes() {
   const set = (key) => (e) => setForm((p) => ({ ...p, [key]: e.target.value }))
   const setVal = (key, val) => setForm((p) => ({ ...p, [key]: val }))
 
-  const openCreate = () => {
-    setEditId(null)
-    setForm(EMPTY)
-    setFormError('')
-    setDialogOpen(true)
-  }
+  const rowToForm = (r) => ({
+    outbound_route_name: r.outbound_route_name || '',
+    outbound_route_order: r.outbound_route_order ?? 10,
+    dialplan_pattern: r.dialplan_pattern || '',
+    prepend: r.prepend || '',
+    gateway: r.gateway || '',
+    gateway_2: r.gateway_2 || '',
+    gateway_3: r.gateway_3 || '',
+    outbound_route_enabled: r.outbound_route_enabled !== false,
+    outbound_route_description: r.outbound_route_description || '',
+  })
 
-  const openEdit = (r) => {
-    setEditId(r.outbound_route_uuid)
-    setForm({
-      outbound_route_name: r.outbound_route_name || '',
-      outbound_route_order: r.outbound_route_order ?? 10,
-      dialplan_pattern: r.dialplan_pattern || '',
-      prepend: r.prepend || '',
-      gateway: r.gateway || '',
-      gateway_2: r.gateway_2 || '',
-      gateway_3: r.gateway_3 || '',
-      outbound_route_enabled: r.outbound_route_enabled !== false,
-      outbound_route_description: r.outbound_route_description || '',
-    })
+  const openCreate  = () => navigate('/outbound-routes/new')
+  const openEdit    = (r) => navigate('/outbound-routes/' + r.outbound_route_uuid + '/edit')
+  const closeEditor = () => navigate('/outbound-routes')
+
+  useEffect(() => {
+    if (!editorOpen) return
     setFormError('')
-    setDialogOpen(true)
-  }
+    if (isCreate) { setEditId(null); setForm(EMPTY); return }
+    setEditId(routeId)
+    const row = rows.find(r => r.outbound_route_uuid === routeId)
+    if (row) { setForm(rowToForm(row)); return }
+    routesApi.get(routeId).then(({ data }) => setForm(rowToForm(data))).catch(() => setForm(EMPTY))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   const handleSave = async () => {
     if (!form.outbound_route_name.trim()) { setFormError('Route name is required.'); return }
@@ -135,8 +144,7 @@ export default function OutboundRoutes() {
       editId
         ? await routesApi.update(editId, payload)
         : await routesApi.create(payload)
-      setDialogOpen(false)
-      load()
+      load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -161,6 +169,130 @@ export default function OutboundRoutes() {
     r.dialplan_pattern?.toLowerCase().includes(search.toLowerCase()) ||
     r.gateway_name?.toLowerCase().includes(search.toLowerCase())
   )
+
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Outbound Routes
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New Outbound Route' : 'Edit Outbound Route'}</h1>
+        </div>
+
+        <Card>
+          <div className="space-y-5 px-6 py-5">
+            {formError && (
+              <p className="rounded bg-destructive/10 border border-destructive/30 px-3 py-2 text-xs text-destructive">
+                {formError}
+              </p>
+            )}
+
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Route Name" required>
+                <Input value={form.outbound_route_name} onChange={set('outbound_route_name')} placeholder="Local Calls" />
+              </Field>
+              <Field label="Order" hint="Lower = higher priority">
+                <Input
+                  type="number" min={0} max={999}
+                  value={form.outbound_route_order}
+                  onChange={(e) => setVal('outbound_route_order', parseInt(e.target.value) || 0)}
+                />
+              </Field>
+            </div>
+
+            <Field label="Dialplan Pattern" required hint="Regex against destination_number. Capture the digits to send in group 1.">
+              <div className="space-y-2">
+                <Input
+                  value={form.dialplan_pattern}
+                  onChange={set('dialplan_pattern')}
+                  placeholder="^9(\d{10})$"
+                  className="font-mono text-xs"
+                />
+                <div className="flex flex-wrap gap-1.5">
+                  {PATTERN_PRESETS.map((p) => (
+                    <button
+                      key={p.value}
+                      type="button"
+                      onClick={() => setVal('dialplan_pattern', p.value)}
+                      className={cn(
+                        'text-[10px] px-2 py-1 rounded border transition-colors',
+                        form.dialplan_pattern === p.value
+                          ? 'bg-primary text-primary-foreground border-primary'
+                          : 'bg-muted hover:bg-muted/80 border-transparent'
+                      )}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </Field>
+
+            <Field label="Prepend" hint="Digits to prepend before $1 when dialing the gateway (e.g. '1' for NANP).">
+              <Input
+                value={form.prepend}
+                onChange={set('prepend')}
+                placeholder="1"
+                className="font-mono w-32"
+              />
+            </Field>
+
+            <Field label="Gateway (Primary)" required>
+              <GatewaySelect
+                value={form.gateway}
+                onChange={(v) => setVal('gateway', v)}
+                gateways={gateways}
+                placeholder="— Select gateway —"
+              />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Failover Gateway" hint="Tried if primary fails.">
+                <GatewaySelect
+                  value={form.gateway_2}
+                  onChange={(v) => setVal('gateway_2', v)}
+                  gateways={gateways}
+                />
+              </Field>
+              <Field label="2nd Failover" hint="Tried if failover also fails.">
+                <GatewaySelect
+                  value={form.gateway_3}
+                  onChange={(v) => setVal('gateway_3', v)}
+                  gateways={gateways}
+                />
+              </Field>
+            </div>
+
+            <Field label="Description">
+              <Input value={form.outbound_route_description} onChange={set('outbound_route_description')} placeholder="Optional notes" />
+            </Field>
+
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                id="route-enabled"
+                type="checkbox"
+                checked={form.outbound_route_enabled}
+                onChange={(e) => setVal('outbound_route_enabled', e.target.checked)}
+                className="h-4 w-4 rounded border-input"
+              />
+              <Label htmlFor="route-enabled" className="text-sm cursor-pointer">Enabled</Label>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" size="sm" onClick={closeEditor}>Cancel</Button>
+            <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
+              {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {isCreate ? 'Create Route' : 'Save Changes'}
+            </Button>
+          </div>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-4">
@@ -265,124 +397,6 @@ export default function OutboundRoutes() {
       <p className="text-xs text-muted-foreground">
         Routes are evaluated in <strong>order</strong> (ascending). Use capture group <code className="bg-muted px-1 rounded">(\d+)</code> in the pattern — <code className="bg-muted px-1 rounded">$1</code> is sent to the gateway.
       </p>
-
-      {/* Create / Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-lg p-0 gap-0">
-          <DialogHeader className="px-6 py-4 border-b">
-            <DialogTitle>{editId ? 'Edit Outbound Route' : 'Add Outbound Route'}</DialogTitle>
-          </DialogHeader>
-
-          <div className="space-y-5 px-6 py-5">
-            {formError && (
-              <p className="rounded bg-destructive/10 border border-destructive/30 px-3 py-2 text-xs text-destructive">
-                {formError}
-              </p>
-            )}
-
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Route Name" required>
-                <Input value={form.outbound_route_name} onChange={set('outbound_route_name')} placeholder="Local Calls" />
-              </Field>
-              <Field label="Order" hint="Lower = higher priority">
-                <Input
-                  type="number" min={0} max={999}
-                  value={form.outbound_route_order}
-                  onChange={(e) => setVal('outbound_route_order', parseInt(e.target.value) || 0)}
-                />
-              </Field>
-            </div>
-
-            <Field label="Dialplan Pattern" required hint="Regex against destination_number. Capture the digits to send in group 1.">
-              <div className="space-y-2">
-                <Input
-                  value={form.dialplan_pattern}
-                  onChange={set('dialplan_pattern')}
-                  placeholder="^9(\d{10})$"
-                  className="font-mono text-xs"
-                />
-                <div className="flex flex-wrap gap-1.5">
-                  {PATTERN_PRESETS.map((p) => (
-                    <button
-                      key={p.value}
-                      type="button"
-                      onClick={() => setVal('dialplan_pattern', p.value)}
-                      className={cn(
-                        'text-[10px] px-2 py-1 rounded border transition-colors',
-                        form.dialplan_pattern === p.value
-                          ? 'bg-primary text-primary-foreground border-primary'
-                          : 'bg-muted hover:bg-muted/80 border-transparent'
-                      )}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </Field>
-
-            <Field label="Prepend" hint="Digits to prepend before $1 when dialing the gateway (e.g. '1' for NANP).">
-              <Input
-                value={form.prepend}
-                onChange={set('prepend')}
-                placeholder="1"
-                className="font-mono w-32"
-              />
-            </Field>
-
-            <Field label="Gateway (Primary)" required>
-              <GatewaySelect
-                value={form.gateway}
-                onChange={(v) => setVal('gateway', v)}
-                gateways={gateways}
-                placeholder="— Select gateway —"
-              />
-            </Field>
-
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Failover Gateway" hint="Tried if primary fails.">
-                <GatewaySelect
-                  value={form.gateway_2}
-                  onChange={(v) => setVal('gateway_2', v)}
-                  gateways={gateways}
-                />
-              </Field>
-              <Field label="2nd Failover" hint="Tried if failover also fails.">
-                <GatewaySelect
-                  value={form.gateway_3}
-                  onChange={(v) => setVal('gateway_3', v)}
-                  gateways={gateways}
-                />
-              </Field>
-            </div>
-
-            <Field label="Description">
-              <Input value={form.outbound_route_description} onChange={set('outbound_route_description')} placeholder="Optional notes" />
-            </Field>
-
-            <div className="flex items-center gap-2 pt-1">
-              <input
-                id="route-enabled"
-                type="checkbox"
-                checked={form.outbound_route_enabled}
-                onChange={(e) => setVal('outbound_route_enabled', e.target.checked)}
-                className="h-4 w-4 rounded border-input"
-              />
-              <Label htmlFor="route-enabled" className="text-sm cursor-pointer">Enabled</Label>
-            </div>
-          </div>
-
-          <div className="flex justify-end gap-2 px-6 py-3 border-t">
-            <DialogClose asChild>
-              <Button variant="outline" size="sm">Cancel</Button>
-            </DialogClose>
-            <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
-              {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {editId ? 'Save Changes' : 'Create Route'}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

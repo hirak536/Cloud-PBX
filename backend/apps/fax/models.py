@@ -24,6 +24,16 @@ class Fax(models.Model):
     fax_accountcode = models.CharField(max_length=255, blank=True)
     fax_enabled = models.BooleanField(default=True)
     fax_description = models.TextField(blank=True)
+    # How received faxes are delivered: emailed, uploaded to an FTP server, or both.
+    FAX_DELIVERY_MODES = [('email', 'Email'), ('ftp', 'FTP'), ('both', 'Email + FTP')]
+    fax_delivery_mode = models.CharField(max_length=10, choices=FAX_DELIVERY_MODES, default='email')
+    # FTP/FTPS store-and-forward target for inbound faxes.
+    fax_ftp_host = models.CharField(max_length=255, blank=True)
+    fax_ftp_port = models.IntegerField(default=21)
+    fax_ftp_username = models.CharField(max_length=255, blank=True)
+    fax_ftp_password = models.CharField(max_length=255, blank=True)
+    fax_ftp_path = models.CharField(max_length=512, blank=True)
+    fax_ftp_use_tls = models.BooleanField(default=False)
     insert_date = models.DateTimeField(auto_now_add=True)
     insert_user = models.UUIDField(null=True, blank=True)
     update_date = models.DateTimeField(auto_now=True)

@@ -70,6 +70,65 @@ class ExtensionViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
             reload_xml.delay()
         return Response({'deleted': found, 'deleted_count': deleted_count, 'skipped': skipped})
 
+    @action(detail=False, methods=['get'], url_path='export_grandstream')
+    def export_grandstream(self, request):
+        """Export accounts into Grandstream's SipAccount batch-import template.
+
+        Grandstream's importer only accepts its own .xls workbook (the
+        instructions row, headers and formatting must be preserved exactly), so
+        we copy the shipped template and append one data row per extension
+        rather than building a fresh file. Data rows start at row index 2
+        (row 0 = instructions, row 1 = headers).
+        """
+        import io
+        from pathlib import Path
+        import xlrd
+        from xlutils.copy import copy as xl_copy
+
+        SIP_SERVER = 'fs1.ihs.host:5080'
+        DATA_START_ROW = 2
+        template_path = Path(__file__).resolve().parent / 'resources' / 'SipAccount_Template.xls'
+
+        rb = xlrd.open_workbook(str(template_path), formatting_info=True)
+        template_rows = rb.sheet_by_index(0).nrows  # includes shipped sample data
+        template_cols = rb.sheet_by_index(0).ncols
+        wb = xl_copy(rb)
+        ws = wb.get_sheet(0)
+
+        row = DATA_START_ROW
+        for e in self.get_queryset().order_by('extension'):
+            user_id = e.sip_username or e.extension
+            name = e.effective_caller_id_name or user_id
+            values = [
+                'Yes',              # Account Active
+                name,               # Account Name
+                SIP_SERVER,         # *SIP Server
+                user_id,            # *SIP User ID
+                user_id,            # Authentication ID
+                e.password or '',   # Authentication Password
+                e.effective_caller_id_name or '',  # Display Name
+                '',                 # Voice Mail Access Number
+                '',                 # Outbound Proxy
+                '',                 # Device MAC Address
+                '',                 # Account Index
+            ]
+            for col, val in enumerate(values):
+                ws.write(row, col, val)
+            row += 1
+
+        # The shipped template carries sample rows (2..template_rows-1). Blank
+        # any that our data didn't overwrite so stale sample accounts don't leak.
+        for stale in range(row, template_rows):
+            for col in range(template_cols):
+                ws.write(stale, col, '')
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        response = HttpResponse(buf.getvalue(), content_type='application/vnd.ms-excel')
+        response['Content-Disposition'] = 'attachment; filename="SipAccount_Export.xls"'
+        return response
+
     @action(detail=False, methods=['get'])
     def export(self, request):
         response = HttpResponse(content_type='text/csv')

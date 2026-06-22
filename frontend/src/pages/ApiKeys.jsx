@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { clientApiKeys, tenants } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,10 +25,19 @@ function urlsToList(csv) {
 }
 
 export default function ApiKeys() {
+  const navigate = useNavigate()
+  // Route param drives the editor: undefined = list, /new = create, else edit by id.
+  // The `/new` route has no :id param, so detect create from the path and only
+  // use the param for edit.
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/api-keys/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [tenantList, setTenantList] = useState([])
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
@@ -57,30 +67,35 @@ export default function ApiKeys() {
 
   const f = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
 
-  const openCreate = () => {
-    setEditId(null)
-    setForm(EMPTY)
-    setWebhookUrls([''])
-    setFormError('')
-    setShowSecret(false)
-    setDialogOpen(true)
-  }
+  const rowToForm = (r) => ({
+    tenant: r.tenant || '',
+    label: r.label || '',
+    expires_at: r.expires_at || '',
+    webhook_url: r.webhook_url || '',
+    webhook_secret: '',
+    is_active: r.is_active,
+  })
 
-  const openEdit = (r) => {
-    setEditId(r.id)
-    setForm({
-      tenant: r.tenant || '',
-      label: r.label || '',
-      expires_at: r.expires_at || '',
-      webhook_url: r.webhook_url || '',
-      webhook_secret: '',
-      is_active: r.is_active,
-    })
-    setWebhookUrls(urlsToList(r.webhook_url))
+  // Navigate to the full-page editor; the route effect below loads the form.
+  const openCreate  = () => navigate('/api-keys/new')
+  const openEdit    = (r) => navigate('/api-keys/' + r.id + '/edit')
+  const closeEditor = () => navigate('/api-keys')
+
+  // Sync form state to the current route.
+  useEffect(() => {
+    if (!editorOpen) return
     setFormError('')
     setShowSecret(false)
-    setDialogOpen(true)
-  }
+    if (isCreate) { setEditId(null); setForm(EMPTY); setWebhookUrls(['']); return }
+    setEditId(routeId)
+    const row = rows.find(r => r.id === routeId)
+    if (row) { setForm(rowToForm(row)); setWebhookUrls(urlsToList(row.webhook_url)); return }
+    // Deep-link / refresh: fetch the row if the list isn't loaded yet.
+    clientApiKeys.get?.(routeId)
+      .then(({ data }) => { setForm(rowToForm(data)); setWebhookUrls(urlsToList(data.webhook_url)) })
+      .catch(() => { setForm(EMPTY); setWebhookUrls(['']) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   const handleSave = async () => {
     if (!form.tenant && !editId) { setFormError('Tenant is required.'); return }
@@ -92,13 +107,15 @@ export default function ApiKeys() {
         const payload = { label: form.label, expires_at: form.expires_at || null, webhook_url: joinedUrls }
         if (form.webhook_secret) payload.webhook_secret = form.webhook_secret
         await clientApiKeys.update(editId, payload)
-        setDialogOpen(false)
         load()
+        closeEditor()
       } else {
         const payload = { ...form, webhook_url: joinedUrls, expires_at: form.expires_at || null }
         const { data } = await clientApiKeys.create(payload)
-        setDialogOpen(false)
         load()
+        // Navigate back to the list FIRST, then open the secret-reveal dialog
+        // so the user sees the one-time secret on the list page.
+        closeEditor()
         if (data.api_key) setNewKey(data.api_key)
       }
     } catch (err) {
@@ -125,6 +142,115 @@ export default function ApiKeys() {
     navigator.clipboard.writeText(newKey)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← API Keys
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New API Key' : 'Edit API Key'}</h1>
+        </div>
+
+        <Card>
+          <div className="px-6 py-5 space-y-4">
+            {formError && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {formError}
+              </div>
+            )}
+            {!editId && (
+              <div className="space-y-1.5">
+                <Label>Tenant *</Label>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                  value={form.tenant}
+                  onChange={(e) => setForm(p => ({ ...p, tenant: e.target.value }))}
+                >
+                  <option value="">Select tenant…</option>
+                  {tenantList.map(t => (
+                    <option key={t.tenant_uuid} value={t.tenant_uuid}>
+                      {t.tenant_code} — {t.tenant_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label>Label *</Label>
+              <Input placeholder="e.g. Phone App Server" value={form.label} onChange={f('label')} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Expires (optional)</Label>
+              <Input type="date" value={form.expires_at} onChange={f('expires_at')} />
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label>Webhook URLs</Label>
+                <button
+                  type="button"
+                  className="text-xs text-primary hover:underline flex items-center gap-1"
+                  onClick={() => setWebhookUrls(u => [...u, ''])}
+                >
+                  <Plus className="h-3 w-3" /> Add URL
+                </button>
+              </div>
+              <div className="space-y-2">
+                {webhookUrls.map((url, i) => (
+                  <div key={i} className="flex gap-1.5">
+                    <Input
+                      placeholder="https://yourserver.com/webhook"
+                      value={url}
+                      onChange={e => setWebhookUrls(u => u.map((v, j) => j === i ? e.target.value : v))}
+                    />
+                    {webhookUrls.length > 1 && (
+                      <button
+                        type="button"
+                        className="text-muted-foreground hover:text-destructive shrink-0"
+                        onClick={() => setWebhookUrls(u => u.filter((_, j) => j !== i))}
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>{editId ? 'Webhook Secret (leave blank to keep unchanged)' : 'Webhook Secret'}</Label>
+              <div className="relative">
+                <Input
+                  type={showSecret ? 'text' : 'password'}
+                  placeholder={editId ? '••••••••' : 'Secret for HMAC signing'}
+                  value={form.webhook_secret}
+                  onChange={f('webhook_secret')}
+                  className="pr-9"
+                />
+                <button
+                  type="button"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  onClick={() => setShowSecret(s => !s)}
+                >
+                  {showSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" onClick={closeEditor}>Cancel</Button>
+            <Button onClick={handleSave} disabled={saving}>
+              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+              {isCreate ? 'Generate Key' : 'Save'}
+            </Button>
+          </div>
+        </Card>
+      </div>
+    )
   }
 
   return (

@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { users as api, tenants as tenantsApi, auth as authApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,7 +8,6 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Plus, Pencil, Trash2, Search, Loader2, ShieldCheck, KeyRound, Eye, EyeOff } from 'lucide-react'
 
@@ -29,10 +29,16 @@ function buildUsername(first, last) {
 }
 
 export default function SuperUsers() {
+  const navigate = useNavigate()
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/super-users/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows]          = useState([])
   const [loading, setLoading]    = useState(true)
   const [search, setSearch]      = useState('')
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId]      = useState(null)
   const [form, setForm]          = useState(EMPTY_FORM)
   const [saving, setSaving]      = useState(false)
@@ -57,20 +63,11 @@ export default function SuperUsers() {
 
   const f = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
 
-  const openCreate = () => {
-    setEditId(null)
-    setForm(EMPTY_FORM)
-    setFormError('')
-    setShowPassword(false)
-    setDialogOpen(true)
-  }
-
-  const openEdit = (r) => {
-    setEditId(r.user_uuid)
+  const rowToForm = (r) => {
     const parts = (r.full_name || '').trim().split(' ')
     const firstName = parts[0] || ''
     const lastName = parts.slice(1).join(' ')
-    setForm({
+    return {
       first_name:   firstName,
       last_name:    lastName,
       full_name:    r.full_name || '',
@@ -78,11 +75,24 @@ export default function SuperUsers() {
       user_email:   r.user_email || '',
       user_enabled: r.user_enabled !== false,
       password:     '',
-    })
+    }
+  }
+
+  const openCreate  = () => navigate('/super-users/new')
+  const openEdit    = (r) => navigate('/super-users/' + r.user_uuid + '/edit')
+  const closeEditor = () => navigate('/super-users')
+
+  useEffect(() => {
+    if (!editorOpen) return
     setFormError('')
     setShowPassword(false)
-    setDialogOpen(true)
-  }
+    if (isCreate) { setEditId(null); setForm(EMPTY_FORM); return }
+    setEditId(routeId)
+    const row = rows.find(r => r.user_uuid === routeId)
+    if (row) { setForm(rowToForm(row)); return }
+    api.get?.(routeId).then(({ data }) => setForm(rowToForm(data))).catch(() => setForm(EMPTY_FORM))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate, rows])
 
   const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -116,8 +126,7 @@ export default function SuperUsers() {
       } else {
         await api.create(payload)
       }
-      setDialogOpen(false)
-      load()
+      load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -140,6 +149,122 @@ export default function SuperUsers() {
     if (!confirm('Delete this superuser?')) return
     setDeleting(id)
     try { await api.delete(id); load() } finally { setDeleting(null) }
+  }
+
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Super Users
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New Super User' : 'Edit Super User'}</h1>
+        </div>
+
+        <Card>
+          <div className="px-6 py-5 space-y-4">
+            {formError && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {formError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>First Name</Label>
+                <Input
+                  placeholder="Jane"
+                  value={form.first_name}
+                  onChange={e => {
+                    const first = e.target.value
+                    setForm(p => ({
+                      ...p,
+                      first_name: first,
+                      full_name: (first + ' ' + p.last_name).trim(),
+                      username: buildUsername(first, p.last_name),
+                    }))
+                  }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Last Name</Label>
+                <Input
+                  placeholder="Smith"
+                  value={form.last_name}
+                  onChange={e => {
+                    const last = e.target.value
+                    setForm(p => ({
+                      ...p,
+                      last_name: last,
+                      full_name: (p.first_name + ' ' + last).trim(),
+                      username: buildUsername(p.first_name, last),
+                    }))
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Username <span className="text-destructive">*</span></Label>
+                <Input placeholder="jsmith" value={form.username} onChange={f('username')} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Email <span className="text-destructive">*</span></Label>
+                <Input type="email" placeholder="user@example.com" value={form.user_email} onChange={f('user_email')} />
+              </div>
+            </div>
+
+            {!editId && (
+              <div className="space-y-1.5">
+                <Label>Password <span className="text-destructive">*</span></Label>
+                <div className="relative">
+                  <Input
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="Enter password"
+                    value={form.password}
+                    onChange={f('password')}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(v => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
+              Superusers have unrestricted access to all tenants and system settings.
+            </div>
+
+            <div className="border-t pt-4">
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-input accent-primary"
+                  checked={form.user_enabled}
+                  onChange={e => setForm(p => ({ ...p, user_enabled: e.target.checked }))}
+                />
+                <span className="text-sm font-medium">Account enabled</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" size="sm" onClick={closeEditor}>Cancel</Button>
+            <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
+              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+              {isCreate ? 'Create Superuser' : 'Save Changes'}
+            </Button>
+          </div>
+        </Card>
+      </div>
+    )
   }
 
   return (
@@ -248,116 +373,6 @@ export default function SuperUsers() {
           </TableBody>
         </Table>
       </CardContent></Card>
-
-      {/* Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-md p-0 gap-0">
-          <DialogHeader className="px-6 py-4 border-b">
-            <DialogTitle>{editId ? 'Edit Superuser' : 'New Superuser'}</DialogTitle>
-            <DialogClose onClose={() => setDialogOpen(false)} />
-          </DialogHeader>
-
-          <div className="px-6 py-5 space-y-4">
-            {formError && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {formError}
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>First Name</Label>
-                <Input
-                  placeholder="Jane"
-                  value={form.first_name}
-                  onChange={e => {
-                    const first = e.target.value
-                    setForm(p => ({
-                      ...p,
-                      first_name: first,
-                      full_name: (first + ' ' + p.last_name).trim(),
-                      username: buildUsername(first, p.last_name),
-                    }))
-                  }}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Last Name</Label>
-                <Input
-                  placeholder="Smith"
-                  value={form.last_name}
-                  onChange={e => {
-                    const last = e.target.value
-                    setForm(p => ({
-                      ...p,
-                      last_name: last,
-                      full_name: (p.first_name + ' ' + last).trim(),
-                      username: buildUsername(p.first_name, last),
-                    }))
-                  }}
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Username <span className="text-destructive">*</span></Label>
-                <Input placeholder="jsmith" value={form.username} onChange={f('username')} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Email <span className="text-destructive">*</span></Label>
-                <Input type="email" placeholder="user@example.com" value={form.user_email} onChange={f('user_email')} />
-              </div>
-            </div>
-
-            {!editId && (
-              <div className="space-y-1.5">
-                <Label>Password <span className="text-destructive">*</span></Label>
-                <div className="relative">
-                  <Input
-                    type={showPassword ? 'text' : 'password'}
-                    placeholder="Enter password"
-                    value={form.password}
-                    onChange={f('password')}
-                    className="pr-10"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(v => !v)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
-              Superusers have unrestricted access to all tenants and system settings.
-            </div>
-
-            <div className="border-t pt-4">
-              <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-input accent-primary"
-                  checked={form.user_enabled}
-                  onChange={e => setForm(p => ({ ...p, user_enabled: e.target.checked }))}
-                />
-                <span className="text-sm font-medium">Account enabled</span>
-              </label>
-            </div>
-          </div>
-
-          <DialogFooter className="px-6 py-3 border-t gap-2">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving}>
-              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              {editId ? 'Save Changes' : 'Create Superuser'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

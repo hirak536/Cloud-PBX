@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { destinations as api, fax as faxApi } from '@/api'
 import { useDestinationData } from '@/hooks/useDestinationData'
 import { useInfiniteList } from '@/hooks/useInfiniteList'
@@ -453,6 +454,9 @@ function SectionTitle({ children }) {
 const FAX_BOX_EMPTY = {
   fax_name: '', fax_extension: '', fax_email: '',
   fax_caller_id_number: '', fax_description: '', fax_enabled: true,
+  fax_delivery_mode: 'email',
+  fax_ftp_host: '', fax_ftp_port: 21, fax_ftp_username: '',
+  fax_ftp_password: '', fax_ftp_path: '', fax_ftp_use_tls: false,
 }
 
 function FaxBoxFormDialog({ open, editBox, didNumber, dids, onClose }) {
@@ -472,6 +476,14 @@ function FaxBoxFormDialog({ open, editBox, didNumber, dids, onClose }) {
         fax_caller_id_number: editBox.fax_caller_id_number || '',
         fax_description:      editBox.fax_description || '',
         fax_enabled:          editBox.fax_enabled !== false,
+        fax_delivery_mode:    editBox.fax_delivery_mode || 'email',
+        fax_ftp_host:         editBox.fax_ftp_host || '',
+        fax_ftp_port:         editBox.fax_ftp_port ?? 21,
+        fax_ftp_username:     editBox.fax_ftp_username || '',
+        // Password is write-only on the backend, so it never comes back — leave blank.
+        fax_ftp_password:     '',
+        fax_ftp_path:         editBox.fax_ftp_path || '',
+        fax_ftp_use_tls:      editBox.fax_ftp_use_tls === true,
       })
     } else {
       setForm({ ...FAX_BOX_EMPTY, fax_extension: didNumber || '' })
@@ -483,9 +495,13 @@ function FaxBoxFormDialog({ open, editBox, didNumber, dids, onClose }) {
   const handleSave = async () => {
     if (!form.fax_name.trim())      { setError('Name is required.');      return }
     if (!form.fax_extension.trim()) { setError('Enter the DID number first — the fax box is tied to it.'); return }
+    const wantsFtp = form.fax_delivery_mode === 'ftp' || form.fax_delivery_mode === 'both'
+    if (wantsFtp && !form.fax_ftp_host.trim()) { setError('FTP host is required for the selected delivery mode.'); return }
     setSaving(true); setError('')
     // Single Name drives both fax_name and fax_caller_id_name on the backend.
     const payload = { ...form, fax_caller_id_name: form.fax_name.trim() }
+    // Blank password means "leave unchanged" — don't overwrite the stored one.
+    if (!payload.fax_ftp_password) delete payload.fax_ftp_password
     try {
       let saved
       if (editBox) {
@@ -518,9 +534,48 @@ function FaxBoxFormDialog({ open, editBox, didNumber, dids, onClose }) {
             <Field label="Extension" hint="Tied to this DID number — one fax box per number.">
               <Input value={form.fax_extension} readOnly disabled className="font-mono" />
             </Field>
-            <Field label="Notification Email" hint="Inbound faxes are emailed here. Separate multiple addresses with commas." className="sm:col-span-2">
-              <Input type="text" placeholder="fax@company.com, alerts@company.com" value={form.fax_email} onChange={sf('fax_email')} disabled={saving} />
+            <Field label="Received Fax Delivery" hint="What to do with inbound faxes." className="sm:col-span-2">
+              <Select value={form.fax_delivery_mode} onChange={sf('fax_delivery_mode')} disabled={saving}>
+                <option value="email">Email</option>
+                <option value="ftp">FTP server</option>
+                <option value="both">Email + FTP</option>
+              </Select>
             </Field>
+            {(form.fax_delivery_mode === 'email' || form.fax_delivery_mode === 'both') && (
+              <Field label="Notification Email" hint="Inbound faxes are emailed here. Separate multiple addresses with commas." className="sm:col-span-2">
+                <Input type="text" placeholder="fax@company.com, alerts@company.com" value={form.fax_email} onChange={sf('fax_email')} disabled={saving} />
+              </Field>
+            )}
+            {(form.fax_delivery_mode === 'ftp' || form.fax_delivery_mode === 'both') && (
+              <div className="sm:col-span-2 rounded-md border bg-muted/30 p-4">
+                <p className="text-sm font-medium mb-3">FTP Server</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Field label="FTP Host *" className="sm:col-span-2">
+                    <Input placeholder="ftp.example.com" value={form.fax_ftp_host} onChange={sf('fax_ftp_host')} disabled={saving} />
+                  </Field>
+                  <Field label="Port">
+                    <Input type="number" value={form.fax_ftp_port}
+                      onChange={(e) => setForm(p => ({ ...p, fax_ftp_port: e.target.value === '' ? '' : Number(e.target.value) }))}
+                      disabled={saving} />
+                  </Field>
+                  <Field label="Use FTPS (TLS)">
+                    <Select value={String(form.fax_ftp_use_tls)} onChange={(e) => setForm(p => ({ ...p, fax_ftp_use_tls: e.target.value === 'true' }))} disabled={saving}>
+                      <option value="false">No</option>
+                      <option value="true">Yes</option>
+                    </Select>
+                  </Field>
+                  <Field label="Username">
+                    <Input placeholder="anonymous" value={form.fax_ftp_username} onChange={sf('fax_ftp_username')} disabled={saving} autoComplete="off" />
+                  </Field>
+                  <Field label="Password" hint={editBox ? 'Leave blank to keep the current password.' : undefined}>
+                    <Input type="password" value={form.fax_ftp_password} onChange={sf('fax_ftp_password')} disabled={saving} autoComplete="new-password" />
+                  </Field>
+                  <Field label="Remote Path" hint="Directory to store faxes in (created if missing)." className="sm:col-span-2">
+                    <Input placeholder="/incoming-faxes" value={form.fax_ftp_path} onChange={sf('fax_ftp_path')} disabled={saving} />
+                  </Field>
+                </div>
+              </div>
+            )}
             <Field label="Status">
               <Select value={String(form.fax_enabled)} onChange={(e) => setForm(p => ({ ...p, fax_enabled: e.target.value === 'true' }))} disabled={saving}>
                 <option value="true">Enabled</option>
@@ -1032,10 +1087,22 @@ function BulkAddDIDsDialog({ open, onClose, onDone }) {
 
 
 export default function Destinations() {
+  const navigate = useNavigate()
+  // Route param drives the editor: undefined = list, 'new' = create, else edit by id.
+  // We use a route segment (/destinations/new, /destinations/:id/edit) so the
+  // editor is a full page with the app sidebar still visible, and browser
+  // back / deep-linking work.
+  // The `/new` route has no :id param, so detect create from the path and only
+  // use the param for edit. editorOpen is true for either editor route.
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/destinations/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [pageSize, setPageSize]   = useState(DEFAULT_PAGE_SIZE)
   const [search, setSearch]       = useState('')
   const debouncedSearch           = useDebounce(search, 300)
-  const [dialogOpen, setDialog]   = useState(false)
   const [bulkOpen, setBulkOpen]   = useState(false)
   const [editId, setEditId]       = useState(null)
   const [form, setForm]           = useState(EMPTY)
@@ -1124,22 +1191,32 @@ export default function Destinations() {
 
   const set = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
 
-  const openCreate = () => {
-    setEditId(null); setForm(EMPTY); setTab('information'); setFormError('')
-    setDialog(true); loadDestData()
-  }
+  // Navigate to the full-page editor; the route effect below loads the form.
+  const openCreate = () => navigate('/destinations/new')
+  const openEdit   = (r) => navigate(`/destinations/${r.destination_uuid}/edit`)
+  const closeEditor = () => navigate('/destinations')
 
-  const openEdit = async (r) => {
-    const id = r.destination_uuid
-    setEditId(id); setForm(rowToForm(r)); setTab('information'); setFormError('')
-    setDialog(true); loadDestData()
+  // Sync form state to the current route. Runs whenever the editor route changes.
+  useEffect(() => {
+    if (!editorOpen) return
+    setTab('information'); setFormError('')
+    loadDestData()
+    if (isCreate) {
+      setEditId(null); setForm(EMPTY)
+      return
+    }
+    // Edit: seed from the list row if we have it (instant render), then fetch
+    // the full detail. If the row isn't loaded yet, fetch is the only source.
+    setEditId(routeId)
+    const row = rows.find(r => r.destination_uuid === routeId)
+    if (row) setForm(rowToForm(row))
     setDetailLoading(true)
-    try {
-      const { data } = await api.get(id)
-      setForm(rowToForm(data))
-    } catch { /* keep list data */ }
-    finally { setDetailLoading(false) }
-  }
+    api.get(routeId)
+      .then(({ data }) => setForm(rowToForm(data)))
+      .catch(() => { if (!row) { toast.error('DID not found.'); closeEditor() } })
+      .finally(() => setDetailLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   const handleSave = async () => {
     if (!form.destination_number.trim()) {
@@ -1186,7 +1263,7 @@ export default function Destinations() {
         fax_on_receive:            form.fax_on_receive,
       }
       editId ? await api.update(editId, payload) : await api.create(payload)
-      setDialog(false); load()
+      load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
       if (d && typeof d === 'object') {
@@ -1243,6 +1320,93 @@ export default function Destinations() {
     if (!confirm('Delete this DID?')) return
     setDeleting(id)
     try { await api.delete(id); load() } finally { setDeleting(null) }
+  }
+
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  // Rendered in place of the list when on /destinations/new or /:id/edit. The
+  // app sidebar stays visible because it lives in AppLayout, outside this page.
+  if (editorOpen) {
+    const tabIndex = TABS.findIndex(t => t.id === tab)
+    return (
+      <div className="space-y-4">
+        {/* Header with breadcrumb-style back */}
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2">
+            <X className="h-4 w-4 mr-1" />Destinations
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'Define DID' : 'Edit DID'}</h1>
+          {detailLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+        </div>
+
+        <Card>
+          {/* Tab bar */}
+          <div className="flex items-center gap-1 px-4 pt-3 border-b border-border/60">
+            {TABS.map(t => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={cn(
+                  'px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-all duration-150',
+                  tab === t.id
+                    ? 'border-primary text-primary bg-primary/5'
+                    : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50',
+                )}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Body */}
+          <CardContent className="px-6 py-5 space-y-1">
+            {formError && (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive mb-3">
+                {formError}
+              </div>
+            )}
+            <DIDFormBody
+              tab={tab} form={form} set={set} setForm={setForm}
+              destData={destData} destLoading={destLoading}
+              destSearchLoading={destSearchLoading} onSearch={searchDestData}
+              onNewFaxBox={openNewFaxBox} onEditFaxBox={openEditFaxBox}
+              onAutoCreateFaxBox={autoCreateFaxBox} autoCreatingFax={autoCreatingFax}
+              onUpdateFaxBoxEmail={updateFaxBoxEmail}
+            />
+          </CardContent>
+
+          {/* Footer */}
+          <div className="flex items-center justify-between px-6 py-4 border-t border-border/60 bg-muted/30">
+            <span className="text-xs text-muted-foreground">
+              Step {tabIndex + 1} of {TABS.length}
+            </span>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={closeEditor}>Cancel</Button>
+              {tabIndex > 0 && (
+                <Button variant="outline" onClick={() => setTab(TABS[tabIndex - 1].id)}>← Back</Button>
+              )}
+              {tabIndex < TABS.length - 1 ? (
+                <Button onClick={() => setTab(TABS[tabIndex + 1].id)}>Next →</Button>
+              ) : (
+                <Button onClick={handleSave} disabled={saving}>
+                  {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+                  {isCreate ? 'Create DID' : 'Save Changes'}
+                </Button>
+              )}
+            </div>
+          </div>
+        </Card>
+
+        {/* Inline fax box create/edit, opened from the DID editor's Fax tab */}
+        <FaxBoxFormDialog
+          open={faxBoxDialogOpen}
+          editBox={editFaxBox}
+          didNumber={form.destination_number}
+          dids={rows}
+          onClose={handleFaxBoxClose}
+        />
+      </div>
+    )
   }
 
   return (
@@ -1335,85 +1499,6 @@ export default function Destinations() {
         )}
       </CardContent></Card>
 
-      {/* dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialog}>
-        <DialogContent className="w-[95vw] max-w-2xl h-[700px] max-h-[90vh] flex flex-col p-0 overflow-hidden">
-          {/* Header */}
-          <DialogHeader className="px-6 pt-5 pb-4 border-b border-border/60">
-            <DialogTitle>{editId ? 'Edit DID' : 'Define DID'}</DialogTitle>
-          </DialogHeader>
-
-          {/* Tab bar */}
-          <div className="flex items-center gap-1 px-4 pt-2 pb-0 border-b border-border/60">
-            {TABS.map(t => (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={cn(
-                  'px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-all duration-150',
-                  tab === t.id
-                    ? 'border-primary text-primary bg-primary/5'
-                    : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50',
-                )}
-              >
-                {t.label}
-              </button>
-            ))}
-            {detailLoading && <Loader2 className="h-4 w-4 animate-spin ml-auto mr-2 text-muted-foreground" />}
-          </div>
-
-          {/* Body */}
-          <div className="overflow-y-auto flex-1 min-h-0 px-6 py-4 space-y-1">
-            {formError && (
-              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive mb-3">
-                {formError}
-              </div>
-            )}
-            <DIDFormBody
-              tab={tab} form={form} set={set} setForm={setForm}
-              destData={destData} destLoading={destLoading}
-              destSearchLoading={destSearchLoading} onSearch={searchDestData}
-              onNewFaxBox={openNewFaxBox} onEditFaxBox={openEditFaxBox}
-              onAutoCreateFaxBox={autoCreateFaxBox} autoCreatingFax={autoCreatingFax}
-              onUpdateFaxBoxEmail={updateFaxBoxEmail}
-            />
-          </div>
-
-          {/* Footer */}
-          <div className="flex items-center justify-between px-6 py-4 border-t border-border/60 bg-muted/30 rounded-b-2xl">
-            <span className="text-xs text-muted-foreground">
-              Step {TABS.findIndex(t => t.id === tab) + 1} of {TABS.length}
-            </span>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => setDialog(false)}>Cancel</Button>
-              {TABS.findIndex(t => t.id === tab) > 0 && (
-                <Button variant="outline" onClick={() => setTab(TABS[TABS.findIndex(t => t.id === tab) - 1].id)}>
-                  ← Back
-                </Button>
-              )}
-              {TABS.findIndex(t => t.id === tab) < TABS.length - 1 ? (
-                <Button onClick={() => setTab(TABS[TABS.findIndex(t => t.id === tab) + 1].id)}>
-                  Next →
-                </Button>
-              ) : (
-                <Button onClick={handleSave} disabled={saving}>
-                  {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
-                  {editId ? 'Save Changes' : 'Create DID'}
-                </Button>
-              )}
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Inline fax box create/edit, opened from the DID dialog's Fax tab */}
-      <FaxBoxFormDialog
-        open={faxBoxDialogOpen}
-        editBox={editFaxBox}
-        didNumber={form.destination_number}
-        dids={rows}
-        onClose={handleFaxBoxClose}
-      />
     </div>
   )
 }

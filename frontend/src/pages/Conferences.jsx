@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { conferences as api } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,18 +8,23 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Plus, Pencil, Trash2, Search, Loader2 } from 'lucide-react'
 
 const EMPTY = { conference_extension: '', conference_name: '', conference_pin: '', conference_max_members: 0, enabled: true }
 
 export default function Conferences() {
+  const navigate = useNavigate()
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/conferences/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebounce(search, 300)
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
@@ -36,19 +42,36 @@ export default function Conferences() {
   useEffect(() => { load() }, [load])
 
   const f = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
-  const openCreate = () => { setEditId(null); setForm(EMPTY); setFormError(''); setDialogOpen(true) }
-  const openEdit = (r) => {
-    setEditId(r.conference_uuid || r.id)
-    setForm({ conference_extension: r.conference_extension || '', conference_name: r.conference_name || '', conference_pin: r.conference_pin || '', conference_max_members: r.conference_max_members || 0, enabled: r.conference_enabled !== false })
-    setFormError(''); setDialogOpen(true)
-  }
+
+  const rowToForm = (r) => ({
+    conference_extension: r.conference_extension || '',
+    conference_name: r.conference_name || '',
+    conference_pin: r.conference_pin || '',
+    conference_max_members: r.conference_max_members || 0,
+    enabled: r.conference_enabled !== false,
+  })
+
+  const openCreate  = () => navigate('/conferences/new')
+  const openEdit    = (r) => navigate('/conferences/' + r.conference_uuid + '/edit')
+  const closeEditor = () => navigate('/conferences')
+
+  useEffect(() => {
+    if (!editorOpen) return
+    setFormError('')
+    if (isCreate) { setEditId(null); setForm(EMPTY); return }
+    setEditId(routeId)
+    const row = rows.find(r => r.conference_uuid === routeId)
+    if (row) { setForm(rowToForm(row)); return }
+    api.get(routeId).then(({ data }) => setForm(rowToForm(data))).catch(() => setForm(EMPTY))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   const handleSave = async () => {
     if (!form.conference_extension) { setFormError('Extension is required.'); return }
     setSaving(true); setFormError('')
     try {
       editId ? await api.update(editId, form) : await api.create(form)
-      setDialogOpen(false); load()
+      load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -59,6 +82,39 @@ export default function Conferences() {
     if (!confirm('Delete this conference room?')) return
     setDeleting(id)
     try { await api.delete(id); load() } finally { setDeleting(null) }
+  }
+
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Conferences
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New Conference' : 'Edit Conference'}</h1>
+        </div>
+
+        <Card>
+          <div className="px-6 py-5 space-y-4">
+            {formError && <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{formError}</div>}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5"><Label>Extension *</Label><Input placeholder="9000" value={form.conference_extension} onChange={f('conference_extension')} /></div>
+              <div className="space-y-1.5"><Label>Name</Label><Input placeholder="Board Room" value={form.conference_name} onChange={f('conference_name')} /></div>
+              <div className="space-y-1.5"><Label>PIN</Label><Input type="password" placeholder="Optional PIN" value={form.conference_pin} onChange={f('conference_pin')} /></div>
+              <div className="space-y-1.5"><Label>Max Members</Label><Input type="number" placeholder="0 = unlimited" value={form.conference_max_members} onChange={f('conference_max_members')} /></div>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" size="sm" onClick={closeEditor}>Cancel</Button>
+            <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
+              {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {isCreate ? 'Create' : 'Save'}
+            </Button>
+          </div>
+        </Card>
+      </div>
+    )
   }
 
   return (
@@ -97,28 +153,6 @@ export default function Conferences() {
           </TableBody>
         </Table>
       </CardContent></Card>
-
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-sm p-0 gap-0">
-          <DialogHeader className="px-6 py-4 border-b">
-            <DialogTitle>{editId ? 'Edit Conference' : 'New Conference Room'}</DialogTitle>
-            <DialogClose onClose={() => setDialogOpen(false)} />
-          </DialogHeader>
-          <div className="px-6 py-5 space-y-4">
-          {formError && <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{formError}</div>}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5"><Label>Extension *</Label><Input placeholder="9000" value={form.conference_extension} onChange={f('conference_extension')} /></div>
-            <div className="space-y-1.5"><Label>Name</Label><Input placeholder="Board Room" value={form.conference_name} onChange={f('conference_name')} /></div>
-            <div className="space-y-1.5"><Label>PIN</Label><Input type="password" placeholder="Optional PIN" value={form.conference_pin} onChange={f('conference_pin')} /></div>
-            <div className="space-y-1.5"><Label>Max Members</Label><Input type="number" placeholder="0 = unlimited" value={form.conference_max_members} onChange={f('conference_max_members')} /></div>
-          </div>
-          </div>
-          <DialogFooter className="px-6 py-3 border-t gap-2">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving}>{saving && <Loader2 className="h-4 w-4 animate-spin" />}{editId ? 'Save' : 'Create'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

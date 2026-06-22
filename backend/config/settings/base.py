@@ -431,3 +431,12 @@ GEMINI_API_KEY = config('GEMINI_API_KEY', default='')
 
 # Google Cloud Speech-to-Text v1
 GOOGLE_SPEECH_API_KEY = config('GOOGLE_SPEECH_API_KEY', default='')
+
+# HOMER SIP capture (heplify-server → PostgreSQL). Source of per-leg SIP for the
+# CDR viewer; captures TLS/wss legs in cleartext. See apps/xml_cdr/sip_capture.py.
+HOMER_ENABLED = config('HOMER_ENABLED', default=False, cast=bool)
+HOMER_DB_HOST = config('HOMER_DB_HOST', default='127.0.0.1')
+HOMER_DB_PORT = config('HOMER_DB_PORT', default=5432, cast=int)
+HOMER_DB_NAME = config('HOMER_DB_NAME', default='homer_data')
+HOMER_DB_USER = config('HOMER_DB_USER', default='homer')
+HOMER_DB_PASSWORD = config('HOMER_DB_PASSWORD', default='')

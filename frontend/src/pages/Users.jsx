@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useSelector } from 'react-redux'
 import { selectTenant, selectAuth } from '@/store'
 import { roleOf, creatableRoles, GRANTABLE_PAGES, GRANTABLE_PATHS } from '@/lib/permissions'
@@ -995,6 +996,15 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Users() {
+  const navigate = useNavigate()
+  // Route param drives the editor: undefined = list, 'new' = create, else edit by id.
+  // The `/new` route has no :id param, so detect create from the path.
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/users/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const { currentTenant } = useSelector(selectTenant)
   const { user: loggedInUser } = useSelector(selectAuth)
   const myRole = roleOf(loggedInUser)
@@ -1008,7 +1018,6 @@ export default function Users() {
   const [allTenants, setAllTenants] = useState([])
   const [faxBoxes, setFaxBoxes]     = useState([])
   const [faxScope, setFaxScope]     = useState('all')  // 'all' | 'selected'
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId]        = useState(null)
   const [form, setForm]            = useState(EMPTY_FORM)
   const [saving, setSaving]        = useState(false)
@@ -1055,24 +1064,11 @@ export default function Users() {
 
   const f = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
 
-  const openCreate = () => {
-    setEditId(null)
-    setForm({
-      ...EMPTY_FORM,
-      role: allowedRoles[0] || 'user',
-      tenant_uuid: currentTenant?.tenant_uuid || '',
-    })
-    setFaxScope('all')
-    setFormError('')
-    setDialogOpen(true)
-  }
-
-  const openEdit = (r) => {
-    setEditId(r.user_uuid)
+  const rowToForm = (r) => {
     const parts = (r.full_name || '').trim().split(' ')
     const firstName = parts[0] || ''
     const lastName = parts.slice(1).join(' ')
-    setForm({
+    return {
       first_name: firstName,
       last_name: lastName,
       full_name: r.full_name || '',
@@ -1084,11 +1080,44 @@ export default function Users() {
       admin_tenant_uuids: (r.admin_tenants || []).map(t => t.tenant_uuid),
       allowed_pages: Array.isArray(r.allowed_pages) ? r.allowed_pages : [],
       allowed_fax_uuids: Array.isArray(r.allowed_fax_uuids) ? r.allowed_fax_uuids : [],
-    })
-    setFaxScope((r.allowed_fax_uuids || []).length > 0 ? 'selected' : 'all')
-    setFormError('')
-    setDialogOpen(true)
+    }
   }
+
+  // Navigate to the full-page editor; the route effect below loads the form.
+  const openCreate  = () => navigate('/users/new')
+  const openEdit    = (r) => navigate(`/users/${r.user_uuid}/edit`)
+  const closeEditor = () => navigate('/users')
+
+  // Sync form state to the current route.
+  useEffect(() => {
+    if (!editorOpen) return
+    setFormError('')
+    if (isCreate) {
+      setEditId(null)
+      setForm({
+        ...EMPTY_FORM,
+        role: allowedRoles[0] || 'user',
+        tenant_uuid: currentTenant?.tenant_uuid || '',
+      })
+      setFaxScope('all')
+      return
+    }
+    setEditId(routeId)
+    const row = rows.find(r => r.user_uuid === routeId)
+    if (row) {
+      setForm(rowToForm(row))
+      setFaxScope((row.allowed_fax_uuids || []).length > 0 ? 'selected' : 'all')
+      return
+    }
+    // Deep-link / refresh: fetch the row if the list isn't loaded yet.
+    api.get?.(routeId)
+      .then(({ data }) => {
+        setForm(rowToForm(data))
+        setFaxScope((data.allowed_fax_uuids || []).length > 0 ? 'selected' : 'all')
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate, rows])
 
   const toggleTenant = (uuid) => {
     setForm(p => ({
@@ -1185,8 +1214,8 @@ export default function Users() {
       } else {
         await api.create(payload)
       }
-      setDialogOpen(false)
       load()
+      closeEditor()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -1211,137 +1240,20 @@ export default function Users() {
     try { await api.delete(id); load() } finally { setDeleting(null) }
   }
 
-  return (
-    <div className="space-y-4">
-      {/* Tab switcher */}
-      <div className="flex items-center gap-1 border-b">
-        {[
-          { key: 'uc',  label: 'UC Users' },
-          { key: 'pbx', label: 'PBX Users' },
-        ].map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors duration-150 -mb-px
-              ${activeTab === tab.key
-                ? 'border-primary text-primary'
-                : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Users
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New User' : 'Edit User'}</h1>
+        </div>
 
-      {/* ── PBX Users ── */}
-      {activeTab === 'pbx' && (
-        <>
-          <div className="flex items-center gap-3">
-            <div className="relative flex-1 max-w-xs">
-              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input placeholder="Search users..." className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
-            </div>
-            <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" />Add User</Button>
-          </div>
-
-          {resetMsg && (
-            <div className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-primary">
-              {resetMsg}
-            </div>
-          )}
-
-          <Card><CardContent className="p-0 overflow-x-auto">
-            <Table>
-              <TableHeader><TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Tenant Access</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="w-28" />
-              </TableRow></TableHeader>
-              <TableBody>
-                {loading
-                  ? [...Array(5)].map((_, i) => (
-                      <TableRow key={i}>
-                        {[...Array(6)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
-                      </TableRow>
-                    ))
-                  : rows.length === 0
-                    ? <TableRow><TableCell colSpan={6} className="text-center py-10 text-muted-foreground">No users found.</TableCell></TableRow>
-                    : rows.map((r) => {
-                        const role = roleFromUser(r)
-                        return (
-                          <TableRow key={r.user_uuid}>
-                            <TableCell className="font-medium">
-                              {r.full_name || r.username}
-                              {r.full_name && <span className="block text-xs text-muted-foreground">{r.username}</span>}
-                            </TableCell>
-                            <TableCell className="text-muted-foreground text-sm">{r.user_email || '—'}</TableCell>
-                            <TableCell>
-                              {role === 'superuser'
-                                ? <Badge variant="default" className="gap-1"><ShieldCheck className="h-3 w-3" />Superuser</Badge>
-                                : role === 'admin'
-                                  ? <Badge variant="secondary" className="gap-1"><Shield className="h-3 w-3" />Admin</Badge>
-                                  : <Badge variant="outline" className="gap-1"><User2 className="h-3 w-3" />User</Badge>}
-                            </TableCell>
-                            <TableCell>
-                              {role === 'superuser'
-                                ? <span className="text-xs text-muted-foreground italic">All tenants</span>
-                                : role === 'admin' && r.admin_tenants?.length > 0
-                                  ? <div className="flex flex-wrap gap-1">
-                                      {r.admin_tenants.map(t => (
-                                        <Badge key={t.tenant_uuid} variant="outline" className="text-xs">{t.tenant_code}</Badge>
-                                      ))}
-                                    </div>
-                                  : r.tenant_code
-                                    ? <Badge variant="outline" className="text-xs">{r.tenant_code}</Badge>
-                                    : <span className="text-xs text-muted-foreground">—</span>}
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant={r.user_enabled !== false ? 'success' : 'secondary'}>
-                                {r.user_enabled !== false ? 'Active' : 'Inactive'}
-                              </Badge>
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex gap-1">
-                                <Button variant="ghost" size="icon" className="h-7 w-7" title="Reset password" onClick={() => handleResetPassword(r.user_uuid)} disabled={resetting === r.user_uuid}>
-                                  {resetting === r.user_uuid ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />}
-                                </Button>
-                                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
-                                  <Pencil className="h-3.5 w-3.5" />
-                                </Button>
-                                <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => handleDelete(r.user_uuid)} disabled={deleting === r.user_uuid}>
-                                  {deleting === r.user_uuid ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        )
-                      })}
-              </TableBody>
-            </Table>
-          </CardContent></Card>
-        </>
-      )}
-
-      {/* ── UC Users ── */}
-      {activeTab === 'uc' && (
-        <UcUsersTab
-          tenantCode={currentTenant?.tenant_code}
-          tenantUuid={currentTenant?.tenant_uuid}
-          tenantName={currentTenant?.tenant_name}
-        />
-      )}
-
-      {/* Dialog — only relevant for PBX tab */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-lg p-0 gap-0">
-          <DialogHeader className="px-6 py-4 border-b">
-            <DialogTitle>{editId ? 'Edit User' : 'New User'}</DialogTitle>
-            <DialogClose onClose={() => setDialogOpen(false)} />
-          </DialogHeader>
-
-          <div className="px-6 py-5 space-y-5 max-h-[70vh] overflow-y-auto">
+        <Card>
+          <div className="px-6 py-5 space-y-5">
           {formError && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {formError}
@@ -1609,15 +1521,140 @@ export default function Users() {
           </div>
           </div>
 
-          <DialogFooter className="px-6 py-3 border-t gap-2">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving}>
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" size="sm" onClick={closeEditor}>Cancel</Button>
+            <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              {editId ? 'Save Changes' : 'Create User'}
+              {isCreate ? 'Create User' : 'Save Changes'}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Tab switcher */}
+      <div className="flex items-center gap-1 border-b">
+        {[
+          { key: 'uc',  label: 'UC Users' },
+          { key: 'pbx', label: 'PBX Users' },
+        ].map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors duration-150 -mb-px
+              ${activeTab === tab.key
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── PBX Users ── */}
+      {activeTab === 'pbx' && (
+        <>
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1 max-w-xs">
+              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input placeholder="Search users..." className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
+            </div>
+            <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" />Add User</Button>
+          </div>
+
+          {resetMsg && (
+            <div className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-primary">
+              {resetMsg}
+            </div>
+          )}
+
+          <Card><CardContent className="p-0 overflow-x-auto">
+            <Table>
+              <TableHeader><TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Email</TableHead>
+                <TableHead>Role</TableHead>
+                <TableHead>Tenant Access</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="w-28" />
+              </TableRow></TableHeader>
+              <TableBody>
+                {loading
+                  ? [...Array(5)].map((_, i) => (
+                      <TableRow key={i}>
+                        {[...Array(6)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
+                      </TableRow>
+                    ))
+                  : rows.length === 0
+                    ? <TableRow><TableCell colSpan={6} className="text-center py-10 text-muted-foreground">No users found.</TableCell></TableRow>
+                    : rows.map((r) => {
+                        const role = roleFromUser(r)
+                        return (
+                          <TableRow key={r.user_uuid}>
+                            <TableCell className="font-medium">
+                              {r.full_name || r.username}
+                              {r.full_name && <span className="block text-xs text-muted-foreground">{r.username}</span>}
+                            </TableCell>
+                            <TableCell className="text-muted-foreground text-sm">{r.user_email || '—'}</TableCell>
+                            <TableCell>
+                              {role === 'superuser'
+                                ? <Badge variant="default" className="gap-1"><ShieldCheck className="h-3 w-3" />Superuser</Badge>
+                                : role === 'admin'
+                                  ? <Badge variant="secondary" className="gap-1"><Shield className="h-3 w-3" />Admin</Badge>
+                                  : <Badge variant="outline" className="gap-1"><User2 className="h-3 w-3" />User</Badge>}
+                            </TableCell>
+                            <TableCell>
+                              {role === 'superuser'
+                                ? <span className="text-xs text-muted-foreground italic">All tenants</span>
+                                : role === 'admin' && r.admin_tenants?.length > 0
+                                  ? <div className="flex flex-wrap gap-1">
+                                      {r.admin_tenants.map(t => (
+                                        <Badge key={t.tenant_uuid} variant="outline" className="text-xs">{t.tenant_code}</Badge>
+                                      ))}
+                                    </div>
+                                  : r.tenant_code
+                                    ? <Badge variant="outline" className="text-xs">{r.tenant_code}</Badge>
+                                    : <span className="text-xs text-muted-foreground">—</span>}
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={r.user_enabled !== false ? 'success' : 'secondary'}>
+                                {r.user_enabled !== false ? 'Active' : 'Inactive'}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex gap-1">
+                                <Button variant="ghost" size="icon" className="h-7 w-7" title="Reset password" onClick={() => handleResetPassword(r.user_uuid)} disabled={resetting === r.user_uuid}>
+                                  {resetting === r.user_uuid ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />}
+                                </Button>
+                                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => handleDelete(r.user_uuid)} disabled={deleting === r.user_uuid}>
+                                  {deleting === r.user_uuid ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+              </TableBody>
+            </Table>
+          </CardContent></Card>
+        </>
+      )}
+
+      {/* ── UC Users ── */}
+      {activeTab === 'uc' && (
+        <UcUsersTab
+          tenantCode={currentTenant?.tenant_code}
+          tenantUuid={currentTenant?.tenant_uuid}
+          tenantName={currentTenant?.tenant_name}
+        />
+      )}
+
     </div>
   )
 }

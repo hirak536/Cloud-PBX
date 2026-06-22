@@ -2,6 +2,7 @@ import { useDebounce } from '@/hooks/useDebounce'
 import { useInfiniteList } from '@/hooks/useInfiniteList'
 import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { customDestinations as api } from '@/api'
 import { useDestinationData } from '@/hooks/useDestinationData'
 import { useSelector } from 'react-redux'
@@ -799,11 +800,16 @@ export function AffinityPanel({ open, onClose }) {
 
 export default function CustomDestinations() {
   const { currentTenant } = useSelector(selectTenant)
+  const navigate = useNavigate()
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/custom-destinations/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebounce(search, 300)
-  const [dialogOpen, setDialog] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
@@ -824,37 +830,45 @@ export default function CustomDestinations() {
 
   useEffect(() => { load() }, [load])
 
-  const openCreate = () => {
-    setEditId(null); setForm(EMPTY); setFormError('')
-    setDialog(true); loadDestData()
-  }
+  const rowToForm = (r) => ({
+    name: r.name || '',
+    description: r.description || '',
+    kind: r.kind || (r.callback_to_last_caller ? 'sticky_last_agent' : 'simple'),
+    dest_type: r.dest_type || '',
+    dest_target_uuid: r.dest_target_uuid || '',
+    dest_external_number: r.dest_external_number || '',
+    callback_to_last_caller: !!r.callback_to_last_caller,
+    enabled: r.enabled !== false,
+    toggle_extension: r.toggle_extension || '',
+    toggle_feature_code: r.toggle_feature_code || '',
+    toggle_default_on: r.toggle_default_on !== false,
+    toggle_state: r.toggle_state !== false,
+    toggle_on_dest: r.toggle_on_dest || '',
+    toggle_off_dest: r.toggle_off_dest || '',
+    toggle_on_type: r.toggle_on_type || '',
+    toggle_on_target_uuid: r.toggle_on_target_uuid || '',
+    toggle_on_external: r.toggle_on_external || '',
+    toggle_off_type: r.toggle_off_type || '',
+    toggle_off_target_uuid: r.toggle_off_target_uuid || '',
+    toggle_off_external: r.toggle_off_external || '',
+  })
 
-  const openEdit = (r) => {
-    setEditId(r.custom_destination_uuid)
-    setForm({
-      name: r.name || '',
-      description: r.description || '',
-      kind: r.kind || (r.callback_to_last_caller ? 'sticky_last_agent' : 'simple'),
-      dest_type: r.dest_type || '',
-      dest_target_uuid: r.dest_target_uuid || '',
-      dest_external_number: r.dest_external_number || '',
-      callback_to_last_caller: !!r.callback_to_last_caller,
-      enabled: r.enabled !== false,
-      toggle_extension: r.toggle_extension || '',
-      toggle_feature_code: r.toggle_feature_code || '',
-      toggle_default_on: r.toggle_default_on !== false,
-      toggle_state: r.toggle_state !== false,
-      toggle_on_dest: r.toggle_on_dest || '',
-      toggle_off_dest: r.toggle_off_dest || '',
-      toggle_on_type: r.toggle_on_type || '',
-      toggle_on_target_uuid: r.toggle_on_target_uuid || '',
-      toggle_on_external: r.toggle_on_external || '',
-      toggle_off_type: r.toggle_off_type || '',
-      toggle_off_target_uuid: r.toggle_off_target_uuid || '',
-      toggle_off_external: r.toggle_off_external || '',
-    })
-    setFormError(''); setDialog(true); loadDestData()
-  }
+  const openCreate = () => navigate('/custom-destinations/new')
+  const openEdit = (r) => navigate('/custom-destinations/' + r.custom_destination_uuid + '/edit')
+  const closeEditor = () => navigate('/custom-destinations')
+
+  // Sync form state to the current route.
+  useEffect(() => {
+    if (!editorOpen) return
+    setFormError('')
+    loadDestData()
+    if (isCreate) { setEditId(null); setForm(EMPTY); return }
+    setEditId(routeId)
+    const row = rows.find(r => r.custom_destination_uuid === routeId)
+    if (row) { setForm(rowToForm(row)); return }
+    api.get?.(routeId).then(({ data }) => setForm(rowToForm(data))).catch(() => setForm(EMPTY))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   const handleSave = async () => {
     if (!form.name.trim()) { setFormError('Name is required.'); return }
@@ -874,7 +888,7 @@ export default function CustomDestinations() {
         dest_target_uuid: prepped.dest_target_uuid || null,
       }
       editId ? await api.update(editId, payload) : await api.create(payload)
-      setDialog(false); load()
+      load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
       if (d && typeof d === 'object') {
@@ -902,6 +916,66 @@ export default function CustomDestinations() {
     if (!confirm('Delete this custom destination?')) return
     setDeleting(id)
     try { await api.delete(id); load() } finally { setDeleting(null) }
+  }
+
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Custom Destinations
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New Custom Destination' : 'Edit Custom Destination'}</h1>
+        </div>
+
+        <Card>
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            {formError && (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">{formError}</div>
+            )}
+
+            <Field label="Type *" hint={KIND_REGISTRY[form.kind]?.description}>
+              <Select value={form.kind} onChange={e => setForm(p => ({ ...p, kind: e.target.value }))}>
+                {KIND_LIST.map(k => (
+                  <option key={k.value} value={k.value}>{k.label}</option>
+                ))}
+              </Select>
+            </Field>
+
+            <Field label="Name *">
+              <Input placeholder='e.g. "After Hours VM"' value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
+            </Field>
+            <Field label="Description">
+              <Input placeholder="Optional notes" value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} />
+            </Field>
+
+            {/* Kind-specific body */}
+            {(KIND_REGISTRY[form.kind] || KIND_REGISTRY.simple).renderBody({
+              form, setForm, destData, destLoading, destSearchLoading, searchDestData,
+              cdOptions: rows, editId, currentTenant,
+              openAffinity: () => setAffinityOpen(true),
+            })}
+
+            <ToggleRow
+              label="Enabled"
+              checked={form.enabled}
+              onChange={v => setForm(p => ({ ...p, enabled: v }))}
+            />
+          </div>
+          <div className="flex items-center justify-end gap-2 px-6 py-4 border-t bg-muted/30 shrink-0">
+            <Button variant="outline" onClick={closeEditor}>Cancel</Button>
+            <Button onClick={handleSave} disabled={saving}>
+              {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+              {isCreate ? 'Create' : 'Save Changes'}
+            </Button>
+          </div>
+        </Card>
+
+        <AffinityPanel open={affinityOpen} onClose={() => setAffinityOpen(false)} />
+      </div>
+    )
   }
 
   return (
@@ -1004,54 +1078,6 @@ export default function CustomDestinations() {
           </TableBody>
         </Table>
       </CardContent></Card>
-
-      <Dialog open={dialogOpen} onOpenChange={setDialog}>
-        <DialogContent className="w-[95vw] max-w-lg max-h-[90vh] flex flex-col p-0 overflow-hidden">
-          <DialogHeader className="px-6 pt-5 pb-4 border-b shrink-0">
-            <DialogTitle>{editId ? 'Edit Custom Destination' : 'New Custom Destination'}</DialogTitle>
-          </DialogHeader>
-          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-            {formError && (
-              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">{formError}</div>
-            )}
-
-            <Field label="Type *" hint={KIND_REGISTRY[form.kind]?.description}>
-              <Select value={form.kind} onChange={e => setForm(p => ({ ...p, kind: e.target.value }))}>
-                {KIND_LIST.map(k => (
-                  <option key={k.value} value={k.value}>{k.label}</option>
-                ))}
-              </Select>
-            </Field>
-
-            <Field label="Name *">
-              <Input placeholder='e.g. "After Hours VM"' value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
-            </Field>
-            <Field label="Description">
-              <Input placeholder="Optional notes" value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} />
-            </Field>
-
-            {/* Kind-specific body */}
-            {(KIND_REGISTRY[form.kind] || KIND_REGISTRY.simple).renderBody({
-              form, setForm, destData, destLoading, destSearchLoading, searchDestData,
-              cdOptions: rows, editId, currentTenant,
-              openAffinity: () => setAffinityOpen(true),
-            })}
-
-            <ToggleRow
-              label="Enabled"
-              checked={form.enabled}
-              onChange={v => setForm(p => ({ ...p, enabled: v }))}
-            />
-          </div>
-          <div className="flex items-center justify-end gap-2 px-6 py-4 border-t bg-muted/30 shrink-0">
-            <Button variant="outline" onClick={() => setDialog(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving}>
-              {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
-              {editId ? 'Save Changes' : 'Create'}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

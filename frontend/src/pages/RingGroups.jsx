@@ -1,6 +1,7 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { ringGroups as api, extensions as extensionsApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,7 +9,6 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Plus, Pencil, Trash2, Search, Loader2, X, GripVertical } from 'lucide-react'
 import DestinationPicker, { EMPTY_DEST } from '@/components/DestinationPicker'
@@ -109,11 +109,19 @@ function ExtensionInput({ value, onChange, extensions = [], className }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function RingGroups() {
+  const navigate = useNavigate()
+  // Route param drives the editor: undefined = list, 'new' = create, else edit by id.
+  // The `/new` route has no :id param, so detect create from the path.
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/ring-groups/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows]           = useState([])
   const [loading, setLoading]     = useState(true)
   const [search, setSearch]         = useState('')
   const debouncedSearch             = useDebounce(search, 300)
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId]       = useState(null)
   const [form, setForm]           = useState(EMPTY_FORM)
   const [saving, setSaving]       = useState(false)
@@ -183,57 +191,62 @@ export default function RingGroups() {
     destinations: p.destinations.map((d, i) => i === idx ? { ...d, [key]: val } : d),
   }))
 
-  // ── Dialog open helpers ────────────────────────────────────────────────────
+  // ── Form seeding ────────────────────────────────────────────────────────────
 
-  const openCreate = () => {
-    setEditId(null)
-    setForm({ ...EMPTY_FORM, timeout_dest: { ...EMPTY_DEST }, destinations: [] })
-    setFormError('')
-    setDialogOpen(true)
-    loadDestData()
-  }
+  const rowToForm = (d) => ({
+    ring_group_name:      d.ring_group_name || '',
+    ring_group_extension: d.ring_group_extension || '',
+    ring_group_strategy:  d.ring_group_strategy || 'simultaneous',
+    ring_group_enabled:   d.ring_group_enabled !== false,
+    ring_group_description: d.ring_group_description || '',
+    ring_group_call_timeout: d.ring_group_call_timeout ?? 60,
+    ring_group_dial_timeout: d.ring_group_dial_timeout ?? 3600,
+    ring_group_skip_busy:   d.ring_group_skip_busy || false,
+    ring_group_skip_offline: d.ring_group_skip_offline || false,
+    ring_group_fast_dial:   d.ring_group_fast_dial || false,
+    ring_group_moh_sound:   d.ring_group_moh_sound || false,
+    ring_group_allow_redirect: d.ring_group_allow_redirect || false,
+    ring_group_allow_fmfm:  d.ring_group_allow_fmfm || false,
+    ring_group_allow_additional_destinations: d.ring_group_allow_additional_destinations || false,
+    ring_group_use_custom_destination: d.ring_group_use_custom_destination || false,
+    ring_group_confirm_to_answer: d.ring_group_confirm_to_answer || false,
+    ring_group_confirm_message: d.ring_group_confirm_message || '',
+    ring_group_use_standard_message: d.ring_group_use_standard_message !== false,
+    timeout_dest: {
+      type:            d.ring_group_timeout_type || '',
+      target_uuid:     d.ring_group_timeout_target_uuid || '',
+      external_number: d.ring_group_timeout_external_number || '',
+    },
+    destinations: (d.destinations || []).map(dest => ({
+      destination_number:  dest.destination_number || '',
+      destination_delay:   dest.destination_delay ?? 0,
+      destination_timeout: dest.destination_timeout ?? 30,
+    })),
+  })
 
-  const openEdit = async (r) => {
-    const id = r.ring_group_uuid
-    setEditId(id)
-    setForm({ ...EMPTY_FORM, timeout_dest: { ...EMPTY_DEST }, destinations: [] })
+  // ── Editor navigation ─────────────────────────────────────────────────────
+
+  const openCreate  = () => navigate('/ring-groups/new')
+  const openEdit    = (r) => navigate(`/ring-groups/${r.ring_group_uuid}/edit`)
+  const closeEditor = () => navigate('/ring-groups')
+
+  // Sync form state to the current route.
+  useEffect(() => {
+    if (!editorOpen) return
     setFormError('')
-    setDialogOpen(true)
     loadDestData()
-    try {
-      const { data: d } = await api.get(id)
-      setForm({
-        ring_group_name:      d.ring_group_name || '',
-        ring_group_extension: d.ring_group_extension || '',
-        ring_group_strategy:  d.ring_group_strategy || 'simultaneous',
-        ring_group_enabled:   d.ring_group_enabled !== false,
-        ring_group_description: d.ring_group_description || '',
-        ring_group_call_timeout: d.ring_group_call_timeout ?? 60,
-        ring_group_dial_timeout: d.ring_group_dial_timeout ?? 3600,
-        ring_group_skip_busy:   d.ring_group_skip_busy || false,
-        ring_group_skip_offline: d.ring_group_skip_offline || false,
-        ring_group_fast_dial:   d.ring_group_fast_dial || false,
-        ring_group_moh_sound:   d.ring_group_moh_sound || false,
-        ring_group_allow_redirect: d.ring_group_allow_redirect || false,
-        ring_group_allow_fmfm:  d.ring_group_allow_fmfm || false,
-        ring_group_allow_additional_destinations: d.ring_group_allow_additional_destinations || false,
-        ring_group_use_custom_destination: d.ring_group_use_custom_destination || false,
-        ring_group_confirm_to_answer: d.ring_group_confirm_to_answer || false,
-        ring_group_confirm_message: d.ring_group_confirm_message || '',
-        ring_group_use_standard_message: d.ring_group_use_standard_message !== false,
-        timeout_dest: {
-          type:            d.ring_group_timeout_type || '',
-          target_uuid:     d.ring_group_timeout_target_uuid || '',
-          external_number: d.ring_group_timeout_external_number || '',
-        },
-        destinations: (d.destinations || []).map(dest => ({
-          destination_number:  dest.destination_number || '',
-          destination_delay:   dest.destination_delay ?? 0,
-          destination_timeout: dest.destination_timeout ?? 30,
-        })),
-      })
-    } catch { /* keep empty form if fetch fails */ }
-  }
+    if (isCreate) {
+      setEditId(null)
+      setForm({ ...EMPTY_FORM, timeout_dest: { ...EMPTY_DEST }, destinations: [] })
+      return
+    }
+    setEditId(routeId)
+    setForm({ ...EMPTY_FORM, timeout_dest: { ...EMPTY_DEST }, destinations: [] })
+    api.get(routeId)
+      .then(({ data }) => setForm(rowToForm(data)))
+      .catch(() => { /* keep empty form if fetch fails */ })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   // ── Save ───────────────────────────────────────────────────────────────────
 
@@ -271,8 +284,8 @@ export default function RingGroups() {
         })),
       }
       editId ? await api.update(editId, payload) : await api.create(payload)
-      setDialogOpen(false)
       load()
+      closeEditor()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -287,96 +300,21 @@ export default function RingGroups() {
     try { await api.delete(id); load() } finally { setDeleting(null) }
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
 
-  return (
-    <div className="space-y-4">
-      {/* Toolbar */}
-      <div className="flex items-center gap-3">
-        <div className="relative flex-1 max-w-xs">
-          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Search ring groups…"
-            className="pl-8"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Ring Groups
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New Ring Group' : 'Edit Ring Group'}</h1>
         </div>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="h-4 w-4" /> Add Ring Group
-        </Button>
-      </div>
 
-      {/* Table */}
-      <Card><CardContent className="p-0 overflow-x-auto">
-        <Table>
-          <TableHeader><TableRow>
-            <TableHead>Number</TableHead>
-            <TableHead>Name</TableHead>
-            <TableHead>Strategy</TableHead>
-            <TableHead>Ring Time</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead className="w-20" />
-          </TableRow></TableHeader>
-          <TableBody>
-            {loading
-              ? [...Array(4)].map((_, i) => (
-                  <TableRow key={i}>
-                    {[...Array(6)].map((_, j) => (
-                      <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
-                    ))}
-                  </TableRow>
-                ))
-              : rows.length === 0
-                ? <TableRow><TableCell colSpan={6} className="text-center py-10 text-muted-foreground">No ring groups found.</TableCell></TableRow>
-                : rows.map(r => {
-                    const id = r.ring_group_uuid
-                    const strategy = STRATEGIES.find(s => s.value === r.ring_group_strategy)
-                    return (
-                      <TableRow key={id}>
-                        <TableCell className="font-mono font-medium">{r.ring_group_extension || '—'}</TableCell>
-                        <TableCell>{r.ring_group_name}</TableCell>
-                        <TableCell>
-                          <Badge variant="secondary">{strategy?.label || r.ring_group_strategy}</Badge>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">{r.ring_group_call_timeout}s</TableCell>
-                        <TableCell>
-                          <Badge variant={r.ring_group_enabled !== false ? 'success' : 'secondary'}>
-                            {r.ring_group_enabled !== false ? 'Active' : 'Disabled'}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex gap-1">
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
-                              onClick={() => handleDelete(id)} disabled={deleting === id}
-                            >
-                              {deleting === id
-                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                : <Trash2 className="h-3.5 w-3.5" />}
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    )
-                  })
-            }
-          </TableBody>
-        </Table>
-      </CardContent></Card>
-
-      {/* Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-2xl h-[92vh] sm:h-[88vh] flex flex-col p-0 gap-0">
-          <DialogHeader className="px-6 py-4 border-b shrink-0">
-            <DialogTitle>{editId ? 'Edit Ring Group' : 'New Ring Group'}</DialogTitle>
-            <DialogClose onClose={() => setDialogOpen(false)} />
-          </DialogHeader>
-
-          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+        <Card>
+          <div className="px-6 py-5 space-y-5">
             {formError && (
               <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {formError}
@@ -582,15 +520,98 @@ export default function RingGroups() {
             </div>
           </div>
 
-          <DialogFooter className="px-6 py-3 border-t shrink-0 gap-2">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" onClick={closeEditor}>Cancel</Button>
             <Button onClick={handleSave} disabled={saving}>
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              {editId ? 'Save Changes' : 'Create Ring Group'}
+              {isCreate ? 'Create Ring Group' : 'Save Changes'}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="space-y-4">
+      {/* Toolbar */}
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search ring groups…"
+            className="pl-8"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </div>
+        <Button size="sm" onClick={openCreate}>
+          <Plus className="h-4 w-4" /> Add Ring Group
+        </Button>
+      </div>
+
+      {/* Table */}
+      <Card><CardContent className="p-0 overflow-x-auto">
+        <Table>
+          <TableHeader><TableRow>
+            <TableHead>Number</TableHead>
+            <TableHead>Name</TableHead>
+            <TableHead>Strategy</TableHead>
+            <TableHead>Ring Time</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead className="w-20" />
+          </TableRow></TableHeader>
+          <TableBody>
+            {loading
+              ? [...Array(4)].map((_, i) => (
+                  <TableRow key={i}>
+                    {[...Array(6)].map((_, j) => (
+                      <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
+                    ))}
+                  </TableRow>
+                ))
+              : rows.length === 0
+                ? <TableRow><TableCell colSpan={6} className="text-center py-10 text-muted-foreground">No ring groups found.</TableCell></TableRow>
+                : rows.map(r => {
+                    const id = r.ring_group_uuid
+                    const strategy = STRATEGIES.find(s => s.value === r.ring_group_strategy)
+                    return (
+                      <TableRow key={id}>
+                        <TableCell className="font-mono font-medium">{r.ring_group_extension || '—'}</TableCell>
+                        <TableCell>{r.ring_group_name}</TableCell>
+                        <TableCell>
+                          <Badge variant="secondary">{strategy?.label || r.ring_group_strategy}</Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">{r.ring_group_call_timeout}s</TableCell>
+                        <TableCell>
+                          <Badge variant={r.ring_group_enabled !== false ? 'success' : 'secondary'}>
+                            {r.ring_group_enabled !== false ? 'Active' : 'Disabled'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                              onClick={() => handleDelete(id)} disabled={deleting === id}
+                            >
+                              {deleting === id
+                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                : <Trash2 className="h-3.5 w-3.5" />}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })
+            }
+          </TableBody>
+        </Table>
+      </CardContent></Card>
     </div>
   )
 }

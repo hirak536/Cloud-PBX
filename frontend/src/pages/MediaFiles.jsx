@@ -1,12 +1,12 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { recordings as api } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Plus, Pencil, Trash2, Search, Loader2, Music, Upload, X } from 'lucide-react'
 import AudioPlayer from '@/components/AudioPlayer'
@@ -20,11 +20,17 @@ const EMPTY_FORM = {
 }
 
 export default function MediaFiles() {
+  const navigate = useNavigate()
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/media-files/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows]             = useState([])
   const [loading, setLoading]       = useState(true)
   const [search, setSearch]         = useState('')
   const debouncedSearch             = useDebounce(search, 300)
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId]         = useState(null)
   const [form, setForm]             = useState(EMPTY_FORM)
   const [saving, setSaving]         = useState(false)
@@ -66,15 +72,30 @@ export default function MediaFiles() {
     reader.readAsDataURL(file)
   }
 
-  const openCreate = () => {
-    setEditId(null); setForm(EMPTY_FORM); setFormError(''); setDialogOpen(true)
-  }
+  const rowToForm = (r) => ({
+    ...EMPTY_FORM,
+    recording_name:        r.recording_name || '',
+    recording_description: r.recording_description || '',
+    recording_filename:    r.recording_filename || '',
+  })
 
-  const openEdit = (r) => {
-    setEditId(r.recording_uuid)
-    setForm({ ...EMPTY_FORM, recording_name: r.recording_name || '', recording_description: r.recording_description || '', recording_filename: r.recording_filename || '' })
-    setFormError(''); setDialogOpen(true)
-  }
+  const openCreate  = () => navigate('/media-files/new')
+  const openEdit    = (r) => navigate('/media-files/' + r.recording_uuid + '/edit')
+  const closeEditor = () => navigate('/media-files')
+
+  // Sync form state to the current route.
+  useEffect(() => {
+    if (!editorOpen) return
+    setFormError('')
+    setForm(EMPTY_FORM)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    if (isCreate) { setEditId(null); setForm(EMPTY_FORM); return }
+    setEditId(routeId)
+    const row = rows.find(r => r.recording_uuid === routeId)
+    if (row) { setForm(rowToForm(row)); return }
+    api.get(routeId).then(({ data }) => setForm(rowToForm(data))).catch(() => setForm(EMPTY_FORM))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   const handleSave = async () => {
     if (!form.recording_name)     { setFormError('Name is required.'); return }
@@ -88,7 +109,7 @@ export default function MediaFiles() {
         ...(form.recording_base64 ? { recording_base64: form.recording_base64 } : {}),
       }
       editId ? await api.update(editId, payload) : await api.create(payload)
-      setDialogOpen(false); load()
+      load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -99,6 +120,73 @@ export default function MediaFiles() {
     if (!confirm('Delete this recording?')) return
     setDeleting(id)
     try { await api.delete(id); load() } finally { setDeleting(null) }
+  }
+
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Media Files
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New Media File' : 'Edit Media File'}</h1>
+        </div>
+
+        <Card>
+          <div className="px-6 py-5 space-y-4">
+            {formError && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {formError}
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <Label>Name <span className="text-destructive">*</span></Label>
+              <Input placeholder="Welcome Greeting" value={form.recording_name} onChange={f('recording_name')} />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Description</Label>
+              <Input placeholder="Optional description" value={form.recording_description} onChange={f('recording_description')} />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Filename <span className="text-destructive">*</span></Label>
+              <Input placeholder="greeting.wav" value={form.recording_filename} onChange={f('recording_filename')} />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>WAV File</Label>
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+                  <Upload className="h-3.5 w-3.5 mr-1" /> Choose File
+                </Button>
+                <span className="text-sm text-muted-foreground truncate flex-1">
+                  {form._file ? form._file.name : 'No file chosen'}
+                </span>
+                {form._file && (
+                  <button type="button" onClick={() => setForm(p => ({ ...p, _file: null, recording_base64: '' }))}>
+                    <X className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">WAV format only (8 kHz mono recommended)</p>
+              <input ref={fileInputRef} type="file" accept=".wav,audio/wav,audio/x-wav" className="hidden" onChange={handleFileChange} />
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" size="sm" onClick={closeEditor}>Cancel</Button>
+            <Button size="sm" onClick={handleSave} disabled={saving}>
+              {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+              {isCreate ? 'Create' : 'Save Changes'}
+            </Button>
+          </div>
+        </Card>
+      </div>
+    )
   }
 
   return (
@@ -162,66 +250,6 @@ export default function MediaFiles() {
           </TableBody>
         </Table>
       </CardContent></Card>
-
-      {/* Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-md flex flex-col p-0 gap-0">
-          <DialogHeader className="px-6 py-4 border-b shrink-0">
-            <DialogTitle>{editId ? 'Edit Recording' : 'Add Media File'}</DialogTitle>
-            <DialogClose onClose={() => setDialogOpen(false)} />
-          </DialogHeader>
-
-          <div className="px-6 py-5 space-y-4">
-            {formError && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {formError}
-              </div>
-            )}
-
-            <div className="space-y-1.5">
-              <Label>Name <span className="text-destructive">*</span></Label>
-              <Input placeholder="Welcome Greeting" value={form.recording_name} onChange={f('recording_name')} />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label>Description</Label>
-              <Input placeholder="Optional description" value={form.recording_description} onChange={f('recording_description')} />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label>Filename <span className="text-destructive">*</span></Label>
-              <Input placeholder="greeting.wav" value={form.recording_filename} onChange={f('recording_filename')} />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label>WAV File</Label>
-              <div className="flex items-center gap-2">
-                <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
-                  <Upload className="h-3.5 w-3.5 mr-1" /> Choose File
-                </Button>
-                <span className="text-sm text-muted-foreground truncate flex-1">
-                  {form._file ? form._file.name : 'No file chosen'}
-                </span>
-                {form._file && (
-                  <button type="button" onClick={() => setForm(p => ({ ...p, _file: null, recording_base64: '' }))}>
-                    <X className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
-                  </button>
-                )}
-              </div>
-              <p className="text-xs text-muted-foreground">WAV format only (8 kHz mono recommended)</p>
-              <input ref={fileInputRef} type="file" accept=".wav,audio/wav,audio/x-wav" className="hidden" onChange={handleFileChange} />
-            </div>
-          </div>
-
-          <DialogFooter className="px-6 py-3 border-t shrink-0 gap-2">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving}>
-              {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
-              {editId ? 'Save Changes' : 'Create'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

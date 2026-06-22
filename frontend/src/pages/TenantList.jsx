@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { tenants as api, callParking as parkingApi } from '@/api'
 import { useDispatch } from 'react-redux'
 import { fetchTenantsThunk } from '@/store/slices/tenantSlice'
@@ -10,7 +11,6 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Plus, Pencil, Trash2, Search, Loader2 } from 'lucide-react'
 
@@ -91,11 +91,20 @@ const EMPTY_PARKING = { enabled: false, slot_start: 700, slot_end: 720 }
 export default function TenantList() {
   const dispatch = useDispatch()
   const fetchTenants = () => dispatch(fetchTenantsThunk())
+  const navigate = useNavigate()
+  // Route param drives the editor: undefined = list, /new = create, else edit by id.
+  // The `/new` route has no :id param, so detect create from the path and only
+  // use the param for edit.
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/tenant-list/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebounce(search, 300)
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
@@ -123,33 +132,40 @@ export default function TenantList() {
 
   const f = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
 
-  const openCreate = () => {
-    setEditId(null)
-    setForm(EMPTY)
-    setWebhookPreset(DEFAULT_WEBHOOK_URL)
-    setWebhookCustom('http://')
-    setExtraWebhookEnabled(false)
-    setExtraWebhookUrl('')
-    setParking(EMPTY_PARKING)
-    setFormError('')
-    setDialogOpen(true)
-  }
+  const rowToForm = (r) => ({
+    tenant_name: r.tenant_name || '',
+    tenant_code: r.tenant_code || '',
+    timezone: r.timezone || 'UTC',
+  })
 
-  const openEdit = (r) => {
-    setEditId(r.tenant_uuid)
-    setForm({
-      tenant_name: r.tenant_name || '',
-      tenant_code: r.tenant_code || '',
-      timezone: r.timezone || 'UTC',
-    })
-    setWebhookPreset('')
+  // Navigate to the full-page editor; the route effect below loads the form.
+  const openCreate  = () => navigate('/tenant-list/new')
+  const openEdit    = (r) => navigate('/tenant-list/' + r.tenant_uuid + '/edit')
+  const closeEditor = () => navigate('/tenant-list')
+
+  // Sync form state to the current route.
+  useEffect(() => {
+    if (!editorOpen) return
+    setFormError('')
+    // Reset auxiliary create-only state whenever the editor opens.
     setWebhookCustom('http://')
     setExtraWebhookEnabled(false)
     setExtraWebhookUrl('')
     setParking(EMPTY_PARKING)
-    setFormError('')
-    setDialogOpen(true)
-  }
+    if (isCreate) {
+      setEditId(null)
+      setForm(EMPTY)
+      setWebhookPreset(DEFAULT_WEBHOOK_URL)
+      return
+    }
+    setWebhookPreset('')
+    setEditId(routeId)
+    const row = rows.find(r => r.tenant_uuid === routeId)
+    if (row) { setForm(rowToForm(row)); return }
+    // Deep-link / refresh: fetch the row if the list isn't loaded yet.
+    api.get(routeId).then(({ data }) => setForm(rowToForm(data))).catch(() => setForm(EMPTY))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   // Resolve the actual webhook URL from preset + custom input
   const resolvedWebhookUrl = () => {
@@ -206,8 +222,8 @@ export default function TenantList() {
         }
       }
 
-      setDialogOpen(false)
       load()
+      closeEditor()
       fetchTenants()
     } catch (err) {
       const d = err?.response?.data
@@ -227,98 +243,19 @@ export default function TenantList() {
     r.tenant_code?.toLowerCase().includes(search.toLowerCase())
   )
 
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <div className="relative flex-1 max-w-xs">
-          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Search tenants..."
-            className="pl-8"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Tenants
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New Tenant' : 'Edit Tenant'}</h1>
         </div>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="h-4 w-4" /> Add Tenant
-        </Button>
-      </div>
 
-      <Card>
-        <CardContent className="p-0 overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Code</TableHead>
-                <TableHead>Timezone</TableHead>
-                <TableHead>Domains</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="w-20" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading
-                ? [...Array(4)].map((_, i) => (
-                    <TableRow key={i}>
-                      {[...Array(6)].map((_, j) => (
-                        <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
-                      ))}
-                    </TableRow>
-                  ))
-                : filtered.length === 0
-                ? (
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
-                        No tenants found.
-                      </TableCell>
-                    </TableRow>
-                  )
-                : filtered.map((r) => (
-                    <TableRow key={r.tenant_uuid}>
-                      <TableCell className="font-medium">{r.tenant_name}</TableCell>
-                      <TableCell className="font-mono text-sm">{r.tenant_code}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{r.timezone || '—'}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{r.domain_count ?? '—'}</TableCell>
-                      <TableCell>
-                        <Badge variant={r.tenant_enabled !== false ? 'success' : 'secondary'}>
-                          {r.tenant_enabled !== false ? 'Active' : 'Disabled'}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1">
-                          <Button
-                            variant="ghost" size="icon" className="h-7 w-7"
-                            onClick={() => openEdit(r)}
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost" size="icon"
-                            className="h-7 w-7 text-destructive hover:text-destructive"
-                            onClick={() => handleDelete(r.tenant_uuid)}
-                            disabled={deleting === r.tenant_uuid}
-                          >
-                            {deleting === r.tenant_uuid
-                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              : <Trash2 className="h-3.5 w-3.5" />}
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-md p-0 gap-0 max-h-[90vh] overflow-y-auto">
-          <DialogHeader className="px-6 py-4 border-b sticky top-0 bg-background z-10">
-            <DialogTitle>{editId ? 'Edit Tenant' : 'New Tenant'}</DialogTitle>
-            <DialogClose onClose={() => setDialogOpen(false)} />
-          </DialogHeader>
-
+        <Card>
           <div className="px-6 py-5 space-y-4">
             {formError && (
               <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -358,7 +295,7 @@ export default function TenantList() {
             </div>
 
             {/* ── Create-only fields ── */}
-            {!editId && (
+            {isCreate && (
               <>
                 {/* ── Webhook URL ── */}
                 <div className="space-y-1.5">
@@ -487,15 +424,102 @@ export default function TenantList() {
             )}
           </div>
 
-          <div className="flex justify-end gap-2 px-6 py-3 border-t sticky bottom-0 bg-background">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" onClick={closeEditor}>Cancel</Button>
             <Button onClick={handleSave} disabled={saving}>
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-              {editId ? 'Save Changes' : 'Create Tenant'}
+              {isCreate ? 'Create Tenant' : 'Save Changes'}
             </Button>
           </div>
-        </DialogContent>
-      </Dialog>
+        </Card>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search tenants..."
+            className="pl-8"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <Button size="sm" onClick={openCreate}>
+          <Plus className="h-4 w-4" /> Add Tenant
+        </Button>
+      </div>
+
+      <Card>
+        <CardContent className="p-0 overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Code</TableHead>
+                <TableHead>Timezone</TableHead>
+                <TableHead>Domains</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="w-20" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading
+                ? [...Array(4)].map((_, i) => (
+                    <TableRow key={i}>
+                      {[...Array(6)].map((_, j) => (
+                        <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
+                      ))}
+                    </TableRow>
+                  ))
+                : filtered.length === 0
+                ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
+                        No tenants found.
+                      </TableCell>
+                    </TableRow>
+                  )
+                : filtered.map((r) => (
+                    <TableRow key={r.tenant_uuid}>
+                      <TableCell className="font-medium">{r.tenant_name}</TableCell>
+                      <TableCell className="font-mono text-sm">{r.tenant_code}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{r.timezone || '—'}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{r.domain_count ?? '—'}</TableCell>
+                      <TableCell>
+                        <Badge variant={r.tenant_enabled !== false ? 'success' : 'secondary'}>
+                          {r.tenant_enabled !== false ? 'Active' : 'Disabled'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button
+                            variant="ghost" size="icon" className="h-7 w-7"
+                            onClick={() => openEdit(r)}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost" size="icon"
+                            className="h-7 w-7 text-destructive hover:text-destructive"
+                            onClick={() => handleDelete(r.tenant_uuid)}
+                            disabled={deleting === r.tenant_uuid}
+                          >
+                            {deleting === r.tenant_uuid
+                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              : <Trash2 className="h-3.5 w-3.5" />}
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
     </div>
   )
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import {
   destinations as destinationsApi,
   extensions as extensionsApi,
@@ -16,7 +17,6 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import DestinationPicker, { EMPTY_DEST } from '@/components/DestinationPicker'
 import { useDestinationData } from '@/hooks/useDestinationData'
@@ -594,16 +594,15 @@ function formToPayload(f) {
   }
 }
 
-function CfDialog({ open, onClose, editItem, onSaved }) {
+function CfDialog({ onClose, editItem, onSaved }) {
   const [form, setForm]       = useState(EMPTY_CF_FORM)
   const [saving, setSaving]   = useState(false)
   const { destData, destLoading, destSearchLoading, loadDestData, searchDestData } = useDestinationData()
 
   useEffect(() => {
-    if (!open) return
     setForm(editItem ? cfToForm(editItem) : { ...EMPTY_CF_FORM, day_dest: { ...EMPTY_DEST }, night_dest: { ...EMPTY_DEST } })
     loadDestData()
-  }, [open, editItem])
+  }, [editItem])
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -620,19 +619,22 @@ function CfDialog({ open, onClose, editItem, onSaved }) {
         toast.success('Day/night switch created')
       }
       onSaved()
-      onClose()
     } catch { toast.error('Save failed') }
     finally { setSaving(false) }
   }
 
   return (
-    <Dialog open={open} onOpenChange={v => !v && onClose()}>
-      <DialogContent className="w-[95vw] max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{editItem ? 'Edit' : 'New'} Day/Night Switch</DialogTitle>
-        </DialogHeader>
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <Button variant="ghost" size="sm" onClick={onClose} className="-ml-2 gap-1">
+          ← Call Flows
+        </Button>
+        <span className="text-muted-foreground">/</span>
+        <h1 className="text-lg font-semibold">{editItem ? 'Edit' : 'New'} Day/Night Switch</h1>
+      </div>
 
-        <div className="space-y-4 py-1">
+      <Card>
+        <div className="space-y-4 px-6 py-5">
           {/* Name */}
           <div className="space-y-1.5">
             <Label>Name <span className="text-destructive">*</span></Label>
@@ -689,29 +691,34 @@ function CfDialog({ open, onClose, editItem, onSaved }) {
               className="h-4 w-4 rounded border-border accent-primary" />
             <Label htmlFor="cf-enabled">Enabled</Label>
           </div>
-        </div>
 
-        <div className="flex justify-end gap-2 pt-2">
-          <DialogClose asChild><Button variant="outline" size="sm">Cancel</Button></DialogClose>
-          <Button size="sm" onClick={handleSave} disabled={saving}>
-            {saving && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
-            {editItem ? 'Update' : 'Create'}
-          </Button>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+            <Button size="sm" onClick={handleSave} disabled={saving}>
+              {saving && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
+              {editItem ? 'Update' : 'Create'}
+            </Button>
+          </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      </Card>
+    </div>
   )
 }
 
 // ── Day/Night Switches management section ─────────────────────────────────────
 
 function DayNightSection() {
+  const navigate = useNavigate()
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/call-flows/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [switches, setSwitches]   = useState([])
   const [loading, setLoading]     = useState(true)
   const [toggling, setToggling]   = useState(null)
   const [deleting, setDeleting]   = useState(null)
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [editItem, setEditItem]   = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -744,8 +751,23 @@ function DayNightSection() {
     finally { setDeleting(null) }
   }
 
-  const openEdit = (cf) => { setEditItem(cf); setDialogOpen(true) }
-  const openNew  = ()   => { setEditItem(null); setDialogOpen(true) }
+  const openEdit    = (cf) => navigate(`/call-flows/${cf.call_flow_uuid}/edit`)
+  const openNew     = ()   => navigate('/call-flows/new')
+  const closeEditor = ()   => navigate('/call-flows')
+
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  if (editorOpen) {
+    const editItem = isCreate
+      ? null
+      : (switches.find(x => x.call_flow_uuid === routeId) || { call_flow_uuid: routeId })
+    return (
+      <CfDialog
+        editItem={editItem}
+        onClose={closeEditor}
+        onSaved={() => { load(); closeEditor() }}
+      />
+    )
+  }
 
   return (
     <div className="space-y-3">
@@ -852,13 +874,6 @@ function DayNightSection() {
           </Table>
         </CardContent>
       </Card>
-
-      <CfDialog
-        open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
-        editItem={editItem}
-        onSaved={load}
-      />
     </div>
   )
 }

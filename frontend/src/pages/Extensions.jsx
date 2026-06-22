@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useInfiniteList } from '@/hooks/useInfiniteList'
 import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import { useSelector } from 'react-redux'
@@ -1519,6 +1520,15 @@ function ExtStatusBadge({ enabled, status }) {
 
 
 export default function Extensions() {
+  const navigate = useNavigate()
+  // Route param drives the editor: undefined = list, 'new' = create, else edit by id.
+  // The `/new` route has no :id param, so detect create from the path.
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/extensions/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [search, setSearch] = useState('')
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [saving, setSaving] = useState(false)
@@ -1526,13 +1536,14 @@ export default function Extensions() {
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [bulkDeleting, setBulkDeleting] = useState(false)
   const [copiedId, setCopiedId] = useState(null)
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [bulkOpen, setBulkOpen] = useState(false)
+  const [detailLoading, setDetailLoading] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY_FORM)
   const [formError, setFormError] = useState('')
   const [flushing, setFlushing] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [exportingGs, setExportingGs] = useState(false)
   const [activeTab, setActiveTab] = useState('general')
   const [ringGroupList, setRingGroupList] = useState([])
   const [rgLoading, setRgLoading] = useState(false)
@@ -1579,20 +1590,10 @@ export default function Extensions() {
     return () => { cancelled = true }
   }, [listParams])
 
-  const openCreate = () => {
-    setEditId(null)
-    originalRingGroupIdsRef.current = []
-    const isPushEnabled = currentTenant?.push_notifications_enabled || false
-    setForm({
-      ...EMPTY_FORM,
-      mobile_push_enabled: isPushEnabled,
-      password: generatePassword(),
-    })
-    setFormError('')
-    setActiveTab('general')
-    setDialogOpen(true)
-    loadRingGroups()
-  }
+  // Navigate to the full-page editor; the route effect below loads the form.
+  const openCreate  = () => navigate('/extensions/new')
+  const openEdit    = (row) => navigate(`/extensions/${row.extension_uuid || row.id}/edit`)
+  const closeEditor = () => navigate('/extensions')
 
   const rowToForm = (d) => ({
     ...EMPTY_FORM,
@@ -1639,28 +1640,40 @@ export default function Extensions() {
     enabled:                                 d.enabled !== false,
   })
 
-  const openEdit = async (row) => {
-    const id = row.extension_uuid || row.id
-    setEditId(id)
+  // Sync form state to the current route. Creates seed instantly; edits fetch
+  // full detail (extensions carry far more fields than the list row exposes).
+  useEffect(() => {
+    if (!editorOpen) return
     setFormError('')
     setActiveTab('general')
-    setDialogOpen(true)
-    setForm({ ...EMPTY_FORM })
-    try {
-      const [extResult, rgs] = await Promise.all([
-        extensionsApi.get(id),
-        loadRingGroups(),
-      ])
-      const data = extResult.data
-      const memberOf = rgs
-        .filter(rg => (rg.destinations || []).some(d => d.destination_number === data.extension))
-        .map(rg => rg.ring_group_uuid || rg.id)
-      originalRingGroupIdsRef.current = memberOf
-      setForm({ ...rowToForm(data), ring_group_ids: memberOf })
-    } catch {
-      setFormError('Failed to load extension details.')
+    if (isCreate) {
+      setEditId(null)
+      originalRingGroupIdsRef.current = []
+      const isPushEnabled = currentTenant?.push_notifications_enabled || false
+      setForm({
+        ...EMPTY_FORM,
+        mobile_push_enabled: isPushEnabled,
+        password: generatePassword(),
+      })
+      loadRingGroups()
+      return
     }
-  }
+    setEditId(routeId)
+    setForm({ ...EMPTY_FORM })
+    setDetailLoading(true)
+    Promise.all([extensionsApi.get(routeId), loadRingGroups()])
+      .then(([extResult, rgs]) => {
+        const data = extResult.data
+        const memberOf = rgs
+          .filter(rg => (rg.destinations || []).some(d => d.destination_number === data.extension))
+          .map(rg => rg.ring_group_uuid || rg.id)
+        originalRingGroupIdsRef.current = memberOf
+        setForm({ ...rowToForm(data), ring_group_ids: memberOf })
+      })
+      .catch(() => setFormError('Failed to load extension details.'))
+      .finally(() => setDetailLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   const handleSave = async () => {
     const ext = form.extension.trim()
@@ -1775,7 +1788,7 @@ export default function Extensions() {
       }
       originalRingGroupIdsRef.current = form.ring_group_ids
 
-      setDialogOpen(false)
+      closeEditor()
       load()
     } catch (err) {
       const data = err?.response?.data
@@ -1862,11 +1875,97 @@ export default function Extensions() {
     }
   }
 
+  // Export in the Grandstream batch-account template format. The vendor
+  // importer only accepts its own .xls workbook, so the backend fills the
+  // shipped template and streams it back — we just trigger the download.
+  const handleExportGrandstream = async () => {
+    setExportingGs(true)
+    try {
+      const params = {}
+      if (search) params.search = search
+      const { data } = await extensionsApi.exportGrandstream(params)
+      const url = URL.createObjectURL(new Blob([data], { type: 'application/vnd.ms-excel' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `SipAccount_Export-${new Date().toISOString().slice(0, 10)}.xls`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } finally {
+      setExportingGs(false)
+    }
+  }
+
   const handleCopyPassword = (row) => {
     if (!row.password) return
     navigator.clipboard.writeText(row.password)
     setCopiedId(row.extension_uuid || row.id)
     setTimeout(() => setCopiedId(null), 1500)
+  }
+
+  // ── Full-page editor (routed) ──────────────────────────────────────────────
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Extensions
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New Extension' : 'Edit Extension'}</h1>
+          {detailLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+        </div>
+
+        <Card>
+          <div className="flex flex-col">
+            <ExtensionFormBody
+              form={form}
+              setForm={setForm}
+              editId={editId}
+              currentTenant={currentTenant}
+              formError={formError}
+              ringGroupList={ringGroupList}
+              rgLoading={rgLoading}
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+            />
+
+            <div className="shrink-0 border-t px-6 py-3 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Toggle checked={form.enabled} onChange={(v) => setForm(f => ({ ...f, enabled: v }))} />
+                <span className="text-sm text-muted-foreground">
+                  {form.enabled ? 'Extension enabled' : 'Extension disabled'}
+                </span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-muted-foreground">
+                  Step {TABS.findIndex(t => t.id === activeTab) + 1} of {TABS.length}
+                </span>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={closeEditor}>Cancel</Button>
+                  {TABS.findIndex(t => t.id === activeTab) > 0 && (
+                    <Button variant="outline" onClick={() => setActiveTab(TABS[TABS.findIndex(t => t.id === activeTab) - 1].id)}>
+                      ← Back
+                    </Button>
+                  )}
+                  {TABS.findIndex(t => t.id === activeTab) < TABS.length - 1 ? (
+                    <Button onClick={() => setActiveTab(TABS[TABS.findIndex(t => t.id === activeTab) + 1].id)}>
+                      Next →
+                    </Button>
+                  ) : (
+                    <Button onClick={handleSave} disabled={saving}>
+                      {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+                      {isCreate ? 'Create Extension' : 'Save Changes'}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </Card>
+      </div>
+    )
   }
 
   return (
@@ -1903,6 +2002,10 @@ export default function Extensions() {
         <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting} title="Export extensions to Excel">
           {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
           {exporting ? 'Exporting…' : 'Export'}
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleExportGrandstream} disabled={exportingGs} title="Export accounts in Grandstream batch-import template">
+          {exportingGs ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+          {exportingGs ? 'Exporting…' : 'Grandstream'}
         </Button>
         <Button size="sm" onClick={openCreate}>
           <Plus className="h-4 w-4" />
@@ -2070,64 +2173,6 @@ export default function Extensions() {
         </div>
       </div>
 
-      {/* Add / Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-3xl h-[90vh] sm:h-[82vh] flex flex-col p-0 gap-0">
-
-          <DialogHeader className="px-6 py-4 border-b mb-0 shrink-0">
-            <DialogTitle>{editId ? 'Edit Extension' : 'New Extension'}</DialogTitle>
-            <DialogClose onClose={() => setDialogOpen(false)} />
-          </DialogHeader>
-
-          {/* TabBar + scrollable content together */}
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-            <ExtensionFormBody
-              form={form}
-              setForm={setForm}
-              editId={editId}
-              currentTenant={currentTenant}
-              formError={formError}
-              ringGroupList={ringGroupList}
-              rgLoading={rgLoading}
-              activeTab={activeTab}
-              setActiveTab={setActiveTab}
-            />
-          </div>
-
-          <div className="shrink-0 border-t px-6 py-3 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Toggle checked={form.enabled} onChange={(v) => setForm(f => ({ ...f, enabled: v }))} />
-              <span className="text-sm text-muted-foreground">
-                {form.enabled ? 'Extension enabled' : 'Extension disabled'}
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-muted-foreground">
-                Step {TABS.findIndex(t => t.id === activeTab) + 1} of {TABS.length}
-              </span>
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                {TABS.findIndex(t => t.id === activeTab) > 0 && (
-                  <Button variant="outline" onClick={() => setActiveTab(TABS[TABS.findIndex(t => t.id === activeTab) - 1].id)}>
-                    ← Back
-                  </Button>
-                )}
-                {TABS.findIndex(t => t.id === activeTab) < TABS.length - 1 ? (
-                  <Button onClick={() => setActiveTab(TABS[TABS.findIndex(t => t.id === activeTab) + 1].id)}>
-                    Next →
-                  </Button>
-                ) : (
-                  <Button onClick={handleSave} disabled={saving}>
-                    {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
-                    {editId ? 'Save Changes' : 'Create Extension'}
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
-
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

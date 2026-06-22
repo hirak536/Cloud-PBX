@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { callParking as api, musicOnHold as mohApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -32,13 +33,19 @@ const EMPTY_BULK = {
 }
 
 export default function CallParking() {
+  const navigate = useNavigate()
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/call-parking/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebounce(search, 300)
 
-  // Single slot dialog
-  const [dialogOpen, setDialogOpen] = useState(false)
+  // Single slot editor (routed)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
@@ -77,35 +84,39 @@ export default function CallParking() {
   const bf = (key) => (e) => setBulkForm(p => ({ ...p, [key]: e.target.value }))
   const bfNum = (key) => (e) => setBulkForm(p => ({ ...p, [key]: Number(e.target.value) }))
 
-  const openCreate = () => {
-    setEditId(null); setForm(EMPTY); setFormError(''); setDialogOpen(true); loadMoh()
-  }
-  const openEdit = async (r) => {
-    setEditId(r.call_parking_slot_uuid)
-    setForm({ ...EMPTY })
+  const rowToForm = (d) => ({
+    slot_number: d.slot_number ?? '',
+    slot_name: d.slot_name || '',
+    parking_timeout: d.parking_timeout ?? 60,
+    timeout_action: d.timeout_action || 'hangup',
+    timeout_voicemail_extension: d.timeout_voicemail_extension || '',
+    music_on_hold: d.music_on_hold || '',
+    slot_enabled: d.slot_enabled !== false,
+  })
+
+  const openCreate  = () => navigate('/call-parking/new')
+  const openEdit    = (r) => navigate('/call-parking/' + r.call_parking_slot_uuid + '/edit')
+  const closeEditor = () => navigate('/call-parking')
+
+  // Sync form state to the current route.
+  useEffect(() => {
+    if (!editorOpen) return
     setFormError('')
-    setDialogOpen(true)
     loadMoh()
-    try {
-      const { data: d } = await api.get(r.call_parking_slot_uuid)
-      setForm({
-        slot_number: d.slot_number ?? '',
-        slot_name: d.slot_name || '',
-        parking_timeout: d.parking_timeout ?? 60,
-        timeout_action: d.timeout_action || 'hangup',
-        timeout_voicemail_extension: d.timeout_voicemail_extension || '',
-        music_on_hold: d.music_on_hold || '',
-        slot_enabled: d.slot_enabled !== false,
-      })
-    } catch { /* keep empty */ }
-  }
+    if (isCreate) { setEditId(null); setForm(EMPTY); return }
+    setEditId(routeId)
+    const row = rows.find(r => r.call_parking_slot_uuid === routeId)
+    if (row) { setForm(rowToForm(row)); return }
+    api.get(routeId).then(({ data }) => setForm(rowToForm(data))).catch(() => setForm(EMPTY))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isCreate])
 
   const handleSave = async () => {
     if (form.slot_number === '' || form.slot_number === null) { setFormError('Slot number is required.'); return }
     setSaving(true); setFormError('')
     try {
       editId ? await api.update(editId, form) : await api.create(form)
-      setDialogOpen(false); load()
+      load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
       setFormError(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Save failed.')
@@ -183,6 +194,46 @@ export default function CallParking() {
     </>
   )
 
+  // ── Full-page slot editor (routed) ─────────────────────────────────────────
+  if (editorOpen) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={closeEditor} className="-ml-2 gap-1">
+            ← Call Parking
+          </Button>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="text-lg font-semibold">{isCreate ? 'New Parking Slot' : 'Edit Parking Slot'}</h1>
+        </div>
+
+        <Card>
+          <div className="px-6 py-5 space-y-4">
+            {formError && <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{formError}</div>}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Slot Number *</Label>
+                <Input type="number" placeholder="7100" value={form.slot_number} onChange={fNum('slot_number')} disabled={!!editId} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Name</Label>
+                <Input placeholder="Reception" value={form.slot_name} onChange={f('slot_name')} />
+              </div>
+            </div>
+            <TimeoutFields formState={form} fFn={f} fNumFn={fNum} setFn={setForm} />
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="slot_enabled" checked={form.slot_enabled} onChange={(e) => setForm(p => ({ ...p, slot_enabled: e.target.checked }))} className="h-4 w-4 rounded border-input" />
+              <Label htmlFor="slot_enabled">Enabled</Label>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 px-6 py-3 border-t">
+            <Button variant="outline" onClick={closeEditor}>Cancel</Button>
+            <Button onClick={handleSave} disabled={saving}>{saving && <Loader2 className="h-4 w-4 animate-spin" />}{isCreate ? 'Create' : 'Save'}</Button>
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
@@ -228,38 +279,6 @@ export default function CallParking() {
           </TableBody>
         </Table>
       </CardContent></Card>
-
-      {/* ── Single slot dialog ── */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-sm p-0 gap-0">
-          <DialogHeader className="px-6 py-4 border-b">
-            <DialogTitle>{editId ? 'Edit Parking Slot' : 'New Parking Slot'}</DialogTitle>
-            <DialogClose onClose={() => setDialogOpen(false)} />
-          </DialogHeader>
-          <div className="px-6 py-5 space-y-4">
-            {formError && <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{formError}</div>}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Slot Number *</Label>
-                <Input type="number" placeholder="7100" value={form.slot_number} onChange={fNum('slot_number')} disabled={!!editId} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Name</Label>
-                <Input placeholder="Reception" value={form.slot_name} onChange={f('slot_name')} />
-              </div>
-            </div>
-            <TimeoutFields formState={form} fFn={f} fNumFn={fNum} setFn={setForm} />
-            <div className="flex items-center gap-2">
-              <input type="checkbox" id="slot_enabled" checked={form.slot_enabled} onChange={(e) => setForm(p => ({ ...p, slot_enabled: e.target.checked }))} className="h-4 w-4 rounded border-input" />
-              <Label htmlFor="slot_enabled">Enabled</Label>
-            </div>
-          </div>
-          <DialogFooter className="px-6 py-3 border-t gap-2">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving}>{saving && <Loader2 className="h-4 w-4 animate-spin" />}{editId ? 'Save' : 'Create'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* ── Bulk create dialog ── */}
       <Dialog open={bulkOpen} onOpenChange={setBulkOpen}>
