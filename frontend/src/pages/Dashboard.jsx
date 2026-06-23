@@ -1,11 +1,12 @@
 import { useEffect, useState, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { extensions, gateways, freeswitch, cdr } from '@/api'
+import { extensions, gateways, freeswitch, cdr, destinations } from '@/api'
 import { formatDuration, formatDate } from '@/lib/utils'
-import { Phone, Network, Activity, PhoneCall, PhoneOff, Clock, TrendingUp } from 'lucide-react'
+import { Phone, Network, Activity, PhoneCall, PhoneOff, Clock, TrendingUp, Hash } from 'lucide-react'
 import { useSelector } from 'react-redux'
 import { selectLive } from '@/store'
 
@@ -16,10 +17,13 @@ const statAccents = [
   'from-amber-500 to-orange-400',
 ]
 
-function StatCard({ title, value, sub, icon: Icon, loading, accentIdx = 0 }) {
+function StatCard({ title, value, sub, icon: Icon, loading, accentIdx = 0, onClick }) {
   const accent = statAccents[accentIdx % statAccents.length]
   return (
-    <Card className="relative overflow-hidden group">
+    <Card
+      onClick={onClick}
+      className={`relative overflow-hidden group${onClick ? ' cursor-pointer transition-shadow hover:shadow-md' : ''}`}
+    >
       {/* Subtle gradient accent top bar */}
       <div className={`absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r ${accent}`} />
       <CardHeader className="pb-2">
@@ -45,6 +49,7 @@ function StatCard({ title, value, sub, icon: Icon, loading, accentIdx = 0 }) {
 }
 
 export default function Dashboard() {
+  const navigate = useNavigate()
   const [stats, setStats] = useState({})
   const [recentCdr, setRecentCdr] = useState([])
   const [loading, setLoading] = useState(true)
@@ -55,20 +60,23 @@ export default function Dashboard() {
   useEffect(() => {
     async function load() {
       try {
-        const [extRes, gwRes, fsRes, cdrRes] = await Promise.allSettled([
+        const [extRes, gwRes, fsRes, cdrRes, didRes] = await Promise.allSettled([
           extensions.list({ page_size: 1 }),
           gateways.list({ page_size: 100 }),
           freeswitch.status(),
           cdr.list({ page_size: 10, ordering: '-start_stamp' }),
+          destinations.list({ page_size: 1 }),
         ])
         const extData  = extRes.status  === 'fulfilled' ? extRes.value.data  : null
         const gwData   = gwRes.status   === 'fulfilled' ? gwRes.value.data   : null
         const fsData   = fsRes.status   === 'fulfilled' ? fsRes.value.data   : null
         const cdrData  = cdrRes.status  === 'fulfilled' ? cdrRes.value.data  : null
+        const didData  = didRes.status  === 'fulfilled' ? didRes.value.data  : null
         const gwList   = Array.isArray(gwData) ? gwData : gwData?.results || []
         const upGateways = gwList.filter((g) => g.state === 'REGED' || g.state === 'UP').length
         setStats({
           extensions: extData?.count ?? extData?.length ?? 0,
+          dids: didData?.count ?? (Array.isArray(didData) ? didData.length : 0),
           gateways: gwList.length,
           upGateways,
           activeCalls: fsData?.calls ?? 0,
@@ -117,12 +125,18 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       {/* Stat grid */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <StatCard title="Extensions"    value={stats.extensions}   icon={Phone}     loading={loading} accentIdx={0} />
-        <StatCard title="Active Calls"  value={liveActiveCalls.length}  icon={PhoneCall} loading={loading} accentIdx={1} />
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+        <StatCard title="Extensions"    value={stats.extensions}   icon={Phone}     loading={loading} accentIdx={0}
+                  onClick={() => navigate('/extensions')} />
+        <StatCard title="DIDs"          value={stats.dids}         icon={Hash}      loading={loading} accentIdx={4}
+                  onClick={() => navigate('/destinations')} />
+        <StatCard title="Active Calls"  value={liveActiveCalls.length}  icon={PhoneCall} loading={loading} accentIdx={1}
+                  onClick={() => navigate('/active-calls')} />
         <StatCard title="Gateways"      value={stats.gateways}     icon={Network}   loading={loading} accentIdx={2}
-                  sub={`${stats.upGateways ?? 0} registered`} />
-        <StatCard title="Registrations" value={stats.registrations} icon={Activity} loading={loading} accentIdx={3} />
+                  sub={`${stats.upGateways ?? 0} registered`}
+                  onClick={() => navigate('/gateways')} />
+        <StatCard title="Registrations" value={stats.registrations} icon={Activity} loading={loading} accentIdx={3}
+                  onClick={() => navigate('/registrations')} />
       </div>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -168,7 +182,11 @@ export default function Dashboard() {
                 </TableHeader>
                 <TableBody>
                   {liveActiveCalls.slice(0, 5).map((call, i) => (
-                    <TableRow key={i} className="transition-colors">
+                    <TableRow
+                      key={i}
+                      onClick={() => navigate('/active-calls')}
+                      className="transition-colors cursor-pointer hover:bg-muted/50"
+                    >
                       <TableCell className="font-mono text-xs">{call.cid_num || call.caller_id_number}</TableCell>
                       <TableCell className="font-mono text-xs">{call.dest}</TableCell>
                       <TableCell>
@@ -223,7 +241,11 @@ export default function Dashboard() {
                 </TableHeader>
                 <TableBody>
                   {recentCdr.map((row) => (
-                    <TableRow key={row.uuid || row.call_uuid} className="transition-colors">
+                    <TableRow
+                      key={row.uuid || row.call_uuid}
+                      onClick={() => navigate('/cdr')}
+                      className="transition-colors cursor-pointer hover:bg-muted/50"
+                    >
                       <TableCell className="font-mono text-xs">{row.caller_id_number}</TableCell>
                       <TableCell className="font-mono text-xs">{row.destination_number}</TableCell>
                       <TableCell className="text-xs font-mono">{formatDuration(row.duration)}</TableCell>
