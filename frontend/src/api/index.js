@@ -269,6 +269,11 @@ export const cdr = {
   pcap: (id) => api.get(`/cdr/${id}/pcap/`),
   pcapDownload: (id, legUuid) =>
     api.get(`/cdr/${id}/pcap/${legUuid}/download/`, { responseType: 'blob' }),
+  // HOMER-backed SIP search (tenant-scoped). Params: number, extension, call_id,
+  // from/to (date or datetime), date, date_from/date_to, page, page_size, tenant (superadmin).
+  homerSearch: (p) => api.get('/cdr/homer-search/', { params: p }),
+  // Decoded SIP ladder (frames) for one Call-ID from a HOMER search result.
+  homerLadder: (p) => api.get('/cdr/homer-ladder/', { params: p }),
 }
 
 export const statsReport = {

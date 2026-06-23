@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useInfiniteList } from '@/hooks/useInfiniteList'
 import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
@@ -688,9 +689,13 @@ function SummaryBar({ summary }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+const SipSearchPanel = lazy(() => import('./SipSearchPanel'))
+
 export default function Cdr() {
   const { user } = useSelector(selectAuth)
   const isSuperAdmin = user?.is_superuser === true
+
+  const [view, setView] = useState('cdr')   // 'cdr' | 'sip'
 
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [search, setSearch] = useState('')
@@ -812,6 +817,29 @@ export default function Cdr() {
 
   return (
     <div className="space-y-4">
+      {/* Tab switcher: Call Logs (CDR) vs SIP Search (HOMER) */}
+      <div className="flex gap-1 border-b">
+        {[['cdr', 'Call Logs'], ['sip', 'SIP Search']].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setView(key)}
+            className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              view === key
+                ? 'border-primary text-foreground'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === 'sip' ? (
+        <Suspense fallback={<div className="py-10 text-center text-sm text-muted-foreground">Loading…</div>}>
+          <SipSearchPanel />
+        </Suspense>
+      ) : (
+      <div className="space-y-4">
       {/* Summary */}
       {!initialLoading && <SummaryBar summary={summary} />}
 
@@ -1069,6 +1097,8 @@ export default function Cdr() {
           )}
         </CardContent>
       </Card>
+      </div>
+      )}
     </div>
   )
 }

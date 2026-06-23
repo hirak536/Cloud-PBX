@@ -857,9 +857,14 @@ export default function CustomDestinations() {
   const openEdit = (r) => navigate('/custom-destinations/' + r.custom_destination_uuid + '/edit')
   const closeEditor = () => navigate('/custom-destinations')
 
-  // Sync form state to the current route.
+  // Sync form state to the current route. Guarded on the route key so a spurious
+  // re-run can't re-seed the form and discard the user's in-progress edits.
+  const lastRouteKeyRef = useRef(null)
   useEffect(() => {
-    if (!editorOpen) return
+    if (!editorOpen) { lastRouteKeyRef.current = null; return }
+    const routeKey = isCreate ? 'new' : routeId
+    if (lastRouteKeyRef.current === routeKey) return
+    lastRouteKeyRef.current = routeKey
     setFormError('')
     loadDestData()
     if (isCreate) { setEditId(null); setForm(EMPTY); return }

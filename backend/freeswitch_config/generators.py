@@ -280,7 +280,11 @@ def generate_directory_xml(domain_name, user=None):
         # Same logic as the inbound bridge path: explicit user_record wins, else
         # fall back to the tenant's recording_enabled. The outbound dialplan gates
         # _add_recording_actions on ${ihs_record}.
-        if ext.user_record:
+        # Tenant disable is authoritative — see the inbound bridge path. A stale
+        # per-extension user_record='all' must not override recording_enabled=False.
+        if ext.tenant and not getattr(ext.tenant, 'recording_enabled', True):
+            _ext_record = '0'
+        elif ext.user_record:
             _ext_record = '1'
         else:
             _ext_record = '1' if (ext.tenant and getattr(ext.tenant, 'recording_enabled', True)) else '0'
@@ -856,6 +860,31 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
     return ext_el
 
 
+def _tenant_default_did(route):
+    """Return a privacy-safe fallback outbound caller-ID number for a route.
+
+    Used when neither the route nor the dialing extension supplies an outbound
+    caller ID, so we never fall through to presenting the extension number to
+    the carrier. Resolves to the first enabled DID (Destination) for the route's
+    domain (falling back to the tenant), or '' if none exists.
+    """
+    try:
+        from apps.destinations.models import Destination
+        qs = Destination.objects.filter(destination_enabled=True)
+        if route.domain_id:
+            qs = qs.filter(domain_id=route.domain_id)
+        elif route.tenant_id:
+            qs = qs.filter(tenant_id=route.tenant_id)
+        else:
+            return ''
+        did = qs.order_by('destination_number').values_list('destination_number', flat=True).first()
+        return did or ''
+    except Exception as e:
+        logger.warning('Could not resolve tenant default DID for route %s: %s',
+                       getattr(route, 'outbound_route_name', '?'), e)
+        return ''
+
+
 def _outbound_route_to_xml(route):
     """Generate a FreeSWITCH <extension> element for one outbound route.
 
@@ -884,9 +913,31 @@ def _outbound_route_to_xml(route):
     # even if the B-leg CDR arrives before the A-leg is committed.
     etree.SubElement(cond, 'action', application='set', data='ihs_direction=outbound')
     etree.SubElement(cond, 'action', application='export', data='ihs_direction=outbound')
-    # Set caller ID: route config takes priority, then directory value (already set).
-    cid_number = route.caller_id_number or '${outbound_caller_id_number}'
-    cid_name = route.caller_id_name or route.caller_id_number or '${outbound_caller_id_name}'
+
+    # ── Outbound caller ID — privacy-safe resolution ──────────────────────────
+    # Precedence (number): route.caller_id_number → per-extension
+    # ${outbound_caller_id_number} → tenant's first enabled DID → empty.
+    # We deliberately do NOT fall through to the channel's effective_caller_id
+    # default, which is the EXTENSION NUMBER / user's directory name — presenting
+    # that to the PSTN carrier (when the trunk has caller-id-in-from) would leak
+    # the internal extension identity.
+    tenant_did = _tenant_default_did(route)
+
+    if route.caller_id_number:
+        cid_number = route.caller_id_number
+        cid_name = route.caller_id_name or route.caller_id_number
+    else:
+        # Use the per-extension outbound DID if set, else the tenant DID. The
+        # ${cond(...)} is evaluated at call time so a per-extension CID still wins.
+        safe_default = tenant_did or ''
+        cid_number = ("${cond(${outbound_caller_id_number} != '' ? "
+                      "${outbound_caller_id_number} : %s)}" % safe_default)
+        # Name follows the route name, else the same safe number, never the
+        # extension/user name.
+        name_default = route.caller_id_name or safe_default
+        cid_name = ("${cond(${outbound_caller_id_name} != '' ? "
+                    "${outbound_caller_id_name} : %s)}" % name_default)
+
     etree.SubElement(cond, 'action', application='set', data=f'effective_caller_id_number={cid_number}')
     etree.SubElement(cond, 'action', application='set', data=f'effective_caller_id_name={cid_name}')
     # Force PCMU on leg B (toward the gateway) — Bandwidth only accepts PCMU.
@@ -1207,12 +1258,28 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
     #   - '' ("inherit")         -> fall back to the tenant's recording_enabled
     # Without this gate the dialplan recorded unconditionally, so neither the
     # extension toggle nor the tenant setting could turn recording off.
-    if ext.user_record:
+    # Tenant disable is authoritative: if the tenant has recording_enabled=False,
+    # never record even if a stale per-extension user_record still says 'all'
+    # (extensions are not auto-cleared when the tenant flag is turned off).
+    if ext.tenant and not getattr(ext.tenant, 'recording_enabled', True):
+        _record_enabled = False
+    elif ext.user_record:
         _record_enabled = True
     else:
         _record_enabled = bool(getattr(ext.tenant, 'recording_enabled', True)) if ext.tenant else True
     if _record_enabled:
         _add_recording_actions(bridge_cond, domain_name)
+    # Present the ACTUAL caller's ID on the leg toward the phone. Without this,
+    # the B-leg to the registered device could fall back to the dialed
+    # extension's own directory caller-id, so an inbound DID redirected to this
+    # extension showed the callee's own extension number instead of the external
+    # caller. origination_caller_id_* forces the originating channel's caller-id
+    # (the real caller — external DID caller or the internal calling extension)
+    # onto the bridged leg.
+    etree.SubElement(bridge_cond, 'action', application='set',
+                     data='origination_caller_id_number=${caller_id_number}')
+    etree.SubElement(bridge_cond, 'action', application='set',
+                     data='origination_caller_id_name=${caller_id_name}')
     # Ring ALL registered contacts simultaneously (desk phone + softphone, etc.).
     # sofia_contact(*/user@domain) expands to a comma-joined dial string of every
     # active registration; user/user@domain would only ring the most recent one.

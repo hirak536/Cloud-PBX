@@ -1,5 +1,5 @@
 import { useDebounce } from '@/hooks/useDebounce'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { ivrMenus as api, extensions as extensionsApi } from '@/api'
 import { Button } from '@/components/ui/button'
@@ -163,9 +163,15 @@ export default function IvrMenus() {
   const openEdit    = (r) => navigate('/ivr-menus/' + r.ivr_menu_uuid + '/edit')
   const closeEditor = () => navigate('/ivr-menus')
 
-  // Sync form state to the current route.
+  // Sync form state to the current route. Guarded so it only resets when the
+  // route key actually changes — a spurious re-run would otherwise snap the
+  // active tab back to the first one on the first "Next →" click.
+  const lastRouteKeyRef = useRef(null)
   useEffect(() => {
-    if (!editorOpen) return
+    if (!editorOpen) { lastRouteKeyRef.current = null; return }
+    const routeKey = isCreate ? 'new' : routeId
+    if (lastRouteKeyRef.current === routeKey) return
+    lastRouteKeyRef.current = routeKey
     setFormError('')
     setTab('settings')
     loadDestData()

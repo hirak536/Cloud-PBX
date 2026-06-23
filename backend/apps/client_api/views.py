@@ -698,11 +698,17 @@ class ClientFaxFileView(APIView):
                 Q(fax_file_destination_number__icontains=search) |
                 Q(fax_file_name__icontains=search)
             )
-        # Counts ignore status/direction/search/destination filters but respect
-        # the fax box filter so the summary matches the selected box.
+        # Counts ignore status/search/destination filters but respect the fax box
+        # filter so the summary matches the selected box. When a direction filter
+        # is passed, the counts reflect that direction only (inbound = received,
+        # outbound = everything else) so the summary matches the listed rows.
         all_qs = FaxFile.objects.filter(tenant=tenant)
         if fax_ids:
             all_qs = all_qs.filter(fax_id__in=fax_ids)
+        if direction_filter == 'inbound':
+            all_qs = all_qs.filter(fax_file_status='received')
+        elif direction_filter == 'outbound':
+            all_qs = all_qs.exclude(fax_file_status='received')
         summary = {
             'total':    all_qs.count(),
             'pending':  all_qs.filter(fax_file_status='pending').count(),
@@ -2495,3 +2501,205 @@ class StatsReportView(APIView):
             'user_activity': known_rows + [totals],
             'did_activity':  did_rows + [did_totals],
         })
+
+
+def _resolve_sip_window(request):
+    """Resolve the search time window from query params.
+
+    Precedence:
+      1. from / to        — ISO datetimes (most precise)
+      2. date             — a single calendar day (whole day, UTC)
+      3. date_from/date_to — calendar-day range (inclusive)
+      4. default          — last 24h
+    Returns (window_start, window_end) as tz-aware UTC datetimes.
+    """
+    now = datetime.now(pytz.utc)
+    qp = request.query_params
+
+    if qp.get('from') or qp.get('to'):
+        ws = dp.parse(qp['from']) if qp.get('from') else now - timedelta(hours=24)
+        we = dp.parse(qp['to']) if qp.get('to') else now
+    elif qp.get('date'):
+        d = dp.parse(qp['date']).date()
+        ws = datetime(d.year, d.month, d.day, tzinfo=pytz.utc)
+        we = ws + timedelta(days=1)
+    elif qp.get('date_from') or qp.get('date_to'):
+        df = dp.parse(qp['date_from']).date() if qp.get('date_from') else (now - timedelta(days=1)).date()
+        dt = dp.parse(qp['date_to']).date() if qp.get('date_to') else now.date()
+        ws = datetime(df.year, df.month, df.day, tzinfo=pytz.utc)
+        we = datetime(dt.year, dt.month, dt.day, tzinfo=pytz.utc) + timedelta(days=1)
+    else:
+        ws, we = now - timedelta(hours=24), now
+
+    # Normalise naive datetimes to UTC.
+    if ws.tzinfo is None:
+        ws = ws.replace(tzinfo=pytz.utc)
+    if we.tzinfo is None:
+        we = we.replace(tzinfo=pytz.utc)
+    return ws, we
+
+
+class ClientHomerSipSearchView(APIView):
+    """Search HOMER-captured SIP for one tenant.
+
+    GET /<tenant_uuid>/sip/search/
+      Time window (pick one): from&to (ISO) | date=YYYY-MM-DD | date_from&date_to
+      Filters: number, extension, call_id
+      Paging:  page (1-based, default 1), page_size (default 20, max 100)
+
+    Authenticated by the tenant's API key; results are hard-scoped to that
+    tenant via the DID/extension attribution map (see apps.xml_cdr.homer_tenant).
+    A client key is bound to exactly one tenant, so there is no superadmin /
+    unattributed bucket here — only this tenant's calls are ever returned.
+    """
+    authentication_classes = [TenantAPIKeyAuthentication]
+    permission_classes = [ClientAPIPermission]
+
+    def get(self, request, tenant_uuid):
+        tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
+        from apps.xml_cdr.homer_search import search_calls  # noqa: PLC0415
+
+        ws, we = _resolve_sip_window(request)
+
+        try:
+            page = max(int(request.query_params.get('page', 1)), 1)
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
+        except (TypeError, ValueError):
+            page_size = 20
+
+        # search_calls returns a bounded, newest-first list. Fetch enough to cover
+        # the requested page (cap at the search backend's hard limit of 500).
+        fetch = min(page * page_size, 500)
+        results = search_calls(
+            ws, we,
+            tenant_id=str(tenant.tenant_uuid),
+            is_superadmin=False,                      # API key is single-tenant
+            number=request.query_params.get('number', '').strip(),
+            extension=request.query_params.get('extension', '').strip(),
+            call_id=request.query_params.get('call_id', '').strip(),
+            group='leg' if request.query_params.get('group') == 'leg' else 'call',
+            limit=fetch,
+        )
+        total = len(results)
+        start = (page - 1) * page_size
+        page_items = results[start:start + page_size]
+        return Response({
+            'results': page_items,
+            'page': page,
+            'page_size': page_size,
+            'count': len(page_items),
+            'total': total,
+            'has_more': (start + page_size) < total,
+            'window': {'from': ws.isoformat(), 'to': we.isoformat()},
+        })
+
+
+class ClientHomerSipLadderView(APIView):
+    """Return the decoded SIP ladder for a call, tenant-scoped.
+
+    GET /<tenant_uuid>/sip/ladder/?call_id=&from=&to=
+
+    Leg-wise detail, identical in shape to the internal CDR `pcap` view:
+    'First Leg' (the A-leg) followed by 'Second Leg 0..N' (each bridged B-leg),
+    each with its own Call-ID and decoded SIP frames. Legs are discovered from
+    the CDR (A-leg matched by Call-ID, B-legs by bridge_uuid), so the grouping
+    matches exactly what the CDR viewer shows.
+
+    Authorization: the Call-ID must belong to a CDR row owned by THIS tenant
+    (tenant_uuid_val), AND the call must attribute to this tenant in HOMER —
+    a key cannot pull another tenant's signaling by guessing a Call-ID. If no
+    CDR row exists (e.g. a call that never produced a CDR), falls back to a
+    single-leg decode of the given Call-ID after HOMER attribution check.
+    """
+    authentication_classes = [TenantAPIKeyAuthentication]
+    permission_classes = [ClientAPIPermission]
+
+    def get(self, request, tenant_uuid):
+        tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
+        call_id = request.query_params.get('call_id', '').strip()
+        if not call_id:
+            raise ValidationError('call_id is required.')
+
+        from apps.xml_cdr.homer_search import search_calls  # noqa: PLC0415
+        from apps.xml_cdr.sip_capture import leg_sip_view  # noqa: PLC0415
+
+        now = datetime.now(pytz.utc)
+        ws = dp.parse(request.query_params['from']) if request.query_params.get('from') else now - timedelta(hours=24)
+        we = dp.parse(request.query_params['to']) if request.query_params.get('to') else now
+
+        tid = str(tenant.tenant_uuid)
+
+        # ── Authorize via HOMER attribution: the Call-ID must resolve to a call
+        # owned by this tenant. Blocks Call-ID guessing across tenants. ──
+        owned = search_calls(ws, we, tenant_id=tid, is_superadmin=False,
+                             call_id=call_id, limit=1)
+        if not owned:
+            raise PermissionDenied('Call-ID not found for this tenant in the given window.')
+
+        # ── Find the CDR A-leg for this Call-ID (tenant-scoped), then its
+        # B-legs by bridge_uuid — same grouping as the internal pcap view. ──
+        a_leg = (
+            XmlCdr.objects
+            .filter(sip_call_id=call_id, tenant_uuid_val=tid)
+            .exclude(leg='b')
+            .order_by('start_stamp')
+            .first()
+        )
+        # If the Call-ID we have is itself a B-leg, hop to its A-leg.
+        if a_leg is None:
+            b = XmlCdr.objects.filter(sip_call_id=call_id, tenant_uuid_val=tid).first()
+            if b and b.bridge_uuid:
+                a_leg = (
+                    XmlCdr.objects
+                    .filter(call_uuid=b.bridge_uuid, tenant_uuid_val=tid)
+                    .first()
+                )
+
+        legs_out = []
+        capture_present = True
+
+        if a_leg is not None:
+            ordered = [('First Leg', a_leg)]
+            if a_leg.call_uuid:
+                b_legs = (
+                    XmlCdr.objects
+                    .filter(bridge_uuid=a_leg.call_uuid, leg='b', tenant_uuid_val=tid)
+                    .order_by('start_stamp')
+                )
+                for i, b in enumerate(b_legs):
+                    ordered.append((f'Second Leg {i}', b))
+
+            from apps.xml_cdr.sip_capture import CaptureUnavailable  # noqa: PLC0415
+            for label, leg in ordered:
+                if not leg.sip_call_id:
+                    legs_out.append({'label': label, 'leg_uuid': str(leg.xml_cdr_uuid),
+                                     'call_id': '', 'frames': [], 'available': False,
+                                     'reason': 'No SIP Call-ID recorded for this leg.'})
+                    continue
+                try:
+                    frames, has_capture = leg_sip_view(
+                        leg.sip_call_id, leg.start_stamp, leg.end_stamp,
+                        presliced_path=leg.sip_pcap_path or None,
+                        presliced_bytes=(bytes(leg.sip_pcap_data) if leg.sip_pcap_data else None),
+                    )
+                except CaptureUnavailable as e:
+                    capture_present = False
+                    frames, has_capture, reason = [], False, str(e)
+                else:
+                    reason = None if has_capture else 'No captured packets found for this leg.'
+                legs_out.append({'label': label, 'leg_uuid': str(leg.xml_cdr_uuid),
+                                 'call_id': leg.sip_call_id, 'frames': frames,
+                                 'available': has_capture, 'reason': reason})
+        else:
+            # No CDR row — fall back to a single-leg decode of the Call-ID.
+            frames, has_capture = leg_sip_view(call_id, ws, we)
+            legs_out.append({'label': 'First Leg', 'leg_uuid': '',
+                             'call_id': call_id, 'frames': frames,
+                             'available': has_capture,
+                             'reason': None if has_capture else 'No captured packets found.'})
+
+        return Response({'call_id': call_id, 'capture_enabled': capture_present,
+                         'legs': legs_out})

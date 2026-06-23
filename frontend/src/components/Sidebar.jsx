@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useSelector, useDispatch } from 'react-redux'
 import { selectAuth, selectTenant } from '@/store'
-import { canAccessPage, pageKeyOf } from '@/lib/permissions'
+import { canAccessPage, pageKeyOf, hasRole, roleOf } from '@/lib/permissions'
 import { setCurrentTenant, fetchTenantsThunk } from '@/store/slices/tenantSlice'
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -71,6 +71,9 @@ const navGroups = [
     items: [
       { path: '/active-calls', label: 'Active Calls', icon: Activity },
       { path: '/registrations', label: 'Peer Status', icon: MonitorPlay },
+      // HOMER SIP capture (all-tenant admin view). External link → new tab,
+      // proxied via nginx at /homer/, protected by HOMER's own login.
+      { path: '/homer/', label: 'HOMER (SIP Capture)', icon: MonitorPlay, external: true, role: 'superuser' },
     ],
   },
   {
@@ -281,6 +284,18 @@ function NavItem({ item, collapsed }) {
     </span>
   )
 
+  // External links (e.g. the HOMER admin UI proxied at /homer/) open in a new
+  // tab via a plain anchor rather than a client-side route.
+  if (item.external) {
+    const anchor = (
+      <a href={item.path} target="_blank" rel="noopener noreferrer"
+         className="block py-0.5">
+        {linkContent({ isActive: false })}
+      </a>
+    )
+    return collapsed ? <Tooltip label={item.label}>{anchor}</Tooltip> : anchor
+  }
+
   if (collapsed) {
     return (
       <Tooltip label={item.label}>
@@ -304,8 +319,12 @@ export default function Sidebar({ collapsed }) {
   const { user } = useSelector(selectAuth)
 
   // A nav item is visible if the user can access its page (role tier + per-user
-  // grants). The Dashboard ('/') maps to the 'dashboard' grant key.
-  const canSeeItem = (item) => canAccessPage(user, pageKeyOf(item.path))
+  // grants). The Dashboard ('/') maps to the 'dashboard' grant key. External
+  // items (e.g. HOMER) aren't routes, so gate them by their explicit `role`.
+  const canSeeItem = (item) =>
+    item.external
+      ? hasRole(roleOf(user), item.role)
+      : canAccessPage(user, pageKeyOf(item.path))
 
   return (
     <aside

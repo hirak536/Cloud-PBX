@@ -1642,8 +1642,16 @@ export default function Extensions() {
 
   // Sync form state to the current route. Creates seed instantly; edits fetch
   // full detail (extensions carry far more fields than the list row exposes).
+  // Guard against spurious re-runs (StrictMode double-invoke, async state landing
+  // after the deps appear unchanged): only reset the editor when the route key
+  // actually changes. Otherwise the first "Next →" click could re-trigger the
+  // reset and snap the user back to the first tab.
+  const lastRouteKeyRef = useRef(null)
   useEffect(() => {
-    if (!editorOpen) return
+    if (!editorOpen) { lastRouteKeyRef.current = null; return }
+    const routeKey = isCreate ? 'new' : routeId
+    if (lastRouteKeyRef.current === routeKey) return
+    lastRouteKeyRef.current = routeKey
     setFormError('')
     setActiveTab('general')
     if (isCreate) {

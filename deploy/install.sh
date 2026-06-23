@@ -40,6 +40,16 @@ CDR_DB_NAME=${CDR_DB_NAME:-ihspbx_cdr}
 sudo -u postgres psql -c "CREATE DATABASE ${CDR_DB_NAME} OWNER ${DB_USER};" 2>/dev/null || true
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${CDR_DB_NAME} TO ${DB_USER};"
 
+# HOMER (SIP capture) databases — homer_config (settings) + homer_data (capture).
+# Owned by a dedicated 'homer' role. heplify-server writes capture; homer-app
+# owns the schema/seed. The IHS-PBX CDR viewer + /sip/search API read homer_data.
+HOMER_DB_PASS=${HOMER_DB_PASS:-$(openssl rand -hex 12)}
+sudo -u postgres psql -c "CREATE ROLE homer WITH LOGIN PASSWORD '${HOMER_DB_PASS}';" 2>/dev/null || true
+sudo -u postgres psql -c "CREATE DATABASE homer_config OWNER homer;" 2>/dev/null || true
+sudo -u postgres psql -c "CREATE DATABASE homer_data OWNER homer;" 2>/dev/null || true
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE homer_config TO homer;"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE homer_data TO homer;"
+
 echo "==> Cloning/copying application..."
 mkdir -p ${INSTALL_DIR}
 if [ "$(realpath .)" != "$(realpath ${INSTALL_DIR})" ]; then
@@ -98,6 +108,65 @@ chmod +x ${INSTALL_DIR}/deploy/gen-sip-capture-filter.sh
 systemctl daemon-reload
 systemctl enable ihspbx ihspbx-celery ihspbx-celerybeat sip-capture
 systemctl start ihspbx ihspbx-celery ihspbx-celerybeat sip-capture
+
+echo "==> Installing HOMER (SIP capture: heplify-server + homer-app)..."
+# heplify-server receives HEP from FreeSWITCH (capture-server in sofia.conf) and
+# writes to homer_data; homer-app serves the admin UI + REST API on 127.0.0.1:9080.
+# The IHS-PBX CDR viewer and /sip/search API read homer_data (see apps/xml_cdr).
+HEPLIFY_VER=${HEPLIFY_VER:-1.60.3}
+HOMERAPP_VER=${HOMERAPP_VER:-1.5.14}
+if ! command -v heplify-server >/dev/null 2>&1; then
+    apt-get install -y luajit libluajit-5.1-2 libluajit-5.1-common
+    curl -fsSL -o /tmp/heplify-server.deb \
+        "https://github.com/sipcapture/heplify-server/releases/download/${HEPLIFY_VER}/heplify-server-${HEPLIFY_VER}-amd64.deb"
+    dpkg -i /tmp/heplify-server.deb || apt-get -f install -y
+fi
+if ! command -v homer-app >/dev/null 2>&1; then
+    curl -fsSL -o /tmp/homer-app.deb \
+        "https://github.com/sipcapture/homer-app/releases/download/${HOMERAPP_VER}/homer-app-${HOMERAPP_VER}-amd64.deb"
+    dpkg -i /tmp/homer-app.deb || apt-get -f install -y
+fi
+
+# heplify-server config: loopback HEP only, write to homer_data as role 'homer'.
+sed -i "s#^HEPAddr .*#HEPAddr               = \"127.0.0.1:9060\"#"   /etc/heplify-server.toml
+sed -i "s#^HEPTLSAddr .*#HEPTLSAddr            = \"\"#"              /etc/heplify-server.toml
+sed -i "s#^HEPWSAddr .*#HEPWSAddr             = \"\"#"               /etc/heplify-server.toml
+sed -i "s#^DBAddr .*#DBAddr                = \"127.0.0.1:5432\"#"    /etc/heplify-server.toml
+sed -i "s#^DBUser .*#DBUser                = \"homer\"#"             /etc/heplify-server.toml
+sed -i "s#^DBPass .*#DBPass                = \"${HOMER_DB_PASS}\"#"  /etc/heplify-server.toml
+
+# homer-app config: point DB creds at the homer role, bind UI to loopback,
+# disable unused integrations (influx/prometheus/loki/grafana), set a JWT secret.
+python3 - "$HOMER_DB_PASS" <<'PYHOMER'
+import json, sys, uuid
+pw = sys.argv[1]
+p = '/usr/local/homer/etc/webapp_config.json'
+c = json.load(open(p))
+c['database_data']['LocalNode'].update(user='homer', host='127.0.0.1'); c['database_data']['LocalNode']['pass'] = pw
+c['database_config'].update(user='homer', host='127.0.0.1'); c['database_config']['pass'] = pw
+c['http_settings']['host'] = '127.0.0.1'
+for k in ('influxdb_config','prometheus_config','loki_config','grafana_config'):
+    if isinstance(c.get(k), dict): c[k]['enable'] = False
+c['auth_settings']['jwt_secret'] = uuid.uuid4().hex + uuid.uuid4().hex
+json.dump(c, open(p, 'w'), indent=4)
+PYHOMER
+
+# Create + seed the homer schema (config tables, mapping_schema, global_settings).
+# Stop the service first so the one-shot populate doesn't fight the HTTP listener.
+systemctl stop homer-app 2>/dev/null || true
+/usr/local/bin/homer-app -webapp-config-path /usr/local/homer/etc \
+    -database-host 127.0.0.1 -database-root-user postgres \
+    -create-table-db-config -populate-table-db-config || true
+# Seed the default admin login (admin/sipcapture) if the users table is empty.
+sudo -u postgres psql -d homer_config -tAc "select count(*) from public.users" 2>/dev/null | grep -q '^0$' && \
+  HOMER_ADMIN_HASH=$(${INSTALL_DIR}/venv/bin/python -c "import bcrypt;print(bcrypt.hashpw(b'sipcapture',bcrypt.gensalt()).decode())") && \
+  sudo -u postgres psql -d homer_config -c \
+    "insert into public.users (username,partid,email,enabled,firstname,lastname,department,usergroup,hash,guid,created_at) \
+     values ('admin',10,'admin@localhost',true,'Admin','User','Administrator','admin','${HOMER_ADMIN_HASH}','$(cat /proc/sys/kernel/random/uuid)',now());" || true
+
+systemctl enable heplify-server homer-app
+systemctl restart heplify-server homer-app
+echo ">>> HOMER DB password: ${HOMER_DB_PASS}  (also set HOMER_DB_PASSWORD in .env for the CDR viewer)"
 
 echo "==> Configuring Nginx..."
 cp ${INSTALL_DIR}/deploy/nginx.conf /etc/nginx/sites-available/ihspbx

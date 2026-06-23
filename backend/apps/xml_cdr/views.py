@@ -198,6 +198,139 @@ class XmlCdrViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewSet):
             'avg_duration': round(data['avg_duration'] or 0, 1),
         })
 
+    @action(detail=False, methods=['get'], url_path='homer-search')
+    def homer_search(self, request):
+        """Tenant-scoped search over HOMER-captured SIP.
+
+        Query params:
+          Time window (pick one): from&to (ISO) | date=YYYY-MM-DD | date_from&date_to
+          number     — substring match on caller/callee
+          extension  — exact match on an extension (bare + tenant-suffixed forms)
+          call_id    — exact Call-ID
+          tenant     — superadmin only: narrow to one tenant_uuid
+          page       — 1-based page number (default 1)
+          page_size  — results per page (default 20, max 100)
+        Tenant users are hard-scoped to their own tenant; superadmins see all
+        tenants plus the unattributed bucket. Returns correlated call rows.
+        """
+        from datetime import datetime, timedelta, timezone as _tz  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415
+        from django.utils.dateparse import parse_datetime, parse_date  # noqa: PLC0415
+        from .homer_search import search_calls  # noqa: PLC0415
+
+        now = timezone.now()
+        qp = request.query_params
+
+        def _day_start(d):
+            return datetime(d.year, d.month, d.day, tzinfo=_tz.utc)
+
+        def _parse_dt(s):
+            """Accept a full datetime OR a bare date (treated as that day's 00:00 UTC)."""
+            if not s:
+                return None
+            dtv = parse_datetime(s)
+            if dtv is not None:
+                return dtv if dtv.tzinfo else dtv.replace(tzinfo=_tz.utc)
+            d = parse_date(s)
+            return _day_start(d) if d else None
+
+        if qp.get('from') or qp.get('to'):
+            ws = _parse_dt(qp.get('from', '')) or (now - timedelta(hours=24))
+            we = _parse_dt(qp.get('to', '')) or now
+        elif qp.get('date'):
+            d = parse_date(qp['date'])
+            ws = _day_start(d)
+            we = ws + timedelta(days=1)
+        elif qp.get('date_from') or qp.get('date_to'):
+            df = parse_date(qp.get('date_from', '')) or (now - timedelta(days=1)).date()
+            dt = parse_date(qp.get('date_to', '')) or now.date()
+            ws = _day_start(df)
+            we = _day_start(dt) + timedelta(days=1)
+        else:
+            ws, we = now - timedelta(hours=24), now
+
+        number = qp.get('number', '').strip()
+        extension = qp.get('extension', '').strip()
+        call_id = qp.get('call_id', '').strip()
+
+        user = request.user
+        is_superadmin = bool(user.is_superuser)
+        if is_superadmin:
+            tenant_id = qp.get('tenant') or None
+        else:
+            tenant_id = str(getattr(user, 'tenant_id', '') or '')
+            if not tenant_id:
+                return Response({'results': [], 'page': 1, 'page_size': 20,
+                                 'count': 0, 'total': 0, 'has_more': False})
+
+        try:
+            page = max(int(qp.get('page', 1)), 1)
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(max(int(qp.get('page_size', 20)), 1), 100)
+        except (TypeError, ValueError):
+            page_size = 20
+
+        fetch = min(page * page_size, 500)
+        results = search_calls(
+            ws, we, tenant_id=tenant_id, is_superadmin=is_superadmin,
+            number=number, extension=extension, call_id=call_id,
+            group='leg' if qp.get('group') == 'leg' else 'call', limit=fetch,
+        )
+        total = len(results)
+        start = (page - 1) * page_size
+        page_items = results[start:start + page_size]
+        return Response({
+            'results': page_items,
+            'page': page,
+            'page_size': page_size,
+            'count': len(page_items),
+            'total': total,
+            'has_more': (start + page_size) < total,
+            'window': {'from': ws.isoformat(), 'to': we.isoformat()},
+        })
+
+    @action(detail=False, methods=['get'], url_path='homer-ladder')
+    def homer_ladder(self, request):
+        """Decoded SIP ladder for one Call-ID, tenant-scoped (frames per leg).
+
+        Params: call_id (required), from/to (window; default last 24h).
+        Authorizes that the Call-ID attributes to the caller's tenant before
+        decoding — a tenant user cannot pull another tenant's signaling.
+        """
+        from datetime import timedelta  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415
+        from django.utils.dateparse import parse_datetime, parse_date  # noqa: PLC0415
+        from .homer_search import search_calls  # noqa: PLC0415
+        from .sip_capture import leg_sip_view  # noqa: PLC0415
+
+        call_id = request.query_params.get('call_id', '').strip()
+        if not call_id:
+            return Response({'detail': 'call_id is required.'}, status=400)
+        now = timezone.now()
+        ws = (parse_datetime(request.query_params.get('from', '')) or
+              (parse_date(request.query_params.get('from', '')) and
+               timezone.make_aware(timezone.datetime.combine(parse_date(request.query_params['from']), timezone.datetime.min.time()))) or
+              now - timedelta(hours=24))
+        we = parse_datetime(request.query_params.get('to', '')) or now
+
+        user = request.user
+        is_superadmin = bool(user.is_superuser)
+        tenant_id = (request.query_params.get('tenant') or None) if is_superadmin \
+            else str(getattr(user, 'tenant_id', '') or '')
+        if not is_superadmin and not tenant_id:
+            return Response({'detail': 'No tenant.'}, status=403)
+
+        owned = search_calls(ws, we, tenant_id=tenant_id, is_superadmin=is_superadmin,
+                             call_id=call_id, group='leg', limit=1)
+        if not owned:
+            return Response({'detail': 'Call-ID not found for this tenant in the window.'},
+                            status=404)
+
+        frames, has_capture = leg_sip_view(call_id, ws, we)
+        return Response({'call_id': call_id, 'has_capture': has_capture, 'frames': frames})
+
     @action(detail=False, methods=['get'])
     def export(self, request):
         response = HttpResponse(content_type='text/csv')

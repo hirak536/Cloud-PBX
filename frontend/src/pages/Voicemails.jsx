@@ -1,5 +1,5 @@
 import { useDebounce } from '@/hooks/useDebounce'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { voicemails as voicemailsApi, recordings as recordingsApi } from '@/api'
 import { Button } from '@/components/ui/button'
@@ -85,9 +85,15 @@ export default function Voicemails() {
   const openEdit    = (r) => navigate(`/voicemails/${r.voicemail_uuid || r.id}/edit`)
   const closeEditor = () => navigate('/voicemails')
 
-  // Sync form state to the current route.
+  // Sync form state to the current route. Guarded on the route key so it runs
+  // once per editor-open — a re-run when the list `rows` refetch in the
+  // background would otherwise clobber the user's in-progress edits.
+  const lastRouteKeyRef = useRef(null)
   useEffect(() => {
-    if (!editorOpen) return
+    if (!editorOpen) { lastRouteKeyRef.current = null; return }
+    const routeKey = isCreate ? 'new' : routeId
+    if (lastRouteKeyRef.current === routeKey) return
+    lastRouteKeyRef.current = routeKey
     setFormError(''); setNameFile(null); setUploadMsg('')
     if (isCreate) { setEditId(null); setForm(EMPTY); return }
     setEditId(routeId)

@@ -1088,9 +1088,16 @@ export default function Users() {
   const openEdit    = (r) => navigate(`/users/${r.user_uuid}/edit`)
   const closeEditor = () => navigate('/users')
 
-  // Sync form state to the current route.
+  // Sync form state to the current route. Guarded on the route key so it runs
+  // exactly once per editor-open: a re-run (e.g. when the list `rows` refetch
+  // in the background) would otherwise overwrite the user's in-progress edits
+  // with the freshly-fetched row.
+  const lastRouteKeyRef = useRef(null)
   useEffect(() => {
-    if (!editorOpen) return
+    if (!editorOpen) { lastRouteKeyRef.current = null; return }
+    const routeKey = isCreate ? 'new' : routeId
+    if (lastRouteKeyRef.current === routeKey) return
+    lastRouteKeyRef.current = routeKey
     setFormError('')
     if (isCreate) {
       setEditId(null)
