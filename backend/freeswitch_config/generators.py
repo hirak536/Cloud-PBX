@@ -1283,32 +1283,6 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
     return elements
 
 
-def _convert_time_to_server_tz(t, wh_tz_str):
-    """Convert a time from the working hours timezone to UTC (the FreeSWITCH server clock).
-
-    FreeSWITCH time-of-day conditions are matched against the server's clock.
-    The server runs in UTC, so we always convert to UTC regardless of Django's TIME_ZONE.
-    Returns (utc_time, day_offset) where day_offset is -1, 0, or +1.
-    """
-    try:
-        wh_tz = ZoneInfo(wh_tz_str or 'UTC')
-        utc_tz = ZoneInfo('UTC')
-        ref_date = datetime(2024, 1, 1, t.hour, t.minute, t.second, tzinfo=wh_tz)
-        converted = ref_date.astimezone(utc_tz)
-        day_offset = converted.date().day - ref_date.date().day
-        
-        # console log for debugging generation
-        print(f"DEBUG: {t} ({wh_tz_str}) -> {converted.time()} (UTC) offset={day_offset}")
-        
-        if day_offset > 1: day_offset = 1
-        elif day_offset < -1: day_offset = -1
-        return converted.time(), day_offset
-    except Exception as e:
-        print(f"WARNING: Timezone conversion failed for {wh_tz_str}: {e}")
-        return t, 0
-
-
-
 def _iso_to_fs_wday(iso_day):
     """Convert ISO weekday (1=Mon…7=Sun) to FreeSWITCH wday (1=Sun…7=Sat).
 
@@ -1909,33 +1883,41 @@ def _working_hours_to_dialplan_xml(wh, domain_name, tenant_code, preload=None):
     closed_actions = _resolve_wh_dest(wh, 'closed', domain_name, ctx, preload=preload)
 
     for day in open_days:
-        open_t, open_offset   = _convert_time_to_server_tz(day.open_time,  wh.timezone)
-        close_t, close_offset = _convert_time_to_server_tz(day.close_time, wh.timezone)
-        
-        print(f"INFO: Generation WH {wh.working_hours_name} Day {day.day_of_week}: {day.open_time} -> {open_t} UTC")
+        # Evaluate the window in the working-hours timezone directly. FreeSWITCH
+        # matches wday/time-of-day in the condition's `timezone`, applying DST
+        # automatically — so we do NOT pre-convert to UTC. The old approach
+        # converted to UTC against a fixed Jan-1 (standard-time) reference, which
+        # left every DST-observing tenant an hour off for half the year.
+        open_t  = day.open_time
+        close_t = day.close_time
+
+        print(f"INFO: Generation WH {wh.working_hours_name} Day {day.day_of_week}: "
+              f"{open_t}-{close_t} ({wh.timezone or 'UTC'})")
 
         # day_of_week: DB stores 1=Mon...7=Sun; strftime(%w) uses 0=Sun,1=Mon...6=Sat
-        fs_wday    = 0 if day.day_of_week == 7 else day.day_of_week
-        open_wday  = (fs_wday + open_offset)  % 7
-        close_wday = (fs_wday + close_offset) % 7
+        fs_wday = 0 if day.day_of_week == 7 else day.day_of_week
 
         # time-of-day attribute only accepts HH:MM (no seconds).
-        # Split midnight-crossing UTC ranges into two windows.
+        # Split a window that crosses midnight (local time) into two days.
         windows = []
         if open_t > close_t:
-            windows.append((open_wday,  f'{open_t.strftime("%H:%M")}-23:59'))
-            windows.append((close_wday, f'00:00-{close_t.strftime("%H:%M")}'))
+            next_wday = (fs_wday + 1) % 7
+            windows.append((fs_wday,   f'{open_t.strftime("%H:%M")}-23:59'))
+            windows.append((next_wday, f'00:00-{close_t.strftime("%H:%M")}'))
         else:
-            windows.append((open_wday, f'{open_t.strftime("%H:%M")}-{close_t.strftime("%H:%M")}'))
+            windows.append((fs_wday, f'{open_t.strftime("%H:%M")}-{close_t.strftime("%H:%M")}'))
 
         for wday_num, tod in windows:
             # FreeSWITCH wday attribute: 1=Sun, 2=Mon ... 7=Sat
             # Our wday_num is 0=Sun, 1=Mon ... 6=Sat
             fs_attr_wday = wday_num + 1
-            
+
             cw = etree.SubElement(ext_route, 'condition')
             cw.set('wday', str(fs_attr_wday))
             cw.set('time-of-day', tod)
+            # Evaluate wday/time-of-day in the tenant's timezone (DST-aware).
+            if wh.timezone:
+                cw.set('timezone', wh.timezone)
             # break="on-true": if BOTH wday and time-of-day match, execute actions and STOP.
             cw.set('break', 'on-true')
             
