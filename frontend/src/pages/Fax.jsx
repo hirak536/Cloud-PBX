@@ -167,8 +167,6 @@ function FaxBoxes({ onCreate, onEdit }) {
   const [boxes, setBoxes]     = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch]   = useState('')
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [editBox, setEditBox] = useState(null)
   const [deleting, setDeleting] = useState(null)
 
   const load = useCallback(async () => {
@@ -183,8 +181,9 @@ function FaxBoxes({ onCreate, onEdit }) {
 
   useEffect(() => { load() }, [load])
 
-  const openCreate = () => { setEditBox(null); setDialogOpen(true) }
-  const openEdit   = (b) => { setEditBox(b);   setDialogOpen(true) }
+  // Create/edit navigate to the full-page routed editor (passed from Fax()).
+  const openCreate = () => onCreate?.()
+  const openEdit   = (b) => onEdit?.(b)
 
   const handleDelete = async (b) => {
     if (!confirm(`Delete fax box "${b.fax_name}"?`)) return
@@ -290,12 +289,6 @@ function FaxBoxes({ onCreate, onEdit }) {
           </Table>
         </CardContent>
       </Card>
-
-      <FaxBoxDialog
-        open={dialogOpen}
-        onClose={(reload) => { setDialogOpen(false); if (reload) load() }}
-        editBox={editBox}
-      />
     </div>
   )
 }
@@ -655,11 +648,30 @@ export default function Fax() {
   // Fax box management now lives in the DIDs page. Here the Fax Boxes tab is a
   // read-only reference for superusers only; everyone else sees only History.
   const isSuperuser = roleOf(useSelector(selectAuth).user) === 'superuser'
+  const navigate = useNavigate()
+  // The `/new` route has no :id param, so detect create from the path.
+  const { id: editParamId } = useParams()
+  const location = useLocation()
+  const isCreate   = location.pathname.endsWith('/fax/new')
+  const routeId    = editParamId
+  const editorOpen = isCreate || routeId !== undefined
+
   const TABS = [
     ...(isSuperuser ? [{ id: 'boxes', label: 'Fax Boxes', icon: Inbox }] : []),
     { id: 'history', label: 'Fax History', icon: ArrowDownLeft },
   ]
   const [tab, setTab] = useState(isSuperuser ? 'boxes' : 'history')
+
+  // Full-page fax-box editor (routed) — sidebar stays via AppLayout.
+  if (editorOpen) {
+    return (
+      <FaxBoxEditor
+        isCreate={isCreate}
+        routeId={routeId}
+        onDone={() => navigate('/fax')}
+      />
+    )
+  }
 
   return (
     <div className="space-y-4">
@@ -685,7 +697,7 @@ export default function Fax() {
         })}
       </div>
 
-      {tab === 'boxes'   && <FaxBoxes />}
+      {tab === 'boxes'   && <FaxBoxes onCreate={() => navigate('/fax/new')} onEdit={(b) => navigate(`/fax/${b.fax_uuid}/edit`)} />}
       {tab === 'history' && <FaxHistory />}
     </div>
   )
