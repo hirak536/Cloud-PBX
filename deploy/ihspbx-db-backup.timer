@@ -1,0 +1,13 @@
+[Unit]
+Description=Run IHS-PBX PostgreSQL backup twice daily (05:00 & 22:00 CST)
+
+[Timer]
+# Times are UTC. 11:00 UTC = 05:00 CST, 04:00 UTC = 22:00 CST (prev day).
+# Mirrors the Windows GitHub Actions schedule.
+OnCalendar=*-*-* 11:00:00 UTC
+OnCalendar=*-*-* 04:00:00 UTC
+# Run at next opportunity if the machine was off at the scheduled time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

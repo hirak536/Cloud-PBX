@@ -1,0 +1,76 @@
+name: Daily PostgreSQL Backup (Linux)
+
+on:
+  schedule:
+    - cron: '0 11 * * *'   # 5:00 AM CST
+    - cron: '0 4 * * *'    # 10:00 PM CST
+  workflow_dispatch:
+
+jobs:
+  backup:
+    # Self-hosted Linux runner on the IHS-PBX box. Register the runner with
+    # the labels [self-hosted, linux, ihspbx] so this job lands on it.
+    runs-on: [self-hosted, linux, ihspbx]
+
+    env:
+      SMB_SHARE: '//172.30.109.52/IHSBackups'
+      MOUNT_POINT: '/mnt/ihsbackups-ci'
+      BACKUP_SUBDIR: 'IHSDevDBBackup/diverseai'
+      RETENTION_DAYS: '30'
+
+    steps:
+      - name: Mount network share
+        run: |
+          set -euo pipefail
+          # Share is defined in /etc/fstab with noauto,user + a root-only
+          # credentials file (/etc/ihspbx-backup.smbcreds), so no sudo or
+          # secrets are needed here.
+          echo "Mounting $MOUNT_POINT ..."
+          if mountpoint -q "$MOUNT_POINT"; then
+            echo "Already mounted."
+          else
+            mount "$MOUNT_POINT"
+          fi
+          echo "✅ Mounted at $MOUNT_POINT"
+
+      - name: Run PostgreSQL backup
+        env:
+          PGHOST: ${{ secrets.PGHOST }}
+          PGPORT: ${{ secrets.PGPORT }}
+          PGUSER: ${{ secrets.PGUSER }}
+          PGPASSWORD: ${{ secrets.PGPASSWORD }}
+        run: |
+          set -euo pipefail
+          # Force IPv4 (localhost -> ::1 often fails pg_hba).
+          [ "${PGHOST}" = "localhost" ] && PGHOST=127.0.0.1
+          export PGHOST PGPASSWORD
+
+          timestamp="$(date +%m-%d-%Y_%H-%M-%S)"
+
+          db="ihspbx"
+          dest="$MOUNT_POINT/$BACKUP_SUBDIR"
+          mkdir -p "$dest"
+          out="$dest/${db}_backup_${timestamp}.dump"
+
+          echo "Backing up $db -> $out"
+          pg_dump --create --clean -F c \
+            -h "$PGHOST" -p "${PGPORT:-5432}" -U "$PGUSER" -d "$db" -f "$out"
+
+          if [ -s "$out" ]; then
+            echo "✅ $db ($(du -h "$out" | cut -f1))"
+          else
+            echo "❌ $db dump empty"; exit 1
+          fi
+
+          echo "Pruning dumps older than $RETENTION_DAYS days..."
+          find "$dest" -maxdepth 1 -type f -name '*.dump' \
+            -mtime +"$RETENTION_DAYS" -print -delete
+
+          echo "✅ Backup complete."
+
+      - name: Unmount network share
+        if: always()
+        run: |
+          if mountpoint -q "$MOUNT_POINT"; then
+            umount "$MOUNT_POINT" && echo "Unmounted." || echo "WARN: umount failed."
+          fi

@@ -52,7 +52,9 @@ class WorkingHours(models.Model):
     timezone = models.CharField(
         max_length=64,
         default='UTC',
-        help_text='Timezone for display purposes. FreeSWITCH uses the server timezone.',
+        help_text='IANA timezone (e.g. America/Chicago) used to evaluate open/close '
+                  'windows. Set as the FreeSWITCH `timezone` channel variable so '
+                  'time-of-day matching is DST-aware.',
     )
 
     # Open-hours destination

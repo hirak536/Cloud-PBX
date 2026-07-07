@@ -18,6 +18,27 @@ from .utils import pdf_to_tiff, tiff_to_pdf
 logger = logging.getLogger(__name__)
 
 
+def _safe_fax_basename(name):
+    """Strip characters from an uploaded filename that break the ESL/dialplan
+    parser. `&txfax(<path>)` takes the path as an application argument, so any
+    ')' in the filename truncates the path (e.g. 'doc_(1).tif' becomes
+    'doc_(1', dropping '.tif') and the fax leg dies with DESTINATION_OUT_OF_ORDER.
+    Keep it to a conservative filesystem-and-dialplan-safe set."""
+    import re
+    base = os.path.splitext(name)[0]
+    return re.sub(r'[^A-Za-z0-9._-]', '_', base) or 'fax'
+
+
+def _esl_var(value):
+    """Quote a channel-variable value for an ESL `originate {..}` block.
+    An unquoted space (e.g. a fax caller-id name 'Clinic Fax') splits the var
+    list and corrupts the dial string, causing DESTINATION_OUT_OF_ORDER.
+    Single-quote the value and strip embedded single quotes/commas that would
+    break the {k=v,k=v} syntax."""
+    v = str(value or '').replace("'", '').replace(',', ' ')
+    return f"'{v}'"
+
+
 def _normalize_destination(raw):
     """Normalize a US fax destination to E.164 (+1XXXXXXXXXX).
 
@@ -107,6 +128,16 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
             qs = qs.filter(fax_uuid__in=scope)
         return qs
 
+    def _cache_scope_id(self):
+        # The list/detail cache is keyed by tenant only. Per-user fax-box scope
+        # (get_queryset above) would otherwise leak one user's unfiltered list to
+        # a restricted user in the same tenant on a cache hit. Fold the scope in.
+        scope = self.request.user.fax_box_scope()
+        if not scope:
+            return ''
+        import hashlib
+        return 'fx' + hashlib.md5(','.join(sorted(scope)).encode()).hexdigest()[:8]
+
     @action(detail=True, methods=['post'], url_path='send')
     def send_fax(self, request, pk=None):
         """
@@ -157,7 +188,7 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
         file_ext = os.path.splitext(orig_name)[1].lower()
         if file_ext not in ('.tif', '.tiff', '.pdf'):
             file_ext = '.tif'
-        base = os.path.splitext(orig_name)[0].replace(' ', '_')
+        base = _safe_fax_basename(orig_name)
         file_name = f'{int(timezone.now().timestamp())}_{base}{file_ext}'
         file_path = os.path.join(outbound_dir, file_name)
 
@@ -200,12 +231,22 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
 
         # Build ESL originate command for txfax
         originate_vars = (
-            f'origination_caller_id_name={cid_name},'
-            f'origination_caller_id_number={cid_number},'
-            f'fax_ident={cid_name},'
-            f'fax_header={cid_name},'
-            f'absolute_codec_string=PCMU,'
+            f'origination_caller_id_name={_esl_var(cid_name)},'
+            f'origination_caller_id_number={_esl_var(cid_number)},'
+            f'fax_ident={_esl_var(cid_name)},'
+            f'fax_header={_esl_var(cid_name)},'
+            # Soft codec preference (not absolute): pinning absolute_codec_string
+            # blocks SpanDSP from re-arming onto the T.38 image path when the
+            # carrier sends the T.38 re-INVITE, causing a negotiated-but-dead
+            # T.38 and a 60s "waiting for initial communication" timeout.
+            # Soft codec preference (not absolute): pinning absolute_codec_string
+            # blocks SpanDSP from re-arming onto the T.38 image path when the
+            # T.38 re-INVITE is negotiated, causing a negotiated-but-dead T.38
+            # and a 60s "waiting for initial communication" timeout.
+            f'codec_string=PCMU,'
             f'fax_enable_t38=true,'
+            # FS must initiate the T.38 re-INVITE on this trunk; without it the
+            # call answers on G.711 and no T.38 is ever negotiated (60s timeout).
             f'fax_enable_t38_request=true,'
             f'fax_disable_v17=false,'
             f'fax_use_ecm=true,'
@@ -222,7 +263,9 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
         try:
             from esl.client import get_esl_client
             esl = get_esl_client()
+            logger.info(f'FaxSendView: originate_cmd={originate_cmd!r}')
             esl_result = esl.api(originate_cmd)
+            logger.info(f'FaxSendView: esl_result={esl_result!r}')
             # +OK means FreeSWITCH accepted the originate — the call is in progress.
             # Actual fax delivery is async; status stays 'pending' until FS reports back.
             if esl_result and '+OK' in esl_result:
@@ -406,12 +449,13 @@ class FaxQuickSendView(APIView):
             logger.error(f'FaxQuickSendView: cannot create outbound dir: {e}')
             outbound_dir = tempfile.gettempdir()
 
-        # Ensure file has an extension txfax can process; strip spaces (breaks ESL originate)
+        # Ensure file has an extension txfax can process; sanitize the name —
+        # spaces AND ')' break the ESL/dialplan parser (DESTINATION_OUT_OF_ORDER)
         orig_name = uploaded_file.name
         ext = os.path.splitext(orig_name)[1].lower()
         if ext not in ('.tif', '.tiff', '.pdf'):
             ext = '.tif'
-        base = os.path.splitext(orig_name)[0].replace(' ', '_')
+        base = _safe_fax_basename(orig_name)
         file_name = f'{int(timezone.now().timestamp())}_{base}{ext}'
         file_path = os.path.join(outbound_dir, file_name)
 
@@ -432,12 +476,22 @@ class FaxQuickSendView(APIView):
                 return Response({'error': f'PDF conversion failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         originate_vars = (
-            f'origination_caller_id_name={caller_id_name},'
-            f'origination_caller_id_number={caller_id_number},'
-            f'fax_ident={caller_id_name},'
-            f'fax_header={caller_id_name},'
-            f'absolute_codec_string=PCMU,'
+            f'origination_caller_id_name={_esl_var(caller_id_name)},'
+            f'origination_caller_id_number={_esl_var(caller_id_number)},'
+            f'fax_ident={_esl_var(caller_id_name)},'
+            f'fax_header={_esl_var(caller_id_name)},'
+            # Soft codec preference (not absolute): pinning absolute_codec_string
+            # blocks SpanDSP from re-arming onto the T.38 image path when the
+            # carrier sends the T.38 re-INVITE, causing a negotiated-but-dead
+            # T.38 and a 60s "waiting for initial communication" timeout.
+            # Soft codec preference (not absolute): pinning absolute_codec_string
+            # blocks SpanDSP from re-arming onto the T.38 image path when the
+            # T.38 re-INVITE is negotiated, causing a negotiated-but-dead T.38
+            # and a 60s "waiting for initial communication" timeout.
+            f'codec_string=PCMU,'
             f'fax_enable_t38=true,'
+            # FS must initiate the T.38 re-INVITE on this trunk; without it the
+            # call answers on G.711 and no T.38 is ever negotiated (60s timeout).
             f'fax_enable_t38_request=true,'
             f'fax_disable_v17=false,'
             f'fax_use_ecm=true,'

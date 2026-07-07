@@ -4,6 +4,7 @@ Celery tasks for fax status tracking.
 import logging
 import os
 import re
+import time
 
 from celery import shared_task
 from django.db import models
@@ -327,7 +328,8 @@ def upload_fax_to_ftp(self, fax_file_uuid: str):
     box's configured remote path using Python's stdlib ftplib.
     """
     from ftplib import FTP, FTP_TLS, error_perm  # noqa: PLC0415
-    from .models import FaxFile  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415
+    from .models import FaxFile, FaxFtpDelivery  # noqa: PLC0415
 
     try:
         ff = FaxFile.objects.select_related('fax').get(fax_file_uuid=fax_file_uuid)
@@ -339,6 +341,14 @@ def upload_fax_to_ftp(self, fax_file_uuid: str):
     if not fax or not fax.fax_ftp_host:
         logger.info('upload_fax_to_ftp: no FTP host configured — skipping %s', fax_file_uuid)
         return
+
+    # One audit row per fax file, updated in place across retry attempts so the
+    # admin shows current status (mirrors WebhookDelivery). Never let logging
+    # bookkeeping break the actual upload.
+    delivery, _ = FaxFtpDelivery.objects.get_or_create(
+        fax_file=ff,
+        defaults={'fax': fax, 'tenant_id': getattr(fax, 'tenant_id', None)},
+    )
 
     # Prefer a PDF (convert from TIFF if needed)
     file_path = ff.fax_file_path or ''
@@ -360,13 +370,45 @@ def upload_fax_to_ftp(self, fax_file_uuid: str):
     password = fax.fax_ftp_password or ''
     remote_path = (fax.fax_ftp_path or '').strip()
     remote_name = os.path.basename(file_path)
+    use_tls = bool(fax.fax_ftp_use_tls)
+    file_size = os.path.getsize(file_path)
 
+    attempt_no = self.request.retries + 1
+    logger.info(
+        'upload_fax_to_ftp[%s]: starting — %s (%d bytes) -> %s%s://%s@%s:%d path=%r (attempt %d/%d)',
+        fax_file_uuid, remote_name, file_size,
+        'STARTTLS ' if use_tls else '', 'ftps' if use_tls else 'ftp',
+        username, host, port, remote_path,
+        attempt_no, self.max_retries + 1,
+    )
+
+    # Snapshot the target + mark this attempt on the audit row.
+    delivery.host = host
+    delivery.port = port
+    delivery.username = username
+    delivery.remote_path = remote_path
+    delivery.remote_name = remote_name
+    delivery.use_tls = use_tls
+    delivery.file_size_bytes = file_size
+    delivery.attempts = attempt_no
+    delivery.status = FaxFtpDelivery.STATUS_PENDING
+    delivery.save()
+
+    started = time.monotonic()
     try:
-        ftp = FTP_TLS() if fax.fax_ftp_use_tls else FTP()
-        ftp.connect(host, port, timeout=30)
+        ftp = FTP_TLS() if use_tls else FTP()
+
+        logger.debug('upload_fax_to_ftp[%s]: connecting to %s:%d (timeout=30s)', fax_file_uuid, host, port)
+        welcome = ftp.connect(host, port, timeout=30)
+        logger.debug('upload_fax_to_ftp[%s]: connected — server says: %s', fax_file_uuid, welcome)
+
+        logger.debug('upload_fax_to_ftp[%s]: logging in as %r', fax_file_uuid, username)
         ftp.login(username, password)
+        logger.debug('upload_fax_to_ftp[%s]: login OK', fax_file_uuid)
+
         if isinstance(ftp, FTP_TLS):
             ftp.prot_p()  # encrypt the data channel
+            logger.debug('upload_fax_to_ftp[%s]: TLS data channel protection enabled', fax_file_uuid)
 
         # Change into the configured directory, creating it if missing.
         if remote_path:
@@ -375,18 +417,42 @@ def upload_fax_to_ftp(self, fax_file_uuid: str):
                     continue
                 try:
                     ftp.cwd(segment)
+                    logger.debug('upload_fax_to_ftp[%s]: cwd %r', fax_file_uuid, segment)
                 except error_perm:
+                    logger.info('upload_fax_to_ftp[%s]: dir %r missing — creating it', fax_file_uuid, segment)
                     ftp.mkd(segment)
                     ftp.cwd(segment)
+            logger.debug('upload_fax_to_ftp[%s]: now in remote dir %s', fax_file_uuid, ftp.pwd())
 
+        logger.debug('upload_fax_to_ftp[%s]: STOR %s (%d bytes)', fax_file_uuid, remote_name, file_size)
         with open(file_path, 'rb') as f:
-            ftp.storbinary(f'STOR {remote_name}', f)
+            resp = ftp.storbinary(f'STOR {remote_name}', f)
+        logger.debug('upload_fax_to_ftp[%s]: STOR response: %s', fax_file_uuid, resp)
         ftp.quit()
 
         logger.info(
-            'upload_fax_to_ftp: uploaded %s to %s:%d/%s for FaxFile %s',
-            remote_name, host, port, remote_path, fax_file_uuid,
+            'upload_fax_to_ftp[%s]: SUCCESS — uploaded %s (%d bytes) to %s:%d/%s in %.2fs',
+            fax_file_uuid, remote_name, file_size, host, port, remote_path,
+            time.monotonic() - started,
         )
+        delivery.status = FaxFtpDelivery.STATUS_SUCCESS
+        delivery.last_response = str(resp)
+        delivery.last_error = ''
+        delivery.delivered_at = timezone.now()
+        delivery.save(update_fields=['status', 'last_response', 'last_error', 'delivered_at'])
     except Exception as exc:
-        logger.error('upload_fax_to_ftp: failed for %s: %s', fax_file_uuid, exc)
+        # exc_info=True logs the full traceback so transient vs. config errors
+        # (auth failure, refused connection, permission denied) are distinguishable.
+        logger.error(
+            'upload_fax_to_ftp[%s]: FAILED after %.2fs (attempt %d/%d) connecting %s@%s:%d — %s: %s',
+            fax_file_uuid, time.monotonic() - started,
+            attempt_no, self.max_retries + 1,
+            username, host, port, type(exc).__name__, exc,
+            exc_info=True,
+        )
+        # Mark failed; final attempt stays 'failed', earlier ones will flip back
+        # to 'pending' on the next retry's start block above.
+        delivery.status = FaxFtpDelivery.STATUS_FAILED
+        delivery.last_error = f'{type(exc).__name__}: {exc}'
+        delivery.save(update_fields=['status', 'last_error'])
         raise self.retry(exc=exc, countdown=30)

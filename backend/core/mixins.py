@@ -151,8 +151,19 @@ class TenantScopedViewSetMixin:
             return f'su:{tid}' if tid else 'su'
         return str(getattr(user, 'tenant_id', None) or 'global')
 
+    def _cache_scope_id(self) -> str:
+        """Extra per-request scoping folded into the cache key. Default empty.
+
+        ViewSets that filter get_queryset() by something finer than tenant
+        (e.g. per-user fax-box scope) MUST override this, otherwise a cached
+        response built for one user leaks to another user in the same tenant.
+        """
+        return ''
+
     def _cache_key(self, suffix: str) -> str:
-        return f'pbx:{self.__class__.__name__}:{self._tenant_cache_id()}:v{_cv.get()}:{suffix}'
+        scope = self._cache_scope_id()
+        scope_part = f':{scope}' if scope else ''
+        return f'pbx:{self.__class__.__name__}:{self._tenant_cache_id()}{scope_part}:v{_cv.get()}:{suffix}'
 
     # Map admin ViewSet class name → client API cache resource name
     _CLIENT_CACHE_RESOURCE_MAP = {

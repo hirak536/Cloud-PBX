@@ -12,7 +12,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogClose } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Plus, Pencil, Trash2, Search, Loader2, Clock, X } from 'lucide-react'
+import { Plus, Pencil, Trash2, Search, Loader2, Clock, X, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -27,8 +27,11 @@ const DAYS = [
   { dow: 7, name: 'Sunday',    short: 'Sun' },
 ]
 
-const SLOTS    = Array.from({ length: 288 }, (_, i) => i)  // 288 × 5-min = 24 h
-const SLOT_H   = 2    // px per 5-min slot  (12 slots/hr × 2px = 24px/hr)
+// The grid is measured in MINUTES (0–1440) for exact 1-minute precision.
+// Rendered at 0.4 px/min → 24 px/hour (unchanged from the old 5-min × 2px grid).
+const MINUTES_PER_DAY = 1440
+const SLOTS    = Array.from({ length: MINUTES_PER_DAY }, (_, i) => i)  // one entry per minute
+const SLOT_H   = 24 / 60   // px per minute (0.4) → 24px/hour
 const LABEL_W  = 44
 
 const TIMEZONES = [
@@ -73,16 +76,17 @@ const EMPTY_FORM = {
 
 // ─── Slot ↔ time helpers ──────────────────────────────────────────────────────
 
-const slotToTime  = (slot) => { const h = Math.floor(slot / 12), m = (slot % 12) * 5; return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}` }
-const timeToSlot  = (t)    => { if (!t) return 0; const [h, m] = t.split(':').map(Number); return Math.round((h * 60 + m) / 5) }
-const slotToLabel = (slot) => { if (slot % 12 !== 0) return ''; const h = slot / 12; if (h === 0) return '12 am'; if (h < 12) return `${h} am`; if (h === 12) return '12 pm'; return `${h - 12} pm` }
+// slot == minute-of-day (0–1440). 1-minute precision, no rounding.
+const slotToTime  = (slot) => { const h = Math.floor(slot / 60), m = slot % 60; return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}` }
+const timeToSlot  = (t)    => { if (!t) return 0; const [h, m] = t.split(':').map(Number); return h * 60 + m }
+const slotToLabel = (slot) => { if (slot % 60 !== 0) return ''; const h = slot / 60; if (h === 0) return '12 am'; if (h < 12) return `${h} am`; if (h === 12) return '12 pm'; return `${h - 12} pm` }
 
 // ─── Grid ↔ API converters ───────────────────────────────────────────────────
-// grid shape: { [dow]: [{start, end}, ...] }  — each range is [start, end) in 5-min slots
+// grid shape: { [dow]: [{start, end}, ...] }  — each range is [start, end) in minutes-of-day
 
 const makeEmptyGrid   = () => { const g = {}; for (const { dow } of DAYS) g[dow] = []; return g }
-const makeDefaultGrid = () => { const g = {}; for (const { dow } of DAYS) g[dow] = dow <= 5 ? [{ start: 108, end: 204 }] : []; return g }
-// 108 = 9:00 (9×12), 204 = 17:00 (17×12)
+const makeDefaultGrid = () => { const g = {}; for (const { dow } of DAYS) g[dow] = dow <= 5 ? [{ start: 540, end: 1020 }] : []; return g }
+// 540 = 9:00 (9×60), 1020 = 17:00 (17×60)
 
 const gridToApiDays = (grid) => {
   const days = []
@@ -114,17 +118,39 @@ const getRangesLabel = (ranges) => {
 // ─── Vertical Weekly Grid ─────────────────────────────────────────────────────
 
 const HANDLE_PX = 2
-const TOTAL_H   = SLOTS.length * SLOT_H  // 288 × 6 = 1728 px
+const TOTAL_H   = SLOTS.length * SLOT_H  // 1440 min × 0.4px = 576 px
+// Gridline/label boundaries: every 30 minutes (hour lines + half-hour ticks).
+// We render only these, not all 1440 minutes, to keep the DOM light.
+const GRID_BOUNDARIES = Array.from({ length: MINUTES_PER_DAY / 30 + 1 }, (_, i) => i * 30)
 
-function DayColumn({ ranges, onChange, gridRef }) {
+function DayColumn({ ranges, onChange, gridRef, alignRight }) {
   const dragInfo = useRef(null)  // { idx, mode, startY, origStart, origEnd, allRanges }
   const colRef   = useRef(null)
+  const [editIdx, setEditIdx]   = useState(null)   // index of block being typed-edited, or null
+  const [draft, setDraft]       = useState({ open: '', close: '' })
+
+  const openEditor = (e, idx) => {
+    e.preventDefault(); e.stopPropagation()
+    const r = ranges[idx]
+    setDraft({ open: slotToTime(r.start), close: slotToTime(r.end) })
+    setEditIdx(idx)
+  }
+
+  const saveEditor = (e) => {
+    e.preventDefault(); e.stopPropagation()
+    const start = timeToSlot(draft.open), end = timeToSlot(draft.close)
+    if (end <= start) return  // invalid range — keep editor open
+    onChange(ranges
+      .map((r, i) => i === editIdx ? { start, end } : r)
+      .sort((a, b) => a.start - b.start))
+    setEditIdx(null)
+  }
 
   const yToSlot = (clientY) => {
     const containerRect = gridRef?.current?.getBoundingClientRect() ?? colRef.current.getBoundingClientRect()
     const scrollTop = gridRef?.current?.scrollTop ?? 0
     const relY = clientY - containerRect.top + scrollTop
-    return Math.max(0, Math.min(287, Math.floor(relY / SLOT_H)))
+    return Math.max(0, Math.min(MINUTES_PER_DAY - 1, Math.round(relY / SLOT_H)))
   }
 
   useEffect(() => {
@@ -137,12 +163,12 @@ function DayColumn({ ranges, onChange, gridRef }) {
         const len = origEnd - origStart
         let ns = origStart + dSlot, ne = origEnd + dSlot
         if (ns < 0)   { ns = 0;       ne = len }
-        if (ne > 288) { ne = 288;     ns = 288 - len }
+        if (ne > MINUTES_PER_DAY) { ne = MINUTES_PER_DAY; ns = MINUTES_PER_DAY - len }
         next[idx] = { start: ns, end: ne }
       } else if (mode === 'top') {
         next[idx] = { start: Math.max(0, Math.min(origStart + dSlot, origEnd - 1)), end: origEnd }
       } else if (mode === 'bottom') {
-        next[idx] = { start: origStart, end: Math.min(288, Math.max(origEnd + dSlot, origStart + 1)) }
+        next[idx] = { start: origStart, end: Math.min(MINUTES_PER_DAY, Math.max(origEnd + dSlot, origStart + 1)) }
       }
       onChange(next)
     }
@@ -166,8 +192,9 @@ function DayColumn({ ranges, onChange, gridRef }) {
   const onClickColumn = (e) => {
     // ignore clicks on existing bars (they stopPropagation)
     const slot  = yToSlot(e.clientY)
-    const start = Math.max(0, Math.min(276, slot - 6))
-    const end   = start + 12
+    // drop a default 1-hour block centered on the click
+    const start = Math.max(0, Math.min(MINUTES_PER_DAY - 60, slot - 30))
+    const end   = start + 60
     // don't add if overlaps an existing block
     const overlaps = ranges.some(r => start < r.end && end > r.start)
     if (overlaps) return
@@ -177,7 +204,14 @@ function DayColumn({ ranges, onChange, gridRef }) {
   return (
     <div
       ref={colRef}
-      className="relative flex-1 border-l border-border/20 cursor-cell"
+      className={cn(
+        'relative flex-1 border-l border-border/20 cursor-cell',
+        // While an editor is open, lift the WHOLE column above its siblings.
+        // The editor popover is wider than one column and spills into the
+        // neighbouring day; without this, a populated bar in that next column
+        // (its own stacking context) paints over the editor and hides it.
+        editIdx !== null ? 'z-40' : 'z-0',
+      )}
       style={{ height: TOTAL_H }}
       onClick={onClickColumn}
     >
@@ -209,6 +243,16 @@ function DayColumn({ ranges, onChange, gridRef }) {
                 </span>
               )}
             </div>
+            {/* Edit (type exact times) button */}
+            <button
+              type="button"
+              title="Edit times"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => openEditor(e, idx)}
+              className="absolute top-0.5 right-4 z-20 hidden group-hover:flex items-center justify-center h-3.5 w-3.5 rounded-full bg-primary-foreground/20 hover:bg-primary-foreground/40 text-primary-foreground transition-colors"
+            >
+              <Pencil className="h-2 w-2" />
+            </button>
             {/* Remove button */}
             <button
               type="button"
@@ -218,6 +262,42 @@ function DayColumn({ ranges, onChange, gridRef }) {
             >
               <X className="h-2 w-2" />
             </button>
+            {/* Inline time editor */}
+            {editIdx === idx && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                className={cn(
+                  'absolute z-30 flex w-max items-center gap-1 rounded-lg border border-border bg-popover p-1.5 shadow-md text-foreground',
+                  // open upward when the block sits in the lower half of the day so the
+                  // editor doesn't get clipped by the grid wrapper's bottom edge
+                  start > 720 ? 'bottom-full mb-1' : 'top-full mt-1',
+                  // anchor to the right edge for the last couple of columns so the
+                  // wide editor doesn't spill past the grid's right border
+                  alignRight ? 'right-0' : 'left-0',
+                )}
+              >
+                <input
+                  type="time" value={draft.open}
+                  onChange={(e) => setDraft(d => ({ ...d, open: e.target.value }))}
+                  className="h-6 w-[112px] rounded border border-border bg-background px-1.5 text-[11px]"
+                />
+                <span className="text-[10px] text-muted-foreground">–</span>
+                <input
+                  type="time" value={draft.close}
+                  onChange={(e) => setDraft(d => ({ ...d, close: e.target.value }))}
+                  className="h-6 w-[112px] rounded border border-border bg-background px-1.5 text-[11px]"
+                />
+                <button type="button" title="Apply" onClick={saveEditor}
+                  className="flex items-center justify-center h-6 w-6 rounded bg-primary text-primary-foreground hover:bg-primary/90">
+                  <Check className="h-3 w-3" />
+                </button>
+                <button type="button" title="Cancel" onClick={(e) => { e.stopPropagation(); setEditIdx(null) }}
+                  className="flex items-center justify-center h-6 w-6 rounded border border-border hover:bg-muted">
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            )}
             {/* Bottom resize handle */}
             <div
               className="absolute inset-x-0 bottom-0 bg-primary-foreground/20 hover:bg-primary-foreground/30 cursor-ns-resize rounded-b-md"
@@ -235,7 +315,7 @@ function TimeSlotGrid({ grid, setGrid, scrollRef }) {
   const clearDay = (dow) => setGrid(g => ({ ...g, [dow]: [] }))
 
   return (
-    <div className="border border-border/60 rounded-xl overflow-hidden select-none">
+    <div className="border border-border/60 rounded-xl select-none">
       {/* Day header */}
       <div className="flex bg-muted/50 border-b border-border/60 sticky top-0 z-10">
         <div className="shrink-0 border-r border-border/40" style={{ width: LABEL_W }} />
@@ -254,17 +334,17 @@ function TimeSlotGrid({ grid, setGrid, scrollRef }) {
       <div ref={scrollRef} className="flex">
         {/* Time labels column */}
         <div className="shrink-0 border-r border-border/40 relative" style={{ width: LABEL_W, height: TOTAL_H }}>
-          {SLOTS.map((slot) => {
-            const isHourBoundary = slot % 12 === 0
+          {GRID_BOUNDARIES.map((slot) => {
+            const isHourBoundary = slot % 60 === 0
             const label = slotToLabel(slot)
             return (
               <div
                 key={slot}
                 className={cn(
                   'absolute w-full flex items-center justify-end pr-2 text-[9px] text-muted-foreground',
-                  isHourBoundary ? 'border-t border-border/30' : slot % 6 === 0 ? 'border-t border-border/[0.08]' : '',
+                  isHourBoundary ? 'border-t border-border/30' : 'border-t border-border/[0.08]',
                 )}
-                style={{ top: slot * SLOT_H, height: SLOT_H }}
+                style={{ top: slot * SLOT_H, height: 60 * SLOT_H }}
               >
                 {label}
               </div>
@@ -276,21 +356,22 @@ function TimeSlotGrid({ grid, setGrid, scrollRef }) {
         <div className="flex flex-1 relative">
           {/* Horizontal grid lines (rendered once, shared across all columns) */}
           <div className="absolute inset-0 pointer-events-none">
-            {SLOTS.map((slot) => (
-              slot % 12 === 0 ? (
+            {GRID_BOUNDARIES.map((slot) => (
+              slot % 60 === 0 ? (
                 <div key={slot} className="absolute inset-x-0 border-t border-border/30" style={{ top: slot * SLOT_H }} />
-              ) : slot % 6 === 0 ? (
+              ) : (
                 <div key={slot} className="absolute inset-x-0 border-t border-border/[0.08]" style={{ top: slot * SLOT_H }} />
-              ) : null
+              )
             ))}
-            {/* Business hours background */}
-            <div className="absolute inset-x-0 bg-muted/20 pointer-events-none" style={{ top: 96 * SLOT_H, height: (216 - 96) * SLOT_H }} />
+            {/* Business hours background — 08:00 (480) to 18:00 (1080) */}
+            <div className="absolute inset-x-0 bg-muted/20 pointer-events-none" style={{ top: 480 * SLOT_H, height: (1080 - 480) * SLOT_H }} />
           </div>
 
           {/* Day columns */}
-          {DAYS.map(({ dow }) => (
+          {DAYS.map(({ dow }, di) => (
             <DayColumn
               key={dow}
+              alignRight={di >= DAYS.length - 2}
               ranges={grid[dow]}
               onChange={(newRanges) => setGrid(g => ({ ...g, [dow]: newRanges }))}
               gridRef={scrollRef}
@@ -326,10 +407,10 @@ function ScheduleSummary({ grid }) {
 
 function GridPresets({ setGrid }) {
   const presets = [
-    { label: 'Mon–Fri 9–5', fn: () => { const g = makeEmptyGrid(); for (let d = 1; d <= 5; d++) g[d] = [{ start: 108, end: 204 }]; return g } },
-    { label: 'Mon–Fri 8–6', fn: () => { const g = makeEmptyGrid(); for (let d = 1; d <= 5; d++) g[d] = [{ start: 96,  end: 216 }]; return g } },
-    { label: 'Mon–Sat 9–5', fn: () => { const g = makeEmptyGrid(); for (let d = 1; d <= 6; d++) g[d] = [{ start: 108, end: 204 }]; return g } },
-    { label: '24 / 7',      fn: () => { const g = makeEmptyGrid(); for (let d = 1; d <= 7; d++) g[d] = [{ start: 0,   end: 288 }]; return g } },
+    { label: 'Mon–Fri 9–5', fn: () => { const g = makeEmptyGrid(); for (let d = 1; d <= 5; d++) g[d] = [{ start: 540, end: 1020 }]; return g } },
+    { label: 'Mon–Fri 8–6', fn: () => { const g = makeEmptyGrid(); for (let d = 1; d <= 5; d++) g[d] = [{ start: 480, end: 1080 }]; return g } },
+    { label: 'Mon–Sat 9–5', fn: () => { const g = makeEmptyGrid(); for (let d = 1; d <= 6; d++) g[d] = [{ start: 540, end: 1020 }]; return g } },
+    { label: '24 / 7',      fn: () => { const g = makeEmptyGrid(); for (let d = 1; d <= 7; d++) g[d] = [{ start: 0,   end: MINUTES_PER_DAY }]; return g } },
     { label: 'Clear All',   fn: makeEmptyGrid },
   ]
   return (
@@ -386,8 +467,8 @@ export default function WorkingHours() {
   }, [search])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { if (dialogOpen && scrollRef.current) scrollRef.current.scrollTop = 96 * SLOT_H }, [dialogOpen])
-// scroll to 8 am: slot 96 (8h × 12slots/h) × 6px
+  useEffect(() => { if (dialogOpen && scrollRef.current) scrollRef.current.scrollTop = 480 * SLOT_H }, [dialogOpen])
+// scroll to 8 am: minute 480 (8h × 60min/h) × SLOT_H
 
   const f = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }))
 

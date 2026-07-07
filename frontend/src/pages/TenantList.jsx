@@ -14,61 +14,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Plus, Pencil, Trash2, Search, Loader2 } from 'lucide-react'
 
-// Common timezones for the dropdown
-const TIMEZONES = [
-  'UTC',
-  'America/New_York',
-  'America/Chicago',
-  'America/Denver',
-  'America/Los_Angeles',
-  'America/Phoenix',
-  'America/Anchorage',
-  'America/Honolulu',
-  'America/Toronto',
-  'America/Vancouver',
-  'America/Mexico_City',
-  'America/Bogota',
-  'America/Lima',
-  'America/Sao_Paulo',
-  'America/Argentina/Buenos_Aires',
-  'Europe/London',
-  'Europe/Dublin',
-  'Europe/Lisbon',
-  'Europe/Paris',
-  'Europe/Berlin',
-  'Europe/Amsterdam',
-  'Europe/Brussels',
-  'Europe/Madrid',
-  'Europe/Rome',
-  'Europe/Warsaw',
-  'Europe/Stockholm',
-  'Europe/Helsinki',
-  'Europe/Athens',
-  'Europe/Istanbul',
-  'Europe/Moscow',
-  'Africa/Cairo',
-  'Africa/Johannesburg',
-  'Africa/Lagos',
-  'Africa/Nairobi',
-  'Asia/Dubai',
-  'Asia/Karachi',
-  'Asia/Kolkata',
-  'Asia/Dhaka',
-  'Asia/Bangkok',
-  'Asia/Singapore',
-  'Asia/Shanghai',
-  'Asia/Tokyo',
-  'Asia/Seoul',
-  'Asia/Hong_Kong',
-  'Asia/Jakarta',
-  'Asia/Taipei',
-  'Australia/Sydney',
-  'Australia/Melbourne',
-  'Australia/Brisbane',
-  'Australia/Perth',
-  'Pacific/Auckland',
-  'Pacific/Fiji',
-]
 
 // Known webhook URL presets
 const WEBHOOK_PRESETS = [
@@ -135,7 +80,7 @@ export default function TenantList() {
   const rowToForm = (r) => ({
     tenant_name: r.tenant_name || '',
     tenant_code: r.tenant_code || '',
-    timezone: r.timezone || 'UTC',
+    timezone: 'UTC',
   })
 
   // Navigate to the full-page editor; the route effect below loads the form.
@@ -280,17 +225,10 @@ export default function TenantList() {
                 <p className="text-xs text-muted-foreground">Used in SIP usernames.</p>
               </div>
 
-              {/* ── Timezone dropdown ── */}
+              {/* ── Timezone (fixed to UTC) ── */}
               <div className="space-y-1.5">
                 <Label>Timezone</Label>
-                <Select
-                  value={form.timezone}
-                  onChange={e => setForm(p => ({ ...p, timezone: e.target.value }))}
-                >
-                  {TIMEZONES.map(tz => (
-                    <option key={tz} value={tz}>{tz}</option>
-                  ))}
-                </Select>
+                <Input value="UTC" disabled readOnly />
               </div>
             </div>
 

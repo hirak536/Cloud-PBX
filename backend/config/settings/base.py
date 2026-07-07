@@ -404,6 +404,13 @@ LOGGING = {
             'level': 'DEBUG',
             'propagate': False,
         },
+        # Fax tasks — log at DEBUG so every step of inbound delivery (TIFF→PDF
+        # conversion, FTP connect/login/TLS/cwd/STOR, email) is captured.
+        'apps.fax': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
     },
 }
 

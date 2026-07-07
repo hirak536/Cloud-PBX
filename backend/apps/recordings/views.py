@@ -2,11 +2,14 @@ import base64
 import io
 import os
 import re
+import wave
+import contextlib
 import mimetypes
 from datetime import datetime, timezone
 
 from django.conf import settings
-from django.http import FileResponse, Http404
+from urllib.parse import quote
+from django.http import FileResponse, Http404, HttpResponse
 from rest_framework import viewsets, filters, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -15,6 +18,22 @@ from core.mixins import TenantScopedViewSetMixin
 from core.models import Domain
 from .models import Recording, CallRecording
 from .serializers import RecordingSerializer, CallRecordingSerializer
+
+
+def _xaccel_response(internal_prefix, rel_path, content_type, as_attachment, filename):
+    """Hand off byte-serving to Nginx via X-Accel-Redirect.
+
+    Django keeps auth/tenant-scoping; Nginx serves the file with sendfile +
+    Range support (fast seeking, worker freed immediately). rel_path is the
+    file path relative to the alias root configured on internal_prefix.
+    """
+    resp = HttpResponse(content_type=content_type)
+    # Each segment quoted; Nginx unescapes X-Accel-Redirect before mapping it.
+    encoded = '/'.join(quote(seg) for seg in rel_path.split('/'))
+    resp['X-Accel-Redirect'] = f'{internal_prefix}{encoded}'
+    disp = 'attachment' if as_attachment else 'inline'
+    resp['Content-Disposition'] = f'{disp}; filename="{filename}"'
+    return resp
 
 
 def _save_recording_file(instance):
@@ -39,6 +58,23 @@ def _save_recording_file(instance):
 
     with open(dest, 'wb') as f:
         f.write(audio_data)
+
+def _wav_duration(path):
+    """Return the duration of a WAV file in whole seconds, or 0 on any failure.
+
+    FreeSWITCH records call audio as WAV, so the stdlib `wave` module reads
+    the header without extra deps. Used to backfill duration when it wasn't
+    posted by the hangup hook (e.g. rows imported via the sync scanner).
+    """
+    try:
+        with contextlib.closing(wave.open(path, 'rb')) as w:
+            rate = w.getframerate()
+            if not rate:
+                return 0
+            return int(round(w.getnframes() / float(rate)))
+    except Exception:
+        return 0
+
 
 # Filename pattern: YYYY-MM-DD-HH-MM-SS_caller_destination.wav
 _FNAME_RE = re.compile(
@@ -131,9 +167,9 @@ class CallRecordingViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewS
     def stream(self, request, pk=None):
         """Stream or download a call recording file."""
         obj = self.get_object()
+        recordings_dir = getattr(settings, 'FREESWITCH_RECORDINGS_DIR', '/var/lib/freeswitch/recordings')
         path = obj.call_recording_filename
         if not os.path.isabs(path):
-            recordings_dir = getattr(settings, 'FREESWITCH_RECORDINGS_DIR', '/var/lib/freeswitch/recordings')
             path = os.path.join(recordings_dir, path)
 
         if not os.path.isfile(path):
@@ -142,11 +178,20 @@ class CallRecordingViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewS
         content_type, _ = mimetypes.guess_type(path)
         content_type = content_type or 'audio/wav'
         as_attachment = bool(request.query_params.get('download'))
-        return FileResponse(
-            open(path, 'rb'),
-            content_type=content_type,
-            as_attachment=as_attachment,
-            filename=os.path.basename(path),
+
+        # Serve the file via Nginx (sendfile + Range) rather than pushing 14 MB
+        # through the ASGI worker. rel_path is relative to FREESWITCH_RECORDINGS_DIR,
+        # which the /protected-recordings/ internal location aliases.
+        rel_path = os.path.relpath(os.path.realpath(path), os.path.realpath(recordings_dir))
+        if rel_path.startswith('..'):
+            # Outside the recordings root — fall back to direct streaming.
+            return FileResponse(
+                open(path, 'rb'), content_type=content_type,
+                as_attachment=as_attachment, filename=os.path.basename(path),
+            )
+        return _xaccel_response(
+            '/protected-recordings/', rel_path, content_type,
+            as_attachment, os.path.basename(path),
         )
 
     @action(detail=False, methods=['get', 'post'], permission_classes=[permissions.AllowAny])
@@ -171,15 +216,31 @@ class CallRecordingViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewS
         from django.utils.timezone import datetime as dj_datetime
         import pytz
 
-        domain_obj = Domain.objects.filter(domain_name=domain_name).first() if domain_name else None
-        tenant_obj = domain_obj.tenant if domain_obj else None
+        from apps.extensions.models import Extension as Ext
 
-        # Fall back to resolving tenant from extension sip_username in caller
-        if tenant_obj is None and caller:
-            from apps.extensions.models import Extension as Ext
-            ext = Ext.objects.filter(sip_username=caller).select_related('tenant').first()
+        domain_obj = Domain.objects.filter(domain_name=domain_name).first() if domain_name else None
+
+        # Tenant resolution. The FreeSWITCH domain is shared across all tenants
+        # here, so domain->tenant is NOT reliable — the extension identity is.
+        # Prefer resolving from the extension that appears on either leg
+        # (caller for outbound, destination for inbound), matched by sip_username
+        # AND scoped to the domain so colliding short-numbers don't cross tenants.
+        # Only fall back to the domain's tenant when no extension matches.
+        tenant_obj = None
+        ext_scope = Ext.objects.exclude(tenant__isnull=True)
+        if domain_obj is not None:
+            ext_scope = ext_scope.filter(domain=domain_obj.domain_uuid)
+        for leg in (caller, destination):
+            if not leg:
+                continue
+            token = leg.split('_')[0]  # strip FreeSWITCH _<uuid> suffix
+            ext = ext_scope.filter(sip_username__in=[leg, token]).select_related('tenant').first()
             if ext:
                 tenant_obj = ext.tenant
+                break
+
+        if tenant_obj is None and domain_obj is not None:
+            tenant_obj = domain_obj.tenant
 
         try:
             dur = int(duration)
@@ -266,11 +327,14 @@ class CallRecordingViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewS
                 if tenant_obj is None and domain_obj:
                     tenant_obj = domain_obj.tenant
 
+                dur = _wav_duration(abs_path)
                 CallRecording.objects.create(
                     call_recording_filename=abs_path,
                     call_recording_caller_id_number=caller,
                     call_recording_destination_number=destination,
                     call_recording_start_stamp=start_stamp,
+                    call_recording_duration=dur,
+                    call_recording_billsec=dur,
                     domain=domain_obj,
                     tenant=tenant_obj,
                 )

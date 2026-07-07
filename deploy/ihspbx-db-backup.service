@@ -1,0 +1,11 @@
+[Unit]
+Description=IHS-PBX PostgreSQL backup (main + cdr) to SMB share
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/IHS-PBX/ops/ihspbx-db-backup.sh
+User=root
+# Fail the unit if the backup takes unreasonably long (share hang, etc.)
+TimeoutStartSec=1800

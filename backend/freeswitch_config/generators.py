@@ -271,6 +271,12 @@ def generate_directory_xml(domain_name, user=None):
         etree.SubElement(params_u, 'param', name='max-calls', value=call_limit)
 
         variables_u = etree.SubElement(user_el, 'variables')
+        # Explicit presence_id so send-presence-on-register / presence-probe-on-register
+        # have a presence identity to seed at REGISTER time. Without it, presence stays
+        # empty for a registered user until an actual call sets dialog state, and BLF
+        # lamps never go to the registered/available state. Must match the presence_id
+        # the domain dial-string injects: ${dialed_user}@${dialed_domain}.
+        etree.SubElement(variables_u, 'variable', name='presence_id', value=f'{sip_id}@{domain_name}')
         etree.SubElement(variables_u, 'variable', name='limit_max', value=call_limit)
         etree.SubElement(variables_u, 'variable', name='toll_allow', value=str(ext.toll_allow or ''))
         etree.SubElement(variables_u, 'variable', name='accountcode', value=str(ext.accountcode or ''))
@@ -1941,8 +1947,19 @@ def _working_hours_to_dialplan_xml(wh, domain_name, tenant_code, preload=None):
                                   field='destination_number',
                                   expression=f'^{ext_re}$')
     cond_gate.set('break', 'on-false')
+    # CRITICAL: FreeSWITCH evaluates wday/time-of-day against the channel's
+    # `timezone` variable, NOT the `timezone=` attribute on the time condition.
+    # The attribute is silently ignored, so without this the windows are matched
+    # in the server's zone (UTC) — which has no DST, leaving DST-observing tenants
+    # an hour off for half the year ("still taking daylight saving"). Set the zone
+    # variable HERE, in the gate that runs before any time-of-day condition.
+    if wh.timezone:
+        etree.SubElement(cond_gate, 'action', application='set',
+                          data=f'timezone={wh.timezone}',
+                          inline='true')
     etree.SubElement(cond_gate, 'action', application='log',
                       data=f'DEBUG Working Hours: Evaluating {wh.working_hours_name}. '
+                           f'TZ: {wh.timezone or "server"} '
                            f'FS Time: ${{strftime(%H:%M)}} FS Wday: ${{strftime(%w)}}')
 
     # Resolve destinations once

@@ -87,3 +87,60 @@ class FaxFile(models.Model):
     class Meta:
         db_table = 'v_fax_files'
         ordering = ['-insert_date']
+
+
+class FaxFtpDelivery(models.Model):
+    """Audit log of inbound-fax FTP/FTPS upload attempts.
+
+    Mirrors WebhookDelivery (apps.client_api): one row per fax file delivery,
+    updated in place across retry attempts so the admin shows current status,
+    attempt count, last error and the remote target.
+    """
+    STATUS_PENDING = 'pending'
+    STATUS_SUCCESS = 'success'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_SUCCESS, 'Success'),
+        (STATUS_FAILED, 'Failed'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    fax = models.ForeignKey(Fax, on_delete=models.CASCADE, related_name='ftp_deliveries',
+                            null=True, blank=True, db_column='fax_uuid')
+    fax_file = models.ForeignKey(FaxFile, on_delete=models.CASCADE, related_name='ftp_deliveries',
+                                 null=True, blank=True, db_column='fax_file_uuid')
+    tenant = models.ForeignKey(
+        'core.Tenant',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='tenant_uuid',
+        related_name='%(app_label)s_%(class)s_set',
+    )
+    # Snapshot of the target at attempt time (config can change later).
+    host = models.CharField(max_length=255, blank=True, default='')
+    port = models.IntegerField(default=21)
+    username = models.CharField(max_length=255, blank=True, default='')
+    remote_path = models.CharField(max_length=512, blank=True, default='')
+    remote_name = models.CharField(max_length=512, blank=True, default='')
+    use_tls = models.BooleanField(default=False)
+    file_size_bytes = models.IntegerField(null=True, blank=True)
+
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    last_response = models.TextField(blank=True, default='')
+    last_error = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'v_fax_ftp_deliveries'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['fax', 'status']),
+            models.Index(fields=['status', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.remote_name} -> {self.host} ({self.status})'

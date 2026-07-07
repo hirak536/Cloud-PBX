@@ -105,9 +105,22 @@ cp ${INSTALL_DIR}/deploy/ihspbx-celerybeat.service /etc/systemd/system/ihspbx-ce
 # 5-min files). Slicing runs via the celerybeat sweep, not here.
 cp ${INSTALL_DIR}/deploy/sip-capture.service /etc/systemd/system/sip-capture.service
 chmod +x ${INSTALL_DIR}/deploy/gen-sip-capture-filter.sh
+# Twice-daily pg_dump of main + cdr DBs to the Windows SMB backup share
+# (Linux port of the Windows "Daily PostgreSQL Backup" workflow). Requires
+# the SMB credentials file at /etc/ihspbx-backup.smbcreds (root-only, 0600):
+#     username=<share user>
+#     password=<share password>
+mkdir -p ${INSTALL_DIR}/ops
+cp ${INSTALL_DIR}/deploy/ihspbx-db-backup.sh ${INSTALL_DIR}/ops/ihspbx-db-backup.sh
+chmod 750 ${INSTALL_DIR}/ops/ihspbx-db-backup.sh
+cp ${INSTALL_DIR}/deploy/ihspbx-db-backup.service /etc/systemd/system/ihspbx-db-backup.service
+cp ${INSTALL_DIR}/deploy/ihspbx-db-backup.timer /etc/systemd/system/ihspbx-db-backup.timer
 systemctl daemon-reload
 systemctl enable ihspbx ihspbx-celery ihspbx-celerybeat sip-capture
 systemctl start ihspbx ihspbx-celery ihspbx-celerybeat sip-capture
+# Backup runs on a timer (not started immediately).
+systemctl enable ihspbx-db-backup.timer
+systemctl start ihspbx-db-backup.timer
 
 echo "==> Installing HOMER (SIP capture: heplify-server + homer-app)..."
 # heplify-server receives HEP from FreeSWITCH (capture-server in sofia.conf) and

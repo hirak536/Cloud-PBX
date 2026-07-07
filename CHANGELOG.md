@@ -3,6 +3,38 @@
 All notable changes to IHS-PBX are documented in this file.
 Newest entries on top.
 
+## 2026-06-23
+
+### HOMER SIP capture — deployed as the capture engine (native, no Docker)
+Stood up HOMER on the FreeSWITCH host to capture SIP signaling, replacing reliance on the rolling tcpdump pcaps for the CDR SIP/PCAP viewer. Key win: HEP taps inside `mod_sofia` **before encryption**, so TLS/wss (webrtc) legs are captured in cleartext — which tcpdump could not do.
+
+- **heplify-server 1.60.3** (`/etc/heplify-server.toml`, systemd `heplify-server`): receives HEP on `127.0.0.1:9060/udp` only, writes to PostgreSQL `homer_data`. Needs the `luajit` apt dependency.
+- **homer-app 1.5.14** (`/usr/local/homer/`, systemd `homer-app`): admin UI + REST API on `127.0.0.1:9080` (loopback only). Login `admin` / `sipcapture` (default — change it).
+- **Reuses the existing PostgreSQL 18** instance: dedicated `homer` role + `homer_config` / `homer_data` databases. PG18 compatibility verified for both components.
+- **FreeSWITCH**: enabled `capture-server = udp:127.0.0.1:9060;hep=3;capture_id=100` in `sofia.conf.xml`, plus `sip-trace`/`sip-capture` on the internal, internal-private, external, and webrtc profiles.
+
+### CDR viewer — sources per-leg SIP from HOMER, with pcap fallback
+- `backend/apps/xml_cdr/sip_capture.py`: `leg_sip_view()` now resolves each leg as **stored pcap → HOMER (by Call-ID) → tcpdump/sngrep slice**. HOMER creds read from `HOMER_*` settings (`config/settings/base.py`, `.env`). The old `sip-capture.service` stays as fallback.
+
+### Tenant-scoped SIP search + leg-wise ladder (internal + client API)
+HOMER itself is **not** tenant-aware (all tenants share one SIP domain), so tenant isolation is enforced in IHS-PBX, which knows the DID/extension→tenant map.
+
+- **Attribution** (`backend/apps/xml_cdr/homer_tenant.py`): maps a SIP number to a tenant via the `Destination` (DID) and `Extension` tables (cached index). Unmatched numbers (scanner floods, unassigned DIDs) are an "unattributed" bucket shown only to superadmins.
+- **Search** (`backend/apps/xml_cdr/homer_search.py`): queries `homer_data` by time window, groups messages into calls, attributes each to a tenant, and scopes results to the caller. Filters: `number`, `extension` (bare + tenant-suffixed forms), `call_id`; time via `from`/`to` (date **or** datetime), `date`, `date_from`/`date_to`; pagination (`page`, `page_size` default 20). Forked/bridged calls collapse to **one row per call** (`group=call`) with nested legs — CDR `bridge_uuid` correlation plus a heuristic fork-merge for legs with no CDR row; `group=leg` returns raw per-leg rows.
+- **Internal API** (JWT): `GET /api/v1/cdr/homer-search/` and `GET /api/v1/cdr/homer-ladder/`. Tenant users are hard-scoped to their tenant; superadmins see all + can filter `?tenant=`. Bypass-tested (cross-tenant `?tenant=` injection and foreign Call-ID both denied).
+- **Client API** (API key, single-tenant): `GET /<tenant_uuid>/sip/search/` and `/sip/ladder/` (`backend/apps/client_api/views.py`, `urls.py`). The ladder returns full leg-wise detail ("First Leg / Second Leg 0..N") like the CDR pcap view; a Call-ID must belong to the key's tenant or it 403s.
+
+### Frontend — SIP Search tab + HOMER admin link
+- **"SIP Search" tab** in the CDR page (`frontend/src/pages/SipSearchPanel.jsx`, wired into `Cdr.jsx`): filter bar (number/extension/Call-ID/date range, tenant selector for superadmins), results grid (one row per call) with expandable rows that lazy-load each leg's decoded SIP ladder. New `cdr.homerSearch` / `cdr.homerLadder` API methods.
+- **Sidebar** (`frontend/src/components/Sidebar.jsx`): superadmin-only "HOMER (SIP Capture)" link under Monitoring; added `external` nav-item support (opens a new tab).
+
+### nginx — reverse-proxy HOMER at /homer/
+- `deploy/nginx.conf` (and the live site): `/homer/` → loopback `127.0.0.1:9080`, prefix-stripped, with `sub_filter` injecting `<base href="/homer/">` so HOMER's root-built Angular bundle resolves its assets/API under the subpath (done in nginx, not by editing `dist/index.html`, so it survives HOMER upgrades). Gated by HOMER's own login.
+
+### Security / deploy
+- **PostgreSQL access restricted**: `listen_addresses` and `pg_hba.conf` tightened from open (`0.0.0.0/0`) to localhost + a single trusted peer.
+- `deploy/install.sh` provisions HOMER end-to-end: creates the `homer` DBs/role, installs heplify-server + homer-app, configures both, seeds the schema + default admin, and enables the services.
+
 ## 2026-06-18
 
 ### Migration — extension & DID importer pulling from the legacy OpenAPI

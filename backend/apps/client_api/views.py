@@ -698,10 +698,12 @@ class ClientFaxFileView(APIView):
                 Q(fax_file_destination_number__icontains=search) |
                 Q(fax_file_name__icontains=search)
             )
-        # Counts ignore status/search/destination filters but respect the fax box
-        # filter so the summary matches the selected box. When a direction filter
-        # is passed, the counts reflect that direction only (inbound = received,
-        # outbound = everything else) so the summary matches the listed rows.
+        # Summary counts respect the fax box + direction filter and — when a status
+        # filter is applied — the status filter too, so the whole summary agrees with
+        # the listed rows: 'total' matches the paginated 'count', and the per-status
+        # counts zero out for the statuses that are filtered away. Search/destination
+        # are intentionally not folded in. Sending a static summary while a status is
+        # applied is the bug this fixes.
         all_qs = FaxFile.objects.filter(tenant=tenant)
         if fax_ids:
             all_qs = all_qs.filter(fax_id__in=fax_ids)
@@ -709,6 +711,8 @@ class ClientFaxFileView(APIView):
             all_qs = all_qs.filter(fax_file_status='received')
         elif direction_filter == 'outbound':
             all_qs = all_qs.exclude(fax_file_status='received')
+        if status_filter:
+            all_qs = all_qs.filter(fax_file_status=status_filter)
         summary = {
             'total':    all_qs.count(),
             'pending':  all_qs.filter(fax_file_status='pending').count(),

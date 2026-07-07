@@ -522,11 +522,11 @@ function FaxBoxFormDialog({ open, editBox, didNumber, dids, onClose }) {
 
   return (
     <Dialog open={open} onOpenChange={() => { if (!saving) onClose(false) }}>
-      <DialogContent className="w-[95vw] max-w-lg flex flex-col p-0 gap-0">
+      <DialogContent className="w-[95vw] max-w-lg max-h-[90vh] flex flex-col p-0 gap-0">
         <DialogHeader className="px-6 py-4 border-b shrink-0">
           <DialogTitle>{editBox ? 'Edit Fax Box' : 'New Fax Box'}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4 px-6 py-5 overflow-y-auto">
+        <div className="flex-1 min-h-0 space-y-4 px-6 py-5 overflow-y-auto">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Field label="Name *" hint="Also used as the outbound caller ID name.">
               <Input placeholder="Main Fax" value={form.fax_name} onChange={sf('fax_name')} disabled={saving} />

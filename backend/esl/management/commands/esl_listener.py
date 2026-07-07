@@ -503,6 +503,42 @@ def _poll_and_transfer(call_uuid: str, sip_id: str, domain_name: str,
 
 # ── Parked-call presence fix ──────────────────────────────────────────────────
 
+def _seed_extension_presence(sip_id: str, domain_name: str):
+    """
+    Seed an 'open' presence resource for a freshly-registered extension.
+
+    BLF watchers SUBSCRIBE for <ext>@<domain>, but a plain SIP phone never
+    PUBLISHes presence and an idle phone has no dialog, so mod_sofia has no
+    presence resource and answers the SUBSCRIBE's NOTIFY with
+    'Subscription-State: terminated;reason=noresource' — the watcher then shows
+    the buddy offline even though it is registered. Firing a PRESENCE_IN with an
+    open/idle state here gives mod_sofia a resource to report, so the lamp goes
+    available on register. Call-state changes (CHANNEL_ANSWER/HANGUP) are then
+    handled by mod_sofia's own dialog presence on top of this base resource.
+
+    presence_id must match what the directory serves (see generators.py): the
+    realm from the register event is the same FQDN watchers subscribe under.
+    """
+    if not sip_id or not domain_name:
+        return
+    presence_id = f'{sip_id}@{domain_name}'
+    event_body = (
+        f'Event-Name: PRESENCE_IN\n'
+        f'proto: sip\n'
+        f'login: {presence_id}\n'
+        f'from: {presence_id}\n'
+        f'status: Active (registered)\n'
+        f'rpid: idle\n'
+        f'event_type: presence\n'
+        f'answer-state: terminated\n'
+    )
+    try:
+        _esl_conn.send(f'sendevent PRESENCE_IN\n{event_body}\n')
+        logger.info('PRESENCE_IN (open) seeded on register for %s', presence_id)
+    except Exception as exc:
+        logger.error('Failed to seed presence for %s: %s', presence_id, exc)
+
+
 def _fix_park_presence(headers: dict):
     """
     Fire a PRESENCE_IN ESL event to override the hardcoded display="park" that
@@ -623,6 +659,9 @@ def _handle_event(event):
                 sip_id = headers.get('username')
                 domain_name = headers.get('realm')
                 user_agent = headers.get('user-agent', '')
+                # Seed an open presence resource so BLF watchers see this
+                # extension as available rather than offline (noresource).
+                _seed_extension_presence(sip_id, domain_name)
                 if sip_id and domain_name and _is_mobile_agent(user_agent):
                     logger.info('Mobile registration detected: %s@%s (%s)', sip_id, domain_name, user_agent)
                     _trigger_re_transfer(sip_id, domain_name)

@@ -37,4 +37,9 @@ class FaxListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Fax
         fields = ['fax_uuid', 'fax_name', 'fax_extension', 'fax_email', 'fax_enabled',
-                  'fax_caller_id_name', 'fax_caller_id_number', 'fax_forward_number', 'fax_description']
+                  'fax_caller_id_name', 'fax_caller_id_number', 'fax_forward_number', 'fax_description',
+                  # Delivery/FTP fields: the Destinations fax editor populates its form
+                  # from this list payload, so these must be present or saved FTP
+                  # settings appear blank on re-edit. Password stays write-only (omitted).
+                  'fax_delivery_mode', 'fax_ftp_host', 'fax_ftp_port', 'fax_ftp_username',
+                  'fax_ftp_path', 'fax_ftp_use_tls']
