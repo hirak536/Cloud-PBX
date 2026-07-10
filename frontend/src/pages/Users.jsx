@@ -32,6 +32,27 @@ function roleFromUser(u) {
   return 'user'
 }
 
+// Single-select company filter, keyed on tenant_code. `value` is a tenant code
+// or '' (all companies). Used by both the PBX and UC user listings so a
+// superadmin can scope to one company (or all) independent of the globally
+// selected tenant.
+function CompanyFilter({ tenants, value, onChange }) {
+  return (
+    <Select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-9 min-w-[12rem]"
+    >
+      <option value="">All companies</option>
+      {tenants.map(t => (
+        <option key={t.tenant_uuid} value={t.tenant_code}>
+          {t.tenant_code} — {t.tenant_name}
+        </option>
+      ))}
+    </Select>
+  )
+}
+
 const EMPTY_FORM = {
   first_name: '',
   last_name: '',
@@ -89,7 +110,10 @@ function creatableUcTypes(role) {
   return []
 }
 
-function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
+function UcUsersTab({ tenantCode, tenantUuid, tenantName, tenants, companyFilter, onCompanyFilterChange }) {
+  // Company filter (tenant code) drives the list. Empty = all companies:
+  // omit the tenant code so /user/listpbx returns UC users across all tenants.
+  const filterCode = companyFilter || ''
   const { user: loggedInUser }      = useSelector(selectAuth)
   const myRole                      = roleOf(loggedInUser)
   const allowedUcTypes              = creatableUcTypes(myRole)
@@ -205,23 +229,51 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
     }
   }
 
+  // Module badges reflect the selected company. Only meaningful when a company
+  // is filtered; when showing all companies there is no single company to
+  // describe.
+  const singleCode = filterCode
+  // Effective target company for add/edit — the filtered company when one is
+  // selected, otherwise the globally-selected tenant. Add User is disabled
+  // unless a company is filtered, so these resolve to that company.
+  const singleTenant = singleCode ? (tenants || []).find(t => t.tenant_code === singleCode) : null
+  const effTenantCode = singleTenant?.tenant_code ?? tenantCode
+  const effTenantUuid = singleTenant?.tenant_uuid ?? tenantUuid
+  const effTenantName = singleTenant?.tenant_name ?? tenantName
+
+  // Resolve a display company name for a UC user row. The list response carries
+  // varying field names depending on scope; fall back to matching a tenant uuid
+  // against the known tenant list.
+  const companyOf = (u) => {
+    // The company may arrive as an object ({companyName, code, tenant_id, …})
+    // or as flat fields, depending on scope. Prefer a name string.
+    const co = (u.company && typeof u.company === 'object') ? u.company : u
+    const direct = co.companyName || co.company_name || u.companyName || u.company_name
+    if (direct) return direct
+    const uuid = co.tenant_id || co.company_id || u.company_id || u.tenant_id
+    const t = uuid && (tenants || []).find(x => x.tenant_uuid === uuid)
+    if (t) return t.tenant_name
+    return co.code || ''
+  }
   useEffect(() => {
-    if (!tenantUuid) return
+    if (!singleCode) { setCompany(null); setVoiceEnabled(false); return }
+    const uuid = (tenants || []).find(t => t.tenant_code === singleCode)?.tenant_uuid
     setVoiceEnabled(null)
     setCompany(null)
     ucUsersApi.listCompanies()
       .then(({ data }) => {
-        const c = (data?.success ?? []).find(c => c.tenant_id === tenantUuid)
+        const c = (data?.success ?? []).find(c => c.tenant_id === uuid)
         setCompany(c || null)
         setVoiceEnabled(c ? !!c.voiceenable : false)
       })
       .catch(() => setVoiceEnabled(false))
-  }, [tenantUuid])
+  }, [singleCode, tenants])
 
   // Non-standard signature: ucUsersApi.list(tenantCode, page, pageSize).
+  // filterCode may be '' (all companies) or one/more codes joined by commas.
   const fetcher = useCallback(
-    ({ page, page_size }) => ucUsersApi.list(tenantCode, page, page_size),
-    [tenantCode],
+    ({ page, page_size }) => ucUsersApi.list(filterCode, page, page_size),
+    [filterCode],
   )
 
   const {
@@ -235,7 +287,11 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
     reload,
   } = useInfiniteList(fetcher, {
     pageSize,
-    enabled: !!tenantCode,
+    enabled: true,
+    // The UC fetcher builds its URL from filterCode and ignores `params`, but the
+    // hook only resets/reloads when params/pageSize/enabled change — so surface
+    // filterCode here to force a reload when the company filter changes.
+    params: { scope: filterCode },
     selectResults: (d) => d.success ?? [],
     selectCount: (d, list) => d.pagination?.total ?? list.length,
   })
@@ -357,13 +413,13 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
     } else if (!voiceEnabled) {
       // Voice disabled for this company — send dummy extension carrying the selected DIDs as phones
       extensionsPayload = [{
-        extname:  `dummy-${tenantCode}`,
+        extname:  `dummy-${effTenantCode}`,
         password: generatePassword(),
         phones:   phonesPayload,
       }]
     } else if (selectedExt) {
       extensionsPayload = [{
-        extname:  selectedExt.sip_username || `${selectedExt.extension}-${tenantCode}`,
+        extname:  selectedExt.sip_username || `${selectedExt.extension}-${effTenantCode}`,
         password: form.extensionPassword || selectedExt.password || '',
         phones:   phonesPayload,
       }]
@@ -382,8 +438,8 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
       firstName:   form.firstName.trim(),
       lastName:    form.lastName.trim(),
       userType:    form.userType,
-      company_id:  tenantUuid,
-      companyName: tenantName,
+      company_id:  effTenantUuid,
+      companyName: effTenantName,
       language:    'en',
       timeZone:    'America/Chicago',
       ...(form.autoPassword ? {} : { password: form.password }),
@@ -408,13 +464,9 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
     }
   }
 
-  if (!tenantCode) {
-    return (
-      <div className="rounded-md border border-muted bg-muted/30 px-4 py-8 text-center text-sm text-muted-foreground">
-        Select a tenant to view UC users.
-      </div>
-    )
-  }
+  // Adding a UC user targets a single company (its extensions/DIDs). Enabled
+  // only when the list is scoped to exactly one company.
+  const canAddUser = filterCode !== ''
 
   return (
     <div className="space-y-3">
@@ -435,7 +487,10 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
         ) : <div />}
         <div className="flex items-center gap-3">
           <PageSizeSelector value={pageSize} onChange={setPageSize} />
-          <Button size="sm" onClick={openAddUser}><Plus className="h-4 w-4" />Add User</Button>
+          <CompanyFilter tenants={tenants} value={companyFilter} onChange={onCompanyFilterChange} />
+          <Button size="sm" onClick={openAddUser} disabled={!canAddUser} title={canAddUser ? '' : 'Select a company to add a user'}>
+            <Plus className="h-4 w-4" />Add User
+          </Button>
         </div>
       </div>
 
@@ -456,6 +511,7 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
           <TableHeader><TableRow>
             <TableHead>Name</TableHead>
             <TableHead>Email</TableHead>
+            <TableHead>Company</TableHead>
             <TableHead>Type</TableHead>
             <TableHead>Extensions</TableHead>
             <TableHead>Assigned DIDs</TableHead>
@@ -466,11 +522,11 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
             {loading
               ? [...Array(5)].map((_, i) => (
                   <TableRow key={i}>
-                    {[...Array(7)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
+                    {[...Array(8)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
                   </TableRow>
                 ))
               : rows.length === 0
-                ? <TableRow><TableCell colSpan={7} className="text-center py-10 text-muted-foreground">No UC users found.</TableCell></TableRow>
+                ? <TableRow><TableCell colSpan={8} className="text-center py-10 text-muted-foreground">No UC users found.</TableCell></TableRow>
                 : rows.map((u) => (
                     <TableRow key={u.uuid}>
                       <TableCell className="font-medium">
@@ -478,6 +534,7 @@ function UcUsersTab({ tenantCode, tenantUuid, tenantName }) {
                         {u.email && <span className="block text-xs text-muted-foreground">{u.email}</span>}
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm">{u.email || '—'}</TableCell>
+                      <TableCell className="text-sm">{companyOf(u) || <span className="text-muted-foreground">—</span>}</TableCell>
                       <TableCell>
                         {u.userType === 'superadmin'
                           ? <Badge variant="destructive" className="gap-1"><ShieldCheck className="h-3 w-3" />Super Admin</Badge>
@@ -1016,6 +1073,10 @@ export default function Users() {
   const [loading, setLoading]      = useState(true)
   const [search, setSearch]        = useState('')
   const [allTenants, setAllTenants] = useState([])
+  // Company (tenant_code) filter shared by both tabs. '' = all companies.
+  // Defaults to all so a superadmin sees every user regardless of the globally
+  // selected tenant.
+  const [companyFilter, setCompanyFilter] = useState('')
   const [faxBoxes, setFaxBoxes]     = useState([])
   const [faxScope, setFaxScope]     = useState('all')  // 'all' | 'selected'
   const [editId, setEditId]        = useState(null)
@@ -1031,15 +1092,18 @@ export default function Users() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      // Scope the PBX user list to the active tenant.
-      const params = {}
+      // Scope the PBX user list by the company filter (tenant codes, comma-
+      // separated). Empty filter = all companies. The interceptor auto-injects
+      // ?tenant=<uuid> for the active tenant, so we explicitly send tenant:null
+      // to suppress it and let tenant_code drive scoping.
+      const params = { tenant: null }
       if (debouncedSearch) params.search = debouncedSearch
-      if (currentTenant?.tenant_uuid) params.tenant = currentTenant.tenant_uuid
+      if (companyFilter) params.tenant_code = companyFilter
       const { data } = await api.list(params)
       const all = Array.isArray(data) ? data : data.results || []
       setRows(all.filter(u => !u.is_superuser))
     } finally { setLoading(false) }
-  }, [debouncedSearch, currentTenant?.tenant_uuid])
+  }, [debouncedSearch, companyFilter])
 
   useEffect(() => { load() }, [load])
 
@@ -1569,6 +1633,7 @@ export default function Users() {
               <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input placeholder="Search users..." className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
+            <CompanyFilter tenants={allTenants} value={companyFilter} onChange={setCompanyFilter} />
             <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" />Add User</Button>
           </div>
 
@@ -1583,6 +1648,7 @@ export default function Users() {
               <TableHeader><TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Email</TableHead>
+                <TableHead>Company</TableHead>
                 <TableHead>Role</TableHead>
                 <TableHead>Tenant Access</TableHead>
                 <TableHead>Status</TableHead>
@@ -1592,11 +1658,11 @@ export default function Users() {
                 {loading
                   ? [...Array(5)].map((_, i) => (
                       <TableRow key={i}>
-                        {[...Array(6)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
+                        {[...Array(7)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
                       </TableRow>
                     ))
                   : rows.length === 0
-                    ? <TableRow><TableCell colSpan={6} className="text-center py-10 text-muted-foreground">No users found.</TableCell></TableRow>
+                    ? <TableRow><TableCell colSpan={7} className="text-center py-10 text-muted-foreground">No users found.</TableCell></TableRow>
                     : rows.map((r) => {
                         const role = roleFromUser(r)
                         return (
@@ -1606,6 +1672,13 @@ export default function Users() {
                               {r.full_name && <span className="block text-xs text-muted-foreground">{r.username}</span>}
                             </TableCell>
                             <TableCell className="text-muted-foreground text-sm">{r.user_email || '—'}</TableCell>
+                            <TableCell className="text-sm">
+                              {role === 'superuser'
+                                ? <span className="text-xs text-muted-foreground italic">All companies</span>
+                                : r.tenant_name || r.tenant_code
+                                  ? <span>{r.tenant_name || r.tenant_code}{r.tenant_name && r.tenant_code && <span className="block text-xs text-muted-foreground">{r.tenant_code}</span>}</span>
+                                  : <span className="text-muted-foreground">—</span>}
+                            </TableCell>
                             <TableCell>
                               {role === 'superuser'
                                 ? <Badge variant="default" className="gap-1"><ShieldCheck className="h-3 w-3" />Superuser</Badge>
@@ -1659,6 +1732,9 @@ export default function Users() {
           tenantCode={currentTenant?.tenant_code}
           tenantUuid={currentTenant?.tenant_uuid}
           tenantName={currentTenant?.tenant_name}
+          tenants={allTenants}
+          companyFilter={companyFilter}
+          onCompanyFilterChange={setCompanyFilter}
         />
       )}
 

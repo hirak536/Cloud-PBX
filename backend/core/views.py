@@ -15,6 +15,7 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from apps.common.email_templates import password_reset_email, forgot_password_email, welcome_email
 from django.db import IntegrityError
+from django.db.models import Q
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -539,26 +540,35 @@ class UserViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        # Optional tenant scoping via ?tenant=<uuid>, applied on top of the
-        # role-based queryset. Lets the Users page list only the selected
-        # tenant's users.
+        # Optional tenant scoping, applied on top of the role-based queryset.
+        # Lets the Users page list only the selected tenant(s)' users. Two forms:
+        #   ?tenant=<uuid>              single tenant by UUID (legacy)
+        #   ?tenant_code=IHS,IHDT       one or more tenant codes, comma-separated
+        # Superadmins (is_superuser) are tenant-agnostic and are always included
+        # regardless of the selected tenant(s).
         tenant_filter = self.request.query_params.get('tenant')
+        tenant_code_param = self.request.query_params.get('tenant_code')
+        tenant_codes = [c.strip() for c in tenant_code_param.split(',')] if tenant_code_param else []
+        tenant_codes = [c for c in tenant_codes if c]
+
+        def apply_tenant_scope(qs):
+            if tenant_codes:
+                return qs.filter(Q(tenant__tenant_code__in=tenant_codes) | Q(is_superuser=True))
+            if tenant_filter:
+                return qs.filter(Q(tenant_id=tenant_filter) | Q(is_superuser=True))
+            return qs
 
         if user.is_superuser:
             qs = User.objects.select_related('tenant', 'domain').prefetch_related(
                 'user_groups__group', 'admin_tenants'
             ).order_by('domain', 'username')
-            if tenant_filter:
-                qs = qs.filter(tenant_id=tenant_filter)
-            return qs
+            return apply_tenant_scope(qs)
 
         if check_permission(user, 'domain_admin') and user.domain_id:
             qs = User.objects.filter(domain_id=user.domain_id).select_related(
                 'tenant', 'domain'
             ).prefetch_related('user_groups__group', 'admin_tenants').order_by('username')
-            if tenant_filter:
-                qs = qs.filter(tenant_id=tenant_filter)
-            return qs
+            return apply_tenant_scope(qs)
 
         # Regular users — return only themselves.
         return User.objects.filter(pk=user.pk).select_related('tenant', 'domain').prefetch_related(

@@ -334,8 +334,10 @@ const ucAxios = axios.create({
 })
 
 export const ucUsers = {
+  // Passing a tenantCode scopes the list to that company. Omitting it (falsy)
+  // hits /user/listpbx with no code, which returns UC users across all tenants.
   list: (tenantCode, page = 1, pageSize = 20) =>
-    ucAxios.get(`/user/listpbx/${tenantCode}`, { params: { page, page_size: pageSize } }),
+    ucAxios.get(tenantCode ? `/user/listpbx/${tenantCode}` : '/user/listpbx', { params: { page, page_size: pageSize } }),
   create: (data) =>
     ucAxios.post('/user/useraddpbx', data),
   update: (data) =>

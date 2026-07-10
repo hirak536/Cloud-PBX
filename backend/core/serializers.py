@@ -252,6 +252,7 @@ class UserSerializer(serializers.ModelSerializer):
     user_groups = UserGroupNestedSerializer(many=True, read_only=True)
     domain_name = serializers.CharField(source='domain.domain_name', read_only=True)
     tenant_code = serializers.CharField(source='tenant.tenant_code', read_only=True)
+    tenant_name = serializers.CharField(source='tenant.tenant_name', read_only=True)
     admin_tenants = serializers.SerializerMethodField()
 
     class Meta:
@@ -260,6 +261,7 @@ class UserSerializer(serializers.ModelSerializer):
             'user_uuid',
             'tenant',
             'tenant_code',
+            'tenant_name',
             'domain',
             'domain_name',
             'username',
@@ -278,7 +280,7 @@ class UserSerializer(serializers.ModelSerializer):
             'insert_date',
             'update_date',
         ]
-        read_only_fields = ['user_uuid', 'insert_date', 'update_date', 'tenant_code', 'domain_name', 'admin_tenants']
+        read_only_fields = ['user_uuid', 'insert_date', 'update_date', 'tenant_code', 'tenant_name', 'domain_name', 'admin_tenants']
 
     def get_admin_tenants(self, obj):
         return [
