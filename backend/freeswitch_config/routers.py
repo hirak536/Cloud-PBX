@@ -68,3 +68,41 @@ class CdrRouter:
         if db == CDR_DB:
             return False             # nothing else goes into the cdr DB
         return None
+
+
+# All models in the system_metrics app live in the separate 'metrics' database.
+METRICS_APP_LABEL = 'system_metrics'
+METRICS_DB = 'metrics'
+
+
+class MetricsRouter:
+    """
+    Route the system_metrics app (CPU peaks and other monitoring logs) to the
+    separate 'metrics' database. Everything else falls through to 'default'.
+
+    system_metrics models are self-contained (no FKs to core.*), so no
+    cross-database relations arise.
+    """
+
+    def db_for_read(self, model, **hints):
+        if model._meta.app_label == METRICS_APP_LABEL:
+            return METRICS_DB
+        return None
+
+    def db_for_write(self, model, **hints):
+        if model._meta.app_label == METRICS_APP_LABEL:
+            return METRICS_DB
+        return None
+
+    def allow_relation(self, obj1, obj2, **hints):
+        labels = {obj1._meta.app_label, obj2._meta.app_label}
+        if METRICS_APP_LABEL in labels:
+            return True
+        return None
+
+    def allow_migrate(self, db, app_label, model_name=None, **hints):
+        if app_label == METRICS_APP_LABEL:
+            return db == METRICS_DB   # system_metrics tables ONLY in the metrics DB
+        if db == METRICS_DB:
+            return False              # nothing else goes into the metrics DB
+        return None

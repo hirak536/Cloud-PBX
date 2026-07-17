@@ -41,6 +41,7 @@ logger = logging.getLogger('esl.listener')
 
 RECONNECT_DELAY = 5   # seconds between reconnection attempts
 POLL_INTERVAL = 1     # seconds between offline-extension poll attempts
+HEARTBEAT_INTERVAL = 15  # seconds between ESL keepalive probes
 
 # Thread pool — webhook delivery + offline poll loops run here
 _executor = ThreadPoolExecutor(max_workers=40, thread_name_prefix='esl-worker')
@@ -57,6 +58,13 @@ _esl_conn = None
 _tenant_by_code   = {}  # tenant_code  → tenant dict
 _tenant_by_domain = {}  # domain_name  → tenant dict
 _tenant_by_did    = {}  # E.164 / 10-digit DID → tenant dict
+
+# Per-call tenant pin: Unique-ID → tenant dict. Channel headers used for
+# tenant resolution (variable_domain_name in particular) mutate over a call's
+# lifetime — CHANNEL_CREATE resolves via the inbound DID, but by
+# CHANNEL_ANSWER/HANGUP the domain reflects the answering leg and resolves to
+# the wrong tenant. Pin at first sight and reuse for the call's whole life.
+_tenant_by_uuid   = {}  # Unique-ID → tenant dict
 
 
 def _psycopg2_connect():
@@ -394,7 +402,11 @@ def _fire_webhooks(tenant: dict, payload: dict):
 
     payload_bytes = json.dumps(payload, default=str).encode('utf-8')
     for key_id, webhook_url, webhook_secret in rows:
-        _executor.submit(_deliver_webhook, key_id, webhook_url, webhook_secret, payload, payload_bytes)
+        # webhook_url may hold multiple comma-separated URLs — deliver to each.
+        for url in (u.strip() for u in (webhook_url or '').split(',')):
+            if not url:
+                continue
+            _executor.submit(_deliver_webhook, key_id, url, webhook_secret, payload, payload_bytes)
 
 
 def _deliver_webhook(key_id, webhook_url: str, webhook_secret: str, payload: dict, payload_bytes: bytes):
@@ -667,12 +679,19 @@ def _handle_event(event):
                     _trigger_re_transfer(sip_id, domain_name)
             return
 
-        tenant = _resolve_tenant(headers)
-        if tenant is None:
-            logger.debug('No tenant for %s uuid=%s', event_name, headers.get('Unique-ID'))
-            return
-
         call_uuid = headers.get('Unique-ID', '')
+
+        # Pin tenant to the call_uuid. Reuse the tenant resolved at first sight
+        # (CHANNEL_CREATE) for all later events so ANSWER/HANGUP don't re-resolve
+        # to a different tenant off mutated channel headers.
+        tenant = _tenant_by_uuid.get(call_uuid) if call_uuid else None
+        if tenant is None:
+            tenant = _resolve_tenant(headers)
+            if tenant is not None and call_uuid:
+                _tenant_by_uuid[call_uuid] = tenant
+        if tenant is None:
+            logger.debug('No tenant for %s uuid=%s', event_name, call_uuid)
+            return
         payload = _build_call_payload(event_name, headers, {
             'tenant_code': tenant['tenant_code'],
             'tenant_id': tenant['tenant_uuid'],
@@ -697,6 +716,31 @@ def _handle_event(event):
 
 # ── Handle Answer / Hangup Webhooks ──────────────────────────────────
         if event_name in ('CHANNEL_ANSWER', 'CHANNEL_HANGUP'):
+
+            # Drop the per-call tenant pin once the call is over. Done here
+            # (before any early return below) so the map can't leak entries.
+            if event_name == 'CHANNEL_HANGUP' and call_uuid:
+                _tenant_by_uuid.pop(call_uuid, None)
+
+            # TEMP DIAGNOSTIC: dump answer headers (even for legs we skip below)
+            # to pick the correct "human answered" signal. Remove after analysis.
+            if event_name == 'CHANNEL_ANSWER':
+                logger.info(
+                    'ANSWER-DIAG uuid=%s | Channel-Call-State=%s | Answer-State=%s | Other-Leg-Unique-ID=%s | '
+                    'bridge_uuid=%s | originatee=%s | last_bridge_to=%s | call_uuid_var=%s | '
+                    'is_outbound=%s | originator_uuid=%s | Callee-ID-Number=%s',
+                    call_uuid,
+                    headers.get('Channel-Call-State'),
+                    headers.get('Answer-State'),
+                    headers.get('Other-Leg-Unique-ID'),
+                    headers.get('variable_bridge_uuid'),
+                    headers.get('variable_originatee_uuid'),
+                    headers.get('variable_last_bridge_to'),
+                    headers.get('variable_call_uuid'),
+                    headers.get('variable_is_outbound_channel'),
+                    headers.get('variable_originator_uuid'),
+                    headers.get('Caller-Callee-ID-Number'),
+                )
 
             # Skip B-legs / outbound channels / bridged legs
             if (
@@ -744,22 +788,40 @@ def _handle_event(event):
 
             event_type = 'answered' if event_name == 'CHANNEL_ANSWER' else 'ended'
 
+            # Fire call.answered only on a real human pickup. FreeSWITCH sends
+            # CHANNEL_ANSWER (with Answer-State=answered) as soon as it answers
+            # the leg for early media / IVR / ringback — while the channel is
+            # still EARLY/RINGING and no one has picked up. Only Channel-Call-State
+            # == ACTIVE means the media path is live to an answered party.
+            if event_name == 'CHANNEL_ANSWER':
+                call_state = headers.get('Channel-Call-State', '')
+                if call_state != 'ACTIVE':
+                    logger.debug(
+                        'Skipping call.answered — early media (Channel-Call-State=%s) uuid=%s',
+                        call_state, call_uuid,
+                    )
+                    return
+
             tenant_code = tenant.get('tenant_code', '')
 
-            ext_number = headers.get('Caller-Destination-Number', '')
+            # Resolve the extension the same way call.incoming does. For inbound
+            # calls Caller-Destination-Number is the DID (e.g. "+13468310766"),
+            # not a clean extension — so trusting it (and requiring .isdigit())
+            # silently drops answered/ended webhooks for every DID-routed call.
+            dest_number = headers.get('Caller-Destination-Number', '')
+            extension = _resolve_extension(headers)
+            ext_number = extension.extension if extension else dest_number
 
-            # Skip invalid extension values
-            if not ext_number or not ext_number.isdigit():
+            if not ext_number:
                 logger.debug(
-                    'Skipping %s webhook — invalid extension %s uuid=%s',
+                    'Skipping %s webhook — no extension uuid=%s',
                     event_type,
-                    ext_number,
                     call_uuid,
                 )
                 return
 
             payload['event'] = f'call.{event_type}'
-            payload['extension'] = f'{ext_number}-{tenant_code}'
+            payload['extension'] = f'{ext_number}-{tenant_code}' if tenant_code else ext_number
 
             _fire_webhooks(tenant, payload)
 
@@ -880,8 +942,53 @@ def run_listener():
         conn.register_handle(event_name, _handle_event)
 
     logger.info('ESL listener running.')
-    gevent.joinall([conn._receive_events_greenlet, conn._process_events_greenlet])
-    _esl_conn = None
+
+    # Watchdog: greenswitch's receive greenlet can block forever on a
+    # half-open (CLOSE-WAIT) socket — FreeSWITCH sends FIN but recv() never
+    # wakes, so joinall() below would never return and we'd never reconnect.
+    # Probe the connection periodically; if a probe fails or a core greenlet
+    # dies, force the socket closed so joinall() returns and Command.handle()
+    # reconnects.
+    def _heartbeat():
+        while True:
+            gevent.sleep(HEARTBEAT_INTERVAL)
+            if conn._receive_events_greenlet.dead or conn._process_events_greenlet.dead:
+                logger.warning('ESL greenlet died — forcing reconnect.')
+                _force_close(conn)
+                return
+            try:
+                # `api status` round-trips through the same socket. On a
+                # half-open socket the write may not raise but the reply never
+                # arrives, so bound the whole round-trip with a hard timeout —
+                # a stuck probe is itself the signal to reconnect.
+                with gevent.Timeout(HEARTBEAT_INTERVAL):
+                    conn.send('api status')
+            except gevent.Timeout:
+                logger.warning('ESL heartbeat timed out — forcing reconnect.')
+                _force_close(conn)
+                return
+            except Exception as exc:
+                logger.warning('ESL heartbeat failed (%s) — forcing reconnect.', exc)
+                _force_close(conn)
+                return
+
+    hb = gevent.spawn(_heartbeat)
+    try:
+        gevent.joinall([conn._receive_events_greenlet, conn._process_events_greenlet])
+    finally:
+        hb.kill(block=False)
+        _force_close(conn)
+        _esl_conn = None
+
+
+def _force_close(conn):
+    """Best-effort close of the ESL socket so blocked greenlets unwind."""
+    try:
+        sock = getattr(conn, 'sock', None)
+        if sock is not None:
+            sock.close()
+    except Exception:
+        pass
 
 
 class Command(BaseCommand):

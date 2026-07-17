@@ -89,6 +89,7 @@ LOCAL_APPS = [
     'apps.custom_destinations',
     'apps.call_parking',
     'apps.client_api',
+    'apps.system_metrics',
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -165,11 +166,28 @@ DATABASES = {
             'options': '-c search_path=public',
         },
     },
+    # Separate database for system monitoring logs (CPU peaks, etc.). Kept apart
+    # from the app DB so high-frequency metric writes and long-term log retention
+    # don't contend with or bloat the main database. Defaults to the main DB's
+    # host/user/password; override METRICS_DB_* in .env to relocate it.
+    'metrics': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': config('METRICS_DB_NAME', default='ihspbx_metrics'),
+        'USER': config('METRICS_DB_USER', default=config('DB_USER')),
+        'PASSWORD': config('METRICS_DB_PASSWORD', default=config('DB_PASSWORD')),
+        'HOST': config('METRICS_DB_HOST', default=config('DB_HOST')),
+        'PORT': config('METRICS_DB_PORT', default=config('DB_PORT')),
+        'CONN_MAX_AGE': 0,
+        'OPTIONS': {
+            'options': '-c search_path=public',
+        },
+    },
 }
 
 DATABASE_ROUTERS = [
     'freeswitch_config.routers.VoicemailSQLiteRouter',
     'freeswitch_config.routers.CdrRouter',
+    'freeswitch_config.routers.MetricsRouter',
 ]
 
 # Custom User Model

@@ -469,12 +469,31 @@ def _fax_receive_extension_xml(fax, domain_name):
     # transfer while spandsp_start_fax_detect is still running on the channel.
     # Both are spandsp apps and conflict if run simultaneously.
     etree.SubElement(cond, 'action', application='spandsp_stop_fax_detect')
-    etree.SubElement(cond, 'action', application='answer')
-    etree.SubElement(cond, 'action', application='sleep', data='1000')
-    etree.SubElement(cond, 'action', application='set', data='fax_enable_t38_request=true')
+    # Fax T.38 policy — set BEFORE answer so the vars are in effect the moment a
+    # sender's T.38 re-INVITE can arrive:
+    #   fax_enable_t38_request=false — we never INITIATE a T.38 re-INVITE.
+    #       Bandwidth and other G.711 pass-through carriers reject an initiated
+    #       re-INVITE, which surfaces as T38_NEG_ERROR and drops the fax.
+    #   fax_enable_t38=true — we ACCEPT a T.38 re-INVITE if the sender offers one
+    #       (e.g. Sonus/Inteliquent gateways that answer in G.711 then switch to
+    #       T.38 with V.17+ECM). spandsp terminates it into the TIFF.
+    # Both branches covered: G.711-only senders receive via pass-through; T.38
+    # senders get their re-INVITE accepted.
+    etree.SubElement(cond, 'action', application='set', data='fax_enable_t38_request=false')
     etree.SubElement(cond, 'action', application='set', data='fax_enable_t38=true')
-    etree.SubElement(cond, 'action', application='set', data='fax_t38_no_ecm=false')
-    etree.SubElement(cond, 'action', application='set', data='fax_use_ecm=true')
+    # Disable ECM and cap speed. Over G.711 pass-through (this carrier delivers
+    # inbound fax as PCMU, not T.38), ECM at V.17 14400 is fragile — the fax
+    # negotiates and sends one page, then the media can't sustain the ECM frames
+    # and the call drops mid-transfer ("result 49: call dropped prematurely",
+    # observed after page 1 at 14400/V17/ECM). Turning ECM off and disabling V.17
+    # forces a slower, more robust G.III transfer (≤9600) that survives pass-through.
+    etree.SubElement(cond, 'action', application='set', data='fax_use_ecm=false')
+    etree.SubElement(cond, 'action', application='set', data='fax_disable_v17=true')
+    etree.SubElement(cond, 'action', application='answer')
+    # Let the read codec settle before spandsp starts (otherwise mod_spandsp can
+    # fail with "Cannot Enable fax detection (null)"). 1000ms is proven working —
+    # multiple faxes received OK on this leg.
+    etree.SubElement(cond, 'action', application='sleep', data='1000')
     
     fax_ident_val = fax.fax_caller_id_name or fax.fax_name or 'IHS PBX'
     etree.SubElement(cond, 'action', application='set', data=f'fax_ident={fax_ident_val}')
@@ -770,27 +789,53 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
         fax_box = dest.fax
         tenant_code = fax_box.tenant.tenant_code if fax_box.tenant else None
         fax_ctx = f'default-{tenant_code}' if tenant_code else 'public'
-        # Shared voice+fax detection:
-        # 1. Answer the inbound leg immediately so the fax machine gets live
-        #    media and starts T.30 negotiation (produces detectable tone).
-        # 2. Start spandsp fax detection.
-        # 3. Sleep for a detection window — execute_on_fax_detect fires
-        #    asynchronously mid-sleep if fax tone is heard, transferring to
-        #    rxfax BEFORE the sleep completes (extension never rings).
-        # 4. After the window, stop detection and let the call fall through
-        #    to the routing actions below, which ring the extension normally.
-        # Voice callers wait FAX_DETECT_WINDOW_MS before the phone rings.
-        # Do NOT call spandsp_stop_fax_detect before the routing actions —
-        # that races against a late-firing execute_on_fax_detect and can
-        # cancel detection just as the tone is being confirmed.
-        FAX_DETECT_WINDOW_MS = 4000
+        # Shared voice+fax detection — tone_detect strategy (FusionPBX pattern).
+        #
+        # spandsp_start_fax_detect fails to arm on this build ("Cannot Enable fax
+        # detection (null) (null)"). Use the core tone_detect app instead, which
+        # runs on any PCM channel and listens for the fax CNG tone (1100 Hz):
+        #   1. Answer and let media settle.
+        #   2. Arm tone_detect for CNG (1100 Hz) with a detection window.
+        #      On a hit, execute_on_tone_detect transfers to the rxfax_<ext> leg
+        #      (which performs the actual receive + webhook).
+        #   3. sleep for the window. If a fax CNG is heard mid-sleep, the transfer
+        #      fires and the extension never rings. If not, we fall through to the
+        #      normal routing actions below and ring the extension as voice.
+        # Caveat: relies on the sender emitting CNG; a silent sender still won't
+        # detect. Voice callers wait FAX_DETECT_WINDOW_MS before the phone rings.
+        FAX_DETECT_WINDOW_MS = 7000
         etree.SubElement(
             cond, 'action', application='set',
-            data=f'execute_on_fax_detect=transfer rxfax_{fax_box.fax_extension} XML {fax_ctx}',
+            data=f'fax_offline_fallback=rxfax_{fax_box.fax_extension} XML {fax_ctx}',
         )
         etree.SubElement(cond, 'action', application='answer')
-        etree.SubElement(cond, 'action', application='spandsp_start_fax_detect')
-        etree.SubElement(cond, 'action', application='sleep', data=str(FAX_DETECT_WINDOW_MS))
+        # Let media settle so tone_detect has a live read codec to sample.
+        etree.SubElement(cond, 'action', application='sleep', data='1000')
+        # One CNG hit is enough to declare a fax.
+        tone_hits = etree.SubElement(cond, 'action', application='set',
+                                     data='tone_detect_hits=1')
+        tone_hits.set('inline', 'true')
+        # On a CNG hit, transfer to a small wrapper extension (faxwrap_<ext>) that
+        # sets fax_detected=true and then transfers to the real rxfax_<ext> leg.
+        # execute_on_tone_detect takes a SINGLE app (it does NOT split on commas —
+        # a chained "set ...,transfer ..." is parsed as one set with a comma-laden
+        # value, so the transfer never runs). Routing through the wrapper lets us
+        # set the flag with proper separate actions. The flag is what the voice
+        # fall-through guard below keys off to avoid the offline-extension hangup
+        # tearing down the in-progress fax.
+        tone_exec = etree.SubElement(
+            cond, 'action', application='set',
+            data=f'execute_on_tone_detect=transfer faxwrap_{fax_box.fax_extension} XML {fax_ctx}',
+        )
+        tone_exec.set('inline', 'true')
+        # Listen for fax CNG (1100 Hz), repeating, for the detection window.
+        etree.SubElement(
+            cond, 'action', application='tone_detect',
+            data=f'fax 1100 r +{FAX_DETECT_WINDOW_MS}',
+        )
+        # Give tone_detect the window to fire before falling through to voice.
+        etree.SubElement(cond, 'action', application='sleep',
+                         data=str(FAX_DETECT_WINDOW_MS))
 
     # Optional call enhancements
     if dest.destination_cid_name_prefix:
@@ -859,9 +904,31 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
         routed_to_last = True
 
     if not routed_to_last:
-        # Resolve destination type → FreeSWITCH routing actions
-        for app, data in _resolve_dest_action(dest, domain_name, preload=preload):
-            etree.SubElement(cond, 'action', application=app, data=data)
+        # Resolve destination type → FreeSWITCH routing actions (voice path).
+        voice_actions = _resolve_dest_action(dest, domain_name, preload=preload)
+        # On a fax-enabled DID, the tone_detect above may have already fired
+        # execute_on_tone_detect (which set fax_detected=true and transferred to
+        # rxfax). tone_detect does NOT stop this dialplan thread, so without a
+        # guard the queued voice transfer still runs — and if the voice extension
+        # is OFFLINE, its hangup(USER_NOT_REGISTERED) tears down the in-progress
+        # fax ("The call dropped prematurely" mid-receive). Skip all voice routing
+        # when a fax was detected by placing it in a condition gated on
+        # ${fax_detected} != true.
+        fax_detect_active = bool(dest.fax_id and dest.fax_receive and dest.dest_type != 'fax')
+        if fax_detect_active:
+            voice_cond = etree.SubElement(ext_el, 'condition',
+                                          field='${fax_detected}', expression='^true$')
+            # break=never: when fax_detected IS true (regex matches) run nothing
+            # and stop; when it does NOT match (voice call), fall through to the
+            # anti-actions which carry the real voice routing.
+            voice_cond.set('break', 'never')
+            # Actions in an <anti-action> run when the condition is FALSE, i.e.
+            # only for a genuine voice call where no fax was detected.
+            for app, data in voice_actions:
+                etree.SubElement(voice_cond, 'anti-action', application=app, data=data)
+        else:
+            for app, data in voice_actions:
+                etree.SubElement(cond, 'action', application=app, data=data)
 
     return ext_el
 
@@ -1174,6 +1241,29 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
         _apply_fwd_dest(eval_cond, ext.forward_on_condition_destination)
         elements.append(cond_el)
 
+    # ── 2a. Offline fax fallback ──────────────────────────────────────────
+    # If this extension is unregistered AND the DID that routed here is
+    # fax-enabled (it set fax_offline_fallback = "rxfax_<ext> XML <ctx>"),
+    # receive the fax instead of hanging up. A fax to a number whose office
+    # phone is merely offline must still be delivered. Appended BEFORE the
+    # offline-hangup extension so it wins the destination match; when the var is
+    # unset (non-fax DID) the fax_fb condition fails and control falls through to
+    # the normal offline-hangup extension below. No change to non-fax routing.
+    faxfb_el = etree.Element('extension', name=f'ext_{ext.extension}_offline_fax')
+    faxfb_dest_cond = etree.SubElement(faxfb_el, 'condition',
+                                       field='destination_number', expression=dest_expr)
+    faxfb_dest_cond.set('break', 'on-false')
+    faxfb_reg_cond = etree.SubElement(faxfb_el, 'condition',
+                                      field=f'${{sofia_contact(*/{sip_id}@{domain_name})}}',
+                                      expression=r'^(error|$)')
+    faxfb_reg_cond.set('break', 'on-false')
+    faxfb_var_cond = etree.SubElement(faxfb_el, 'condition',
+                                      field='${fax_offline_fallback}', expression=r'^.+$')
+    faxfb_var_cond.set('break', 'on-false')
+    etree.SubElement(faxfb_var_cond, 'action', application='transfer',
+                     data='${fax_offline_fallback}')
+    elements.append(faxfb_el)
+
     # ── 2. Offline detection ──────────────────────────────────────────────
     # sofia_contact returns 'error/no-such-user' when extension is not registered.
     # Check BEFORE attempting bridge so offline calls never ring into silence.
@@ -1207,6 +1297,7 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
         # No 'forward when not registered' destination set → hang up. Do NOT
         # default an offline/unregistered extension to voicemail; voicemail is
         # only reached via an explicit forward_user_not_registered destination.
+        #
         etree.SubElement(offline_reg_cond, 'action', application='hangup',
                          data='USER_NOT_REGISTERED')
     elements.append(offline_el)
@@ -2333,9 +2424,21 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
     for fax in Fax.objects.select_related('tenant').filter(domain=domain, fax_enabled=True):
         tenant_code = fax.tenant.tenant_code if fax.tenant else None
         ctx_name = f'default-{tenant_code}' if tenant_code else 'public'
-        get_or_create_context(ctx_name).append(
-            _fax_receive_extension_xml(fax, domain_name)
+        ctx_el = get_or_create_context(ctx_name)
+        # Wrapper: a fax-detected DID transfers here (faxwrap_<ext>) so we can set
+        # fax_detected=true with a proper action, then hand off to the real rxfax
+        # receive leg. The flag lets the DID's voice fall-through be suppressed so
+        # an offline voice extension's hangup can't tear down the in-progress fax.
+        wrap_el = etree.Element('extension', name=f'faxwrap_{fax.fax_extension}')
+        wrap_cond = etree.SubElement(
+            wrap_el, 'condition', field='destination_number',
+            expression=f'^faxwrap_{re.escape(fax.fax_extension)}$',
         )
+        etree.SubElement(wrap_cond, 'action', application='set', data='fax_detected=true')
+        etree.SubElement(wrap_cond, 'action', application='transfer',
+                         data=f'rxfax_{fax.fax_extension} XML {ctx_name}')
+        ctx_el.append(wrap_el)
+        ctx_el.append(_fax_receive_extension_xml(fax, domain_name))
 
     # ── 6. Working hours extensions in each tenant context ────────────────
     # Each enabled WorkingHours profile generates up to three <extension> elements:

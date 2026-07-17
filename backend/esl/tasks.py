@@ -97,7 +97,7 @@ def hangup_call(uuid, cause='NORMAL_CLEARING'):
     return esl.hangup(uuid, cause)
 
 
-@shared_task
+@shared_task(ignore_result=True)
 def push_active_calls_update():
     """Fetch current active calls and broadcast to WebSocket consumers."""
     try:
@@ -297,7 +297,7 @@ def _build_extension_status_map() -> dict:
     return status_map
 
 
-@shared_task
+@shared_task(ignore_result=True)
 def push_extension_status_update():
     """
     Build the extension status map (registrations + active channels) and broadcast
@@ -389,7 +389,7 @@ def _compute_peer_states() -> dict:
         return {sip_username: 'unknown' for sip_username, _ in extensions if sip_username}
 
 
-@shared_task
+@shared_task(ignore_result=True)
 def poll_peer_states():
     """Snapshot current peer states; write a new history row when state changes.
 
