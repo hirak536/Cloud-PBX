@@ -1689,11 +1689,64 @@ export default function Extensions() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeId, isCreate])
 
+  // Synchronous field checks for a tab. Returns an error string or ''.
+  const validateTabSync = (tabId) => {
+    if (tabId === 'general') {
+      const ext = form.extension.trim()
+      if (!ext) return 'Extension number is required.'
+      if (!/^\d{3,5}$/.test(ext)) return 'Extension must be 3–5 digits.'
+      if (!form.password) return 'Password is required.'
+    }
+    return ''
+  }
+
+  // Server-side authoritative check that the extension number isn't already in
+  // use. Returns an error string (e.g. "101 is already used by an Extension.")
+  // or ''. Only relevant for the General tab.
+  const [checkingExt, setCheckingExt] = useState(false)
+  const validateExtAvailable = async () => {
+    const ext = form.extension.trim()
+    if (!ext || !/^\d{3,5}$/.test(ext)) return ''
+    setCheckingExt(true)
+    try {
+      const { data } = await extensionsApi.checkNumber(ext, editId || undefined)
+      if (!data.available) {
+        return data.conflicts?.[0] || `${ext} is already in use on this tenant.`
+      }
+    } catch {
+      // If the availability check fails to run, don't hard-block — the backend
+      // still rejects true duplicates on save.
+    } finally {
+      setCheckingExt(false)
+    }
+    return ''
+  }
+
+  // Navigate between tabs. Moving forward is gated on the current tab's required
+  // fields AND (leaving General) the extension-number availability check; moving
+  // back to an earlier tab is always allowed.
+  const goToTab = async (targetId) => {
+    const curIdx = TABS.findIndex(t => t.id === activeTab)
+    const nextIdx = TABS.findIndex(t => t.id === targetId)
+    if (nextIdx > curIdx) {
+      const err = validateTabSync(activeTab)
+      if (err) { setFormError(err); return }
+      if (activeTab === 'general') {
+        const dupErr = await validateExtAvailable()
+        if (dupErr) { setFormError(dupErr); return }
+      }
+    }
+    setFormError('')
+    setActiveTab(targetId)
+  }
+
   const handleSave = async () => {
     const ext = form.extension.trim()
-    if (!ext) { setFormError('Extension number is required.'); return }
-    if (!/^\d{3,5}$/.test(ext)) { setFormError('Extension must be 3–5 digits.'); return }
-    if (!form.password) { setFormError('Password is required.'); return }
+    if (!ext) { setActiveTab('general'); setFormError('Extension number is required.'); return }
+    if (!/^\d{3,5}$/.test(ext)) { setActiveTab('general'); setFormError('Extension must be 3–5 digits.'); return }
+    if (!form.password) { setActiveTab('general'); setFormError('Password is required.'); return }
+    const dupErr = await validateExtAvailable()
+    if (dupErr) { setActiveTab('general'); setFormError(dupErr); return }
 
     setSaving(true)
     setFormError('')
@@ -1942,7 +1995,7 @@ export default function Extensions() {
               ringGroupList={ringGroupList}
               rgLoading={rgLoading}
               activeTab={activeTab}
-              setActiveTab={setActiveTab}
+              setActiveTab={goToTab}
             />
 
             <div className="shrink-0 border-t px-6 py-3 flex items-center justify-between gap-2">
@@ -1959,17 +2012,18 @@ export default function Extensions() {
                 <div className="flex gap-2">
                   <Button variant="outline" onClick={closeEditor}>Cancel</Button>
                   {TABS.findIndex(t => t.id === activeTab) > 0 && (
-                    <Button variant="outline" onClick={() => setActiveTab(TABS[TABS.findIndex(t => t.id === activeTab) - 1].id)}>
+                    <Button variant="outline" onClick={() => goToTab(TABS[TABS.findIndex(t => t.id === activeTab) - 1].id)}>
                       ← Back
                     </Button>
                   )}
                   {TABS.findIndex(t => t.id === activeTab) < TABS.length - 1 ? (
-                    <Button onClick={() => setActiveTab(TABS[TABS.findIndex(t => t.id === activeTab) + 1].id)}>
+                    <Button onClick={() => goToTab(TABS[TABS.findIndex(t => t.id === activeTab) + 1].id)} disabled={checkingExt}>
+                      {checkingExt && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
                       Next →
                     </Button>
                   ) : (
-                    <Button onClick={handleSave} disabled={saving}>
-                      {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+                    <Button onClick={handleSave} disabled={saving || checkingExt}>
+                      {(saving || checkingExt) && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
                       {isCreate ? 'Create Extension' : 'Save Changes'}
                     </Button>
                   )}

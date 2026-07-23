@@ -264,7 +264,13 @@ export default function RingGroups() {
   // ── Save ───────────────────────────────────────────────────────────────────
 
   const handleSave = async () => {
-    if (!form.ring_group_name)      { setFormError('Name is required.'); return }
+    if (!form.ring_group_name.trim()) { setFormError('Name is required.'); return }
+    // Require at least one valid extension/destination.
+    const validDests = form.destinations.filter(d => d.destination_number.trim())
+    if (validDests.length === 0) {
+      setFormError('Add at least one extension before saving.')
+      return
+    }
     setSaving(true)
     setFormError('')
     try {
