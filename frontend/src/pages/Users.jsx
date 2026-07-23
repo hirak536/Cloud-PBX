@@ -1,10 +1,11 @@
 import { useDebounce } from '@/hooks/useDebounce'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useSelector } from 'react-redux'
 import { selectTenant, selectAuth } from '@/store'
 import { roleOf, creatableRoles, GRANTABLE_PAGES, GRANTABLE_PATHS, ACTION_CONTROLLED_PAGES, ACTIONS, ACTION_LABELS } from '@/lib/permissions'
-import { users as api, tenants as tenantsApi, auth as authApi, fax as faxApi, organizations as orgApi } from '@/api'
+import { users as api, tenants as tenantsApi, auth as authApi, fax as faxApi, organizations as orgApi, ucUsers as ucUsersApi, extensions as extensionsApi, destinations as destinationsApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -17,7 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useInfiniteList } from '@/hooks/useInfiniteList'
 import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import ExtensionPicker from '@/components/ExtensionPicker'
-import { Plus, Pencil, Trash2, Search, Loader2, ShieldCheck, Shield, User2, KeyRound, Check, Eye, EyeOff, ChevronDown, X, Building2, Phone, MessageSquare, Printer, Power, Lock } from 'lucide-react'
+import { Plus, Pencil, Trash2, Search, Loader2, ShieldCheck, Shield, User2, KeyRound, Check, Eye, EyeOff, ChevronDown, X, Building2, Phone, MessageSquare, Printer, Power, Lock, AlertTriangle, Mail, Wand2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -118,7 +119,7 @@ function OrganizationSettingsTab({ userEmail }) {
       })
       .catch((e) => {
         if (!alive) return
-        setError(e?.response?.data?.message || 'Failed to load organizations.')
+        setError(apiErrorMessage(e, 'Failed to load organizations.'))
         setRows([])
       })
       .finally(() => { if (alive) setLoading(false) })
@@ -239,6 +240,964 @@ function OrganizationSettingsTab({ userEmail }) {
   )
 }
 
+// ── UC Users tab ──────────────────────────────────────────────────────────────
+// Superadmin-only. Searchable, filterable (status + company), paginated list of
+// UC users sourced from the external IHS Phone directory (ucUsers.list).
+const UC_PAGE_SIZE = 20
+const UC_USER_TYPE_OPTIONS = [
+  { value: 'superadmin', label: 'Super Admin' },
+  { value: 'admin',      label: 'Admin' },
+  { value: 'user',       label: 'User' },
+]
+
+// Small multi-select dropdown (checkbox list) for the userType filter.
+function MultiSelectDropdown({ options, selected, onChange, placeholder = 'Any type', summaryNoun = 'selected', className }) {
+  const [open, setOpen] = useState(false)
+  const [rect, setRect] = useState(null)
+  const [dropUp, setDropUp] = useState(false)
+  const ref = useRef(null)
+  const menuRef = useRef(null)
+
+  // Close on outside click (menu is portalled, so check both trigger and menu).
+  useEffect(() => {
+    if (!open) return
+    const h = (e) => {
+      if (ref.current?.contains(e.target)) return
+      if (menuRef.current?.contains(e.target)) return
+      setOpen(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+
+  // Track the trigger position so the portalled menu aligns to it; flip up when
+  // there isn't room below (e.g. near the bottom of a modal).
+  useEffect(() => {
+    if (!open) return
+    const measure = () => {
+      if (!ref.current) return
+      const r = ref.current.getBoundingClientRect()
+      setRect(r)
+      setDropUp(r.bottom + 260 > window.innerHeight && r.top > 260)
+    }
+    measure()
+    window.addEventListener('scroll', measure, true)
+    window.addEventListener('resize', measure)
+    return () => {
+      window.removeEventListener('scroll', measure, true)
+      window.removeEventListener('resize', measure)
+    }
+  }, [open])
+
+  const toggle = (v) => onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v])
+  const labels = options.filter(o => selected.includes(o.value)).map(o => o.label)
+  return (
+    <div className={cn('relative', className)} ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className="flex h-9 w-full items-center justify-between gap-2 rounded-xl border border-input bg-background px-3 text-sm shadow-sm hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+      >
+        <span className={cn('truncate', labels.length === 0 && 'text-muted-foreground')}>
+          {labels.length === 0 ? placeholder : labels.length <= 2 ? labels.join(', ') : `${labels.length} ${summaryNoun}`}
+        </span>
+        <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
+      </button>
+      {open && rect && createPortal(
+        <div
+          ref={menuRef}
+          style={{
+            position: 'fixed',
+            left: rect.left,
+            width: rect.width,
+            ...(dropUp
+              ? { bottom: window.innerHeight - rect.top + 4 }
+              : { top: rect.bottom + 4 }),
+          }}
+          className="z-[60] max-h-60 overflow-auto rounded-xl border border-border/60 bg-card shadow-2xl shadow-black/10 animate-dropdown-in py-1"
+        >
+          {options.map(opt => (
+            <div
+              key={opt.value}
+              onClick={() => toggle(opt.value)}
+              className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent cursor-pointer"
+            >
+              <div className={cn('flex h-4 w-4 items-center justify-center rounded border shrink-0', selected.includes(opt.value) ? 'bg-primary border-primary' : 'border-input')}>
+                {selected.includes(opt.value) && <Check className="h-3 w-3 text-primary-foreground" />}
+              </div>
+              <span>{opt.label}</span>
+            </div>
+          ))}
+        </div>,
+        document.body
+      )}
+    </div>
+  )
+}
+
+function UcUsersTab({ userEmail }) {
+  const [search, setSearch]   = useState('')
+  const debouncedSearch       = useDebounce(search, 300)
+  const [activeFilter, setActiveFilter] = useState('active')  // active | inactive | all
+  const [companyCode, setCompanyCode]   = useState('')        // '' = all companies
+  const [userTypes, setUserTypes]       = useState([])        // [] = any type
+  const [companies, setCompanies] = useState([])
+
+  // Load the full company list once for the filter dropdown.
+  useEffect(() => {
+    let alive = true
+    orgApi.listAll()
+      .then(({ data }) => { if (alive) setCompanies(data.success || []) })
+      .catch(() => { if (alive) setCompanies([]) })
+    return () => { alive = false }
+  }, [])
+
+  // Build the query params. Memoized so useInfiniteList only resets on real change.
+  const listParams = useMemo(() => {
+    const p = {}
+    if (debouncedSearch) p.search = debouncedSearch
+    // is_active filter is skipped while searching (search spans all statuses).
+    if (!debouncedSearch && activeFilter !== 'all') p.is_active = activeFilter === 'active'
+    if (companyCode) p.code = companyCode              // omit for "All companies"
+    if (userTypes.length) p.usertype = userTypes.join(',')
+    return p
+  }, [debouncedSearch, activeFilter, companyCode, userTypes])
+
+  const { rows, total, loading, loadingMore, hasMore, error, loadMore, reload } = useInfiniteList(
+    ucUsersApi.list,
+    {
+      params: listParams,
+      pageSize: UC_PAGE_SIZE,
+      selectResults: (d) => d.success || [],
+      selectCount:   (d) => d.pagination?.total ?? (d.success?.length || 0),
+    },
+  )
+
+  const [editUser, setEditUser] = useState(null)      // row being edited (null = closed)
+  const [deleteUser, setDeleteUser] = useState(null)  // row pending delete confirmation
+  const [deleting, setDeleting] = useState(false)
+  const [resetUser, setResetUser] = useState(null)    // row pending password reset
+  const [addOpen, setAddOpen] = useState(false)
+
+  const confirmDelete = async () => {
+    if (!deleteUser) return
+    if (!userEmail) { toast.error('Cannot determine the logged-in user email.'); return }
+    setDeleting(true)
+    try {
+      await ucUsersApi.delete(deleteUser.uuid, userEmail)
+      toast.success('User deleted.')
+      setDeleteUser(null)
+      reload()
+    } catch (e) {
+      toast.error(apiErrorMessage(e, 'Failed to delete user.'))
+    } finally { setDeleting(false) }
+  }
+
+  // Prefetch a second page on initial load (when more is available), so two
+  // pages are shown by default before the user scrolls.
+  const prefetchedRef = useRef(false)
+  useEffect(() => { prefetchedRef.current = false }, [listParams])
+  useEffect(() => {
+    if (!loading && !loadingMore && hasMore && !prefetchedRef.current) {
+      prefetchedRef.current = true
+      loadMore()
+    }
+  }, [loading, loadingMore, hasMore, loadMore])
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative w-64">
+            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input placeholder="Search users…" className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
+          <Select
+            value={activeFilter}
+            onChange={(e) => setActiveFilter(e.target.value)}
+            disabled={!!debouncedSearch}
+            wrapperClassName="w-36"
+            title={debouncedSearch ? 'Status filter is ignored while searching' : undefined}
+          >
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+            <option value="all">All statuses</option>
+          </Select>
+          <MultiSelectDropdown
+            options={UC_USER_TYPE_OPTIONS}
+            selected={userTypes}
+            onChange={setUserTypes}
+            placeholder="Any type"
+            summaryNoun="types"
+            className="w-44"
+          />
+          <Select value={companyCode} onChange={(e) => setCompanyCode(e.target.value)} wrapperClassName="w-56">
+            <option value="">All companies</option>
+            {companies.map(c => (
+              <option key={c.id} value={c.code}>{c.companyName}</option>
+            ))}
+          </Select>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground">
+            {total} user{total !== 1 ? 's' : ''}
+          </span>
+          <Button size="sm" onClick={() => setAddOpen(true)}><Plus className="h-4 w-4" />Add User</Button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
+          {apiErrorMessage(error, 'Failed to load users.')}
+        </div>
+      )}
+
+      <Card><CardContent className="p-0 overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Email</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Company</TableHead>
+              <TableHead>Extensions</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="w-16" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading
+              ? [...Array(8)].map((_, i) => (
+                  <TableRow key={i}>
+                    {[...Array(7)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
+                  </TableRow>
+                ))
+              : rows.length === 0
+                ? <TableRow><TableCell colSpan={7} className="text-center py-10 text-muted-foreground">No users found.</TableCell></TableRow>
+                : rows.map((u) => {
+                    const name = [u.firstName, u.lastName].filter(Boolean).join(' ') || '—'
+                    const exts = u.extension_numbers || []
+                    return (
+                      <TableRow key={u.id}>
+                        <TableCell className="font-medium">{name}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{u.email || '—'}</TableCell>
+                        <TableCell><Badge variant="secondary" className="capitalize">{u.userType || '—'}</Badge></TableCell>
+                        <TableCell className="text-sm">{u.company?.companyName || '—'}</TableCell>
+                        <TableCell>
+                          {exts.length === 0
+                            ? <span className="text-muted-foreground text-sm">—</span>
+                            : <div className="flex flex-wrap gap-1">
+                                {exts.map((e, i) => <Badge key={i} variant="outline" className="font-mono text-[10px]">{e}</Badge>)}
+                              </div>}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={u.is_active !== false ? 'success' : 'secondary'}>
+                            {u.is_active !== false ? 'Active' : 'Inactive'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit user" onClick={() => setEditUser(u)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7" title="Reset password" onClick={() => setResetUser(u)}>
+                              <KeyRound className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost" size="icon"
+                              className="h-7 w-7 text-destructive hover:text-destructive"
+                              title="Delete user"
+                              onClick={() => setDeleteUser(u)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })
+            }
+          </TableBody>
+        </Table>
+      </CardContent></Card>
+
+      {!loading && rows.length > 0 && (
+        <InfiniteScroll
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          onLoadMore={loadMore}
+          loaded={rows.length}
+          total={total}
+        />
+      )}
+
+      <UcUserEditDialog
+        user={editUser}
+        onClose={() => setEditUser(null)}
+        onSaved={() => { setEditUser(null); reload() }}
+      />
+
+      {/* Hard-delete warning */}
+      <Dialog open={!!deleteUser} onOpenChange={(v) => { if (!v && !deleting) setDeleteUser(null) }}>
+        <DialogContent className="w-[95vw] max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-5 w-5" />
+              Delete user permanently?
+            </DialogTitle>
+          </DialogHeader>
+          {deleteUser && (
+            <div className="space-y-3 py-1">
+              <p className="text-sm">
+                You are about to delete{' '}
+                <span className="font-semibold">
+                  {[deleteUser.firstName, deleteUser.lastName].filter(Boolean).join(' ') || deleteUser.email || 'this user'}
+                </span>.
+              </p>
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-sm text-destructive space-y-1">
+                <p className="font-medium">This is an irreversible action.</p>
+                <p>
+                  Once deleted, all data related to this user will be permanently removed —
+                  including their <span className="font-medium">Chat Rooms, Contacts, and Messages</span>.
+                </p>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteUser(null)} disabled={deleting}>Cancel</Button>
+            <Button variant="destructive" onClick={confirmDelete} disabled={deleting}>
+              {deleting && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+              Delete Permanently
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <UcPasswordResetDialog
+        user={resetUser}
+        onClose={() => setResetUser(null)}
+        onDone={() => setResetUser(null)}
+      />
+
+      <UcUserAddDialog
+        open={addOpen}
+        companies={companies}
+        userEmail={userEmail}
+        defaultCompanyCode={companyCode}
+        onClose={() => setAddOpen(false)}
+        onCreated={() => { setAddOpen(false); reload() }}
+      />
+    </div>
+  )
+}
+
+// Add dialog for a new UC user. Fields: email (new user, lowercased),
+// firstName, lastName, userType, company (dropdown → numeric id), one extension
+// (from the company's tenant) + multiple DIDs, and a password mode toggle
+// (email → omit password; manual → send it). `useremail` = acting admin.
+function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClose, onCreated }) {
+  const EMPTY = {
+    email: '', firstName: '', lastName: '',
+    userType: 'user', companyId: '', extname: '', dids: [],
+    pwMode: 'email', password: '',   // pwMode: 'email' | 'manual'
+  }
+  const [form, setForm] = useState(EMPTY)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [showPw, setShowPw] = useState(false)
+  const [pbxExtensions, setPbxExtensions] = useState([])
+  const [pbxDids, setPbxDids] = useState([])
+
+  const selectedCompany = companies.find(c => String(c.id) === String(form.companyId)) || null
+  const tenantId = selectedCompany?.tenant_id
+  const voiceEnabled = selectedCompany ? selectedCompany.voiceenable !== false : true
+  const smsEnabled   = selectedCompany ? selectedCompany.smsenable === true : false
+
+  // Reset on open; default the company to the tab's current filter if any.
+  useEffect(() => {
+    if (!open) return
+    const preset = companies.find(c => c.code === defaultCompanyCode)
+    setForm({ ...EMPTY, companyId: preset ? String(preset.id) : '' })
+    setError(''); setShowPw(false); setSaving(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  // Load the chosen company's PBX extensions + DIDs.
+  useEffect(() => {
+    if (!open || !tenantId) { setPbxExtensions([]); setPbxDids([]); return }
+    let alive = true
+    const params = { page_size: 500, tenant: tenantId }
+    extensionsApi.list(params)
+      .then(({ data }) => { if (alive) setPbxExtensions(Array.isArray(data) ? data : data.results || []) })
+      .catch(() => { if (alive) setPbxExtensions([]) })
+    destinationsApi.list({ ...params, destination_enabled: true })
+      .then(({ data }) => { if (alive) setPbxDids(Array.isArray(data) ? data : data.results || []) })
+      .catch(() => { if (alive) setPbxDids([]) })
+    return () => { alive = false }
+  }, [open, tenantId])
+
+  const sf = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }))
+
+  const save = async () => {
+    setError('')
+    if (!userEmail)            { setError('Cannot determine the logged-in user email.'); return }
+    if (!form.email.trim())    { setError('Email is required.'); return }
+    if (!form.firstName.trim()){ setError('First name is required.'); return }
+    if (!form.lastName.trim()) { setError('Last name is required.'); return }
+    if (!form.companyId)       { setError('Select a company.'); return }
+    if (form.pwMode === 'manual' && !form.password) { setError('Enter a password or switch to email delivery.'); return }
+
+    if (voiceEnabled && !form.extname) { setError('Select an extension.'); return }
+    // SMS-enabled companies require at least one DID (SMS needs a number).
+    if (smsEnabled && form.dids.length === 0) { setError('Select at least one DID — SMS is enabled for this company.'); return }
+
+    // Build one extension. Extension password is always required — use the
+    // selected PBX extension's own password, falling back to a random one.
+    // Phone label = the DID's destination_name from the PBX DID list. When voice
+    // is off, extname/password are random; DIDs are still attached (for SMS).
+    const selectedExt = pbxExtensions.find(x => (x.sip_username || x.extension) === form.extname)
+    const phones = form.dids.map((num, i) => {
+      const did = pbxDids.find(d => d.destination_number === num)
+      return { phone: num, label: did?.destination_name || '', is_primary: i === 0 }
+    })
+    const extension = voiceEnabled
+      ? { extname: form.extname, password: selectedExt?.password || randomToken(16), phones }
+      : { extname: randomToken(6), password: randomToken(16), phones }
+
+    const payload = {
+      email:     form.email.trim().toLowerCase(),   // always lowercase
+      useremail: userEmail,                          // acting admin
+      firstName: form.firstName.trim(),
+      lastName:  form.lastName.trim(),
+      userType:  form.userType,
+      company:   Number(form.companyId),
+      extensions: [extension],
+      // Manual mode sends the top-level password; email mode omits it.
+      ...(form.pwMode === 'manual' ? { password: form.password } : {}),
+    }
+
+    setSaving(true)
+    try {
+      await ucUsersApi.create(payload)
+      toast.success('User created.')
+      onCreated()
+    } catch (e) {
+      setError(apiErrorMessage(e, 'Failed to create user.'))
+    } finally { setSaving(false) }
+  }
+
+  const didOptions = (() => {
+    const opts = pbxDids.map(d => ({
+      value: d.destination_number,
+      label: `${d.destination_number}${d.destination_name ? ` — ${d.destination_name}` : ''}`,
+    }))
+    for (const num of form.dids) if (num && !opts.some(o => o.value === num)) opts.unshift({ value: num, label: num })
+    return opts
+  })()
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v && !saving) onClose() }}>
+      <DialogContent className="w-[95vw] max-w-xl p-0 gap-0 overflow-hidden">
+        <DialogHeader className="px-6 pt-5 pb-4 border-b">
+          <DialogTitle>Add User</DialogTitle>
+        </DialogHeader>
+
+        <div className="px-6 py-5 space-y-5 max-h-[70vh] overflow-y-auto">
+          {error && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>First Name <span className="text-destructive">*</span></Label>
+              <Input value={form.firstName} onChange={sf('firstName')} disabled={saving} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Last Name <span className="text-destructive">*</span></Label>
+              <Input value={form.lastName} onChange={sf('lastName')} disabled={saving} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Email <span className="text-destructive">*</span></Label>
+              <Input type="email" value={form.email} onChange={sf('email')} disabled={saving} placeholder="user@example.com" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>User Type</Label>
+              <Select value={form.userType} onChange={sf('userType')} disabled={saving}>
+                {UC_USER_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Company <span className="text-destructive">*</span></Label>
+              <Select value={form.companyId} onChange={sf('companyId')} disabled={saving}>
+                <option value="">— Select company —</option>
+                {companies.map(c => <option key={c.id} value={c.id}>{c.companyName}</option>)}
+              </Select>
+            </div>
+          </div>
+
+          {/* Password mode */}
+          <div className="space-y-2">
+            <Label>Password</Label>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" disabled={saving} onClick={() => setForm(p => ({ ...p, pwMode: 'email' }))}
+                className={cn('rounded-lg border px-3 py-2 text-sm text-left transition-colors', form.pwMode === 'email' ? 'border-primary bg-primary/5 text-primary' : 'border-input hover:border-primary/40')}>
+                <p className="font-medium">Email to user</p>
+                <p className="text-[11px] text-muted-foreground">User sets it via emailed link.</p>
+              </button>
+              <button type="button" disabled={saving} onClick={() => setForm(p => ({ ...p, pwMode: 'manual' }))}
+                className={cn('rounded-lg border px-3 py-2 text-sm text-left transition-colors', form.pwMode === 'manual' ? 'border-primary bg-primary/5 text-primary' : 'border-input hover:border-primary/40')}>
+                <p className="font-medium">Set manually</p>
+                <p className="text-[11px] text-muted-foreground">Enter a password now.</p>
+              </button>
+            </div>
+            {form.pwMode === 'manual' && (
+              <div className="relative">
+                <Input type={showPw ? 'text' : 'password'} value={form.password} onChange={sf('password')} disabled={saving} autoComplete="new-password" placeholder="Enter password" className="pr-20 font-mono" />
+                <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+                  <button type="button" title="Generate" disabled={saving} onClick={() => { setForm(p => ({ ...p, password: randomToken(14) })); setShowPw(true) }}
+                    className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted"><Wand2 className="h-3.5 w-3.5" /></button>
+                  <button type="button" title={showPw ? 'Hide' : 'Show'} disabled={saving} onClick={() => setShowPw(s => !s)}
+                    className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted">{showPw ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Extension (voice only) + DIDs (always shown). */}
+          <div className="rounded-xl border p-3 space-y-3">
+            {voiceEnabled && (
+              <div className="space-y-1.5">
+                <Label className="text-xs">Extension <span className="text-destructive">*</span></Label>
+                <Select value={form.extname} onChange={sf('extname')} disabled={saving || !tenantId}>
+                  <option value="">{tenantId ? '— Select extension —' : 'Select a company first'}</option>
+                  {pbxExtensions.map(x => {
+                    const val = x.sip_username || x.extension
+                    return <option key={x.extension_uuid || x.id} value={val}>{x.extension}{x.effective_caller_id_name ? ` — ${x.effective_caller_id_name}` : ''}</option>
+                  })}
+                </Select>
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label className="text-xs">
+                Phones (DIDs){smsEnabled && <span className="text-destructive"> *</span>}
+              </Label>
+              <MultiSelectDropdown
+                options={didOptions}
+                selected={form.dids}
+                onChange={(nums) => setForm(p => ({ ...p, dids: nums }))}
+                placeholder={tenantId ? 'Select DIDs…' : 'Select a company first'}
+                summaryNoun="DIDs"
+                className="w-full"
+              />
+              {smsEnabled && <p className="text-[11px] text-muted-foreground">Required — SMS is enabled for this company.</p>}
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="px-6 py-4 border-t bg-muted/30">
+          <Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button onClick={save} disabled={saving}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+            Create User
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// Password reset for a UC user. Two options:
+//   1. Send a reset notification (POST /user/userNotify with numeric id).
+//   2. Set a custom password (edit API /user/editTokenpbx with { userid: uuid, password }),
+//      asking for the new password once.
+function UcPasswordResetDialog({ user, onClose, onDone }) {
+  const [mode, setMode] = useState('notify')   // 'notify' | 'custom'
+  const [pw, setPw] = useState('')
+  const [showPw, setShowPw] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!user) return
+    setMode('notify'); setPw(''); setShowPw(false); setError(''); setSaving(false)
+  }, [user])
+
+  const submit = async () => {
+    setError('')
+    try {
+      if (mode === 'notify') {
+        setSaving(true)
+        await ucUsersApi.notify(user.id)
+        toast.success('Password reset email sent.')
+      } else {
+        if (!pw) { setError('Enter a new password.'); return }
+        setSaving(true)
+        await ucUsersApi.update({ userid: user.uuid, password: pw, other: '0' })
+        toast.success('Password updated.')
+      }
+      onDone()
+    } catch (e) {
+      setError(apiErrorMessage(e, 'Failed to reset password.'))
+    } finally { setSaving(false) }
+  }
+
+  const name = user ? ([user.firstName, user.lastName].filter(Boolean).join(' ') || user.email || 'this user') : ''
+
+  const ModeCard = ({ value, icon: Icon, title, desc }) => {
+    const active = mode === value
+    return (
+      <button
+        type="button"
+        onClick={() => setMode(value)}
+        disabled={saving}
+        className={cn(
+          'relative flex items-start gap-3 rounded-xl border p-3 text-left transition-colors',
+          active ? 'border-primary bg-primary/5' : 'border-input hover:border-primary/40',
+        )}
+      >
+        <div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', active ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground')}>
+          <Icon className="h-4 w-4" />
+        </div>
+        <div className="min-w-0">
+          <p className={cn('text-sm font-medium', active && 'text-primary')}>{title}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{desc}</p>
+        </div>
+        {active && (
+          <span className="absolute right-2 top-2 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-primary-foreground">
+            <Check className="h-3 w-3" />
+          </span>
+        )}
+      </button>
+    )
+  }
+
+  return (
+    <Dialog open={!!user} onOpenChange={(v) => { if (!v && !saving) onClose() }}>
+      <DialogContent className="w-[95vw] max-w-md p-0 gap-0 overflow-hidden">
+        <DialogHeader className="px-6 pt-5 pb-4 border-b">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <KeyRound className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <DialogTitle className="text-base">Reset Password</DialogTitle>
+              {user && <p className="text-xs text-muted-foreground mt-0.5 truncate">for {name}</p>}
+            </div>
+          </div>
+        </DialogHeader>
+
+        {user && (
+          <div className="px-6 py-5 space-y-4">
+            {error && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
+            )}
+
+            {/* Mode selector */}
+            <div className="grid grid-cols-2 gap-2 items-stretch">
+              <ModeCard value="notify" icon={Mail}     title="Send reset email"    desc="Email a reset link to the user." />
+              <ModeCard value="custom" icon={KeyRound}  title="Set custom password" desc="Set a new password directly." />
+            </div>
+
+            {mode === 'custom' && (
+              <div className="space-y-1.5">
+                <Label>New Password <span className="text-destructive">*</span></Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                  <Input
+                    type={showPw ? 'text' : 'password'}
+                    value={pw}
+                    onChange={(e) => setPw(e.target.value)}
+                    disabled={saving}
+                    autoComplete="new-password"
+                    placeholder="Enter new password"
+                    className="pl-9 pr-20 font-mono"
+                  />
+                  <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+                    <button type="button" title="Generate" disabled={saving} onClick={() => { setPw(randomToken(14)); setShowPw(true) }}
+                      className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+                      <Wand2 className="h-3.5 w-3.5" />
+                    </button>
+                    <button type="button" title={showPw ? 'Hide' : 'Show'} disabled={saving} onClick={() => setShowPw(s => !s)}
+                      className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+                      {showPw ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
+                </div>
+                <p className="text-[11px] text-muted-foreground">The user's password will be changed immediately.</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        <DialogFooter className="px-6 py-4 border-t bg-muted/30">
+          <Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button onClick={submit} disabled={saving}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+            {mode === 'notify' ? 'Send Reset Email' : 'Update Password'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// Pull the most useful human-readable message out of an axios error from the
+// external IHS Phone API, whose error shape varies (message / error / detail /
+// field-keyed arrays / plain string).
+function apiErrorMessage(e, fallback = 'Request failed.') {
+  const d = e?.response?.data
+  if (!d) return e?.message || fallback
+  if (typeof d === 'string') return d
+  if (d.message) return d.message
+  if (d.error)   return typeof d.error === 'string' ? d.error : JSON.stringify(d.error)
+  if (d.detail)  return d.detail
+  // Field-level errors: { field: ["msg", ...] } or { field: "msg" }
+  const parts = Object.entries(d)
+    .filter(([, v]) => v != null)
+    .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+  if (parts.length) return parts.join(' | ')
+  return fallback
+}
+
+// Random alphanumeric string generator (used to fill ext/password when voice
+// is disabled, so the payload still carries plausible values).
+function randomToken(len = 16) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  let out = ''
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)]
+  return out
+}
+
+// Edit dialog for a UC user. Editable: firstName, lastName, userType, and each
+// extension's DID/extname + phones. Email is read-only. The save sends `userid`
+// plus only the fields that changed; if ANY extension field changed, the whole
+// extensions array is sent (in the /user/editTokenpbx shape).
+function UcUserEditDialog({ user, onClose, onSaved }) {
+  const [form, setForm] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const originalRef = useRef(null)
+  // PBX extensions + DIDs for this user's tenant, populating the dropdowns.
+  const [pbxExtensions, setPbxExtensions] = useState([])
+  const [pbxDids, setPbxDids] = useState([])
+  const tenantId = user?.company?.tenant_id
+  // Voice off → the extension/DID selection is meaningless; hide it and send a
+  // random ext + password on save instead.
+  const voiceEnabled = user?.company?.voiceenable !== false
+
+  // Fetch the tenant's PBX extensions and DIDs when the dialog opens.
+  useEffect(() => {
+    if (!user || !tenantId) { setPbxExtensions([]); setPbxDids([]); return }
+    let alive = true
+    const params = { page_size: 500, tenant: tenantId }
+    extensionsApi.list(params)
+      .then(({ data }) => { if (alive) setPbxExtensions(Array.isArray(data) ? data : data.results || []) })
+      .catch(() => { if (alive) setPbxExtensions([]) })
+    destinationsApi.list({ ...params, destination_enabled: true })
+      .then(({ data }) => { if (alive) setPbxDids(Array.isArray(data) ? data : data.results || []) })
+      .catch(() => { if (alive) setPbxDids([]) })
+    return () => { alive = false }
+  }, [user, tenantId])
+
+  useEffect(() => {
+    if (!user) { setForm(null); return }
+    setError('')
+    // Map each extension to the editable shape (extname, password, phones).
+    const initial = {
+      firstName: user.firstName || '',
+      lastName:  user.lastName || '',
+      userType:  user.userType || 'user',
+      is_active: user.is_active !== false,
+      extensions: (user.extension || []).map(ext => ({
+        extname:  ext.extname || ext.username || '',
+        password: ext.password || '',
+        // DIDs are edited as a set of numbers; keep original phone objects to
+        // preserve label/is_primary metadata when rebuilding on save.
+        phoneNumbers: (ext.phones || []).map(p => p.phone).filter(Boolean),
+        _origPhones: (ext.phones || []).map(p => ({
+          phone:      p.phone || '',
+          label:      p.label || '',
+          is_primary: !!p.is_primary,
+        })),
+      })),
+    }
+    setForm(initial)
+    // Snapshot for change detection (deep clone).
+    originalRef.current = JSON.parse(JSON.stringify(initial))
+  }, [user])
+
+  const setField = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }))
+  const setExt = (i, k, v) => setForm(p => ({
+    ...p,
+    extensions: p.extensions.map((ex, idx) => idx === i ? { ...ex, [k]: v } : ex),
+  }))
+  const setExtDids = (i, nums) => setForm(p => ({
+    ...p,
+    extensions: p.extensions.map((ex, idx) => idx === i ? { ...ex, phoneNumbers: nums } : ex),
+  }))
+
+  const save = async () => {
+    if (!form.firstName.trim()) { setError('First name is required.'); return }
+    if (!form.lastName.trim())  { setError('Last name is required.'); return }
+    const orig = originalRef.current
+    const payload = { userid: user.uuid }   // always sent
+    if (form.firstName !== orig.firstName) payload.firstName = form.firstName
+    if (form.lastName  !== orig.lastName)  payload.lastName  = form.lastName
+    if (form.userType  !== orig.userType)  payload.userType  = form.userType
+    if (form.is_active !== orig.is_active) payload.is_active = form.is_active
+    if (!voiceEnabled) {
+      // Voice disabled: no extension UI. Always send a single random ext +
+      // password so the payload carries plausible values (no phones/DIDs).
+      payload.extensions = [{ extname: randomToken(6), password: randomToken(16), phones: [] }]
+    } else if (JSON.stringify(form.extensions) !== JSON.stringify(orig.extensions)) {
+      // If anything in extensions changed, send the whole array in the API shape:
+      // { extname, password, phones:[{phone,label,is_primary}] }. Rebuild phones
+      // from the selected DID numbers, preserving label/primary metadata where the
+      // number existed before; the first selected DID is primary.
+      payload.extensions = form.extensions.map(ex => ({
+        extname:  ex.extname,
+        password: ex.password,
+        phones: (ex.phoneNumbers || []).map((num, i) => {
+          const prev = (ex._origPhones || []).find(p => p.phone === num)
+          return { phone: num, label: prev?.label || '', is_primary: i === 0 }
+        }),
+      }))
+    }
+    // Nothing but userid → nothing to save. (When voice is off, extensions is
+    // always present, so this only triggers for voice-enabled users.)
+    if (Object.keys(payload).length === 1) {
+      setError('No changes to save.'); return
+    }
+    setSaving(true); setError('')
+    try {
+      await ucUsersApi.update(payload)
+      toast.success('User updated.')
+      onSaved()
+    } catch (e) {
+      setError(apiErrorMessage(e, 'Failed to update user.'))
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <Dialog open={!!user} onOpenChange={(v) => { if (!v && !saving) onClose() }}>
+      <DialogContent className="w-[95vw] max-w-xl p-0 gap-0 overflow-hidden">
+        <DialogHeader className="px-6 pt-5 pb-4 border-b">
+          <DialogTitle>Edit User</DialogTitle>
+        </DialogHeader>
+        {user && form && (
+          <div className="px-6 py-5 space-y-5 max-h-[70vh] overflow-y-auto">
+            {error && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>First Name <span className="text-destructive">*</span></Label>
+                <Input value={form.firstName} onChange={setField('firstName')} disabled={saving} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Last Name <span className="text-destructive">*</span></Label>
+                <Input value={form.lastName} onChange={setField('lastName')} disabled={saving} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Email</Label>
+                <Input value={user.email || ''} readOnly disabled className="bg-muted text-muted-foreground" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>User Type</Label>
+                <Select value={form.userType} onChange={setField('userType')} disabled={saving}>
+                  {UC_USER_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </Select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between rounded-xl border px-4 py-3">
+              <div>
+                <p className="text-sm font-medium leading-none">Active</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">Disable to suspend this user's access.</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={form.is_active}
+                aria-label="Active"
+                disabled={saving}
+                onClick={() => setForm(p => ({ ...p, is_active: !p.is_active }))}
+                className={cn(
+                  'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-2 border-transparent transition-colors',
+                  form.is_active ? 'bg-primary' : 'bg-input',
+                  saving && 'opacity-50 cursor-not-allowed',
+                )}
+              >
+                <span className={cn('block h-4 w-4 rounded-full bg-white shadow transition-transform', form.is_active ? 'translate-x-4' : 'translate-x-0')} />
+              </button>
+            </div>
+
+            {voiceEnabled && (
+            <div className="space-y-2">
+              <Label>Extensions</Label>
+              {form.extensions.length === 0 && (
+                <p className="text-sm text-muted-foreground">No extensions on this user.</p>
+              )}
+              {form.extensions.map((ext, ei) => (
+                <div key={ei} className="rounded-xl border p-3 space-y-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Extension</Label>
+                    <Select value={ext.extname} onChange={(e) => setExt(ei, 'extname', e.target.value)} disabled={saving}>
+                      <option value="">— Select extension —</option>
+                      {/* Keep the current value selectable even if it's not in the fetched list. */}
+                      {ext.extname && !pbxExtensions.some(x => (x.sip_username || x.extension) === ext.extname) && (
+                        <option value={ext.extname}>{ext.extname}</option>
+                      )}
+                      {pbxExtensions.map(x => {
+                        const val = x.sip_username || x.extension
+                        return (
+                          <option key={x.extension_uuid || x.id} value={val}>
+                            {x.extension}{x.effective_caller_id_name ? ` — ${x.effective_caller_id_name}` : ''}
+                          </option>
+                        )
+                      })}
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Phones (DIDs)</Label>
+                    <MultiSelectDropdown
+                      options={(() => {
+                        const opts = pbxDids.map(d => ({
+                          value: d.destination_number,
+                          label: `${d.destination_number}${d.destination_name ? ` — ${d.destination_name}` : ''}`,
+                        }))
+                        // Keep any already-assigned DID selectable even if it's not in the fetched list.
+                        for (const num of ext.phoneNumbers || []) {
+                          if (num && !opts.some(o => o.value === num)) opts.unshift({ value: num, label: num })
+                        }
+                        return opts
+                      })()}
+                      selected={ext.phoneNumbers || []}
+                      onChange={(nums) => setExtDids(ei, nums)}
+                      placeholder="Select DIDs…"
+                      summaryNoun="DIDs"
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+            )}
+          </div>
+        )}
+        <DialogFooter className="px-6 py-4 border-t bg-muted/30">
+          <Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button onClick={save} disabled={saving || !form}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+            Save Changes
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // Edit dialog for a single organization. The companyEditPBX endpoint only
 // updates the feature flags (voice/sms/fax) and active status — name/code/domain
 // are read-only here. Requires the logged-in PBX user's email in the payload.
@@ -282,7 +1241,7 @@ function OrgEditDialog({ org, userEmail, onClose, onSaved }) {
       toast.success('Organization updated.')
       onSaved()
     } catch (e) {
-      setError(e?.response?.data?.message || 'Failed to update organization.')
+      setError(apiErrorMessage(e, 'Failed to update organization.'))
     } finally { setSaving(false) }
   }
 
@@ -1052,6 +2011,7 @@ export default function Users() {
         <div className="flex items-center gap-1 border-b">
           {[
             { key: 'organization', label: 'Organization Settings' },
+            { key: 'uc',           label: 'UC Users' },
             { key: 'pbx',          label: 'PBX Users' },
           ].map(tab => (
             <button
@@ -1071,6 +2031,11 @@ export default function Users() {
       {/* ── Organization Settings ── */}
       {isSuperadmin && activeTab === 'organization' && (
         <OrganizationSettingsTab userEmail={loggedInUser?.user_email || loggedInUser?.email || ''} />
+      )}
+
+      {/* ── UC Users ── */}
+      {isSuperadmin && activeTab === 'uc' && (
+        <UcUsersTab userEmail={loggedInUser?.user_email || loggedInUser?.email || ''} />
       )}
 
       {/* ── PBX Users ── */}

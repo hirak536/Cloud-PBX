@@ -341,9 +341,34 @@ export const organizations = {
     if (is_active !== undefined) params.is_active = is_active
     return orgAxios.get('/company/listPBXCompany', { params })
   },
+  // Full unpaginated company list — used to populate the company filter dropdown.
+  listAll: () => orgAxios.get('/company/listPBXCompany', { params: { data_all: true } }),
   // POST /company/companyEditPBX
   // Payload: { id, useremail (logged-in PBX user), voiceenable, smsenable, faxenable, is_active }
   update: (data) => orgAxios.post('/company/companyEditPBX', data),
+}
+
+// ── UC Users (external IHS Phone user directory) ──────────────────────────────
+export const ucUsers = {
+  // GET /user/listpbx?search=&page=&page_size=&is_active=&code=
+  // `code` scopes to a company; omit it (undefined) for all companies.
+  // Returns { success: [...users], pagination: {...} }.
+  list: ({ search = '', page = 1, page_size = 20, is_active, code, usertype } = {}) => {
+    const params = { search, page, page_size }
+    if (is_active !== undefined) params.is_active = is_active
+    if (code) params.code = code
+    // usertype may be a comma-joined list of selected types (omit when empty).
+    if (usertype) params.usertype = usertype
+    return orgAxios.get('/user/listpbx', { params })
+  },
+  // POST /user/editTokenpbx — send `userid` plus only the changed fields.
+  update: (data) => orgAxios.post('/user/editTokenpbx', data),
+  // DELETE /user/deletepbx/{uuid} — hard delete. Body carries the acting user's email.
+  delete: (uuid, useremail) => orgAxios.delete(`/user/deletepbx/${uuid}`, { data: { useremail } }),
+  // POST /user/userNotify — send a password-reset notification. `userid` is the numeric id.
+  notify: (userid) => orgAxios.post('/user/userNotify', { userid }),
+  // POST /user/useraddpbx — create a UC user.
+  create: (data) => orgAxios.post('/user/useraddpbx', data),
 }
 
 export const firewall = {
