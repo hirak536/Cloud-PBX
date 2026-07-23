@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useSelector } from 'react-redux'
 import { selectTenant, selectAuth } from '@/store'
-import { roleOf, creatableRoles, GRANTABLE_PAGES, GRANTABLE_PATHS } from '@/lib/permissions'
+import { roleOf, creatableRoles, GRANTABLE_PAGES, GRANTABLE_PATHS, ACTION_CONTROLLED_PAGES, ACTIONS, ACTION_LABELS } from '@/lib/permissions'
 import { users as api, tenants as tenantsApi, auth as authApi, ucUsers as ucUsersApi, extensions as extensionsApi, destinations as didsApi, fax as faxApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -41,7 +41,8 @@ function CompanyFilter({ tenants, value, onChange }) {
     <Select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="h-9 min-w-[12rem]"
+      wrapperClassName="w-44 shrink-0"
+      className="h-9 text-sm"
     >
       <option value="">All companies</option>
       {tenants.map(t => (
@@ -65,6 +66,9 @@ const EMPTY_FORM = {
   tenant_uuid: '',
   admin_tenant_uuids: [],
   allowed_pages: [],
+  // Per-page action grants for action-controlled pages, e.g.
+  // { extensions: ['view','add','edit'] }. Only meaningful for the 'user' role.
+  allowed_actions: {},
   // [] = all fax boxes (no restriction); non-empty = only those fax box UUIDs.
   allowed_fax_uuids: [],
 }
@@ -1068,7 +1072,9 @@ export default function Users() {
   // Roles the logged-in user is allowed to create (superuser → all; admin → user only).
   const allowedRoles = creatableRoles(myRole)
 
-  const [activeTab, setActiveTab]  = useState('uc')
+  // UC Users is superadmin-only; everyone else starts on (and is limited to) PBX.
+  const canSeeUcUsers = myRole === 'superuser'
+  const [activeTab, setActiveTab]  = useState(canSeeUcUsers ? 'uc' : 'pbx')
   const [rows, setRows]            = useState([])
   const [loading, setLoading]      = useState(true)
   const [search, setSearch]        = useState('')
@@ -1143,6 +1149,7 @@ export default function Users() {
       tenant_uuid: r.tenant || '',
       admin_tenant_uuids: (r.admin_tenants || []).map(t => t.tenant_uuid),
       allowed_pages: Array.isArray(r.allowed_pages) ? r.allowed_pages : [],
+      allowed_actions: (r.allowed_actions && typeof r.allowed_actions === 'object') ? r.allowed_actions : {},
       allowed_fax_uuids: Array.isArray(r.allowed_fax_uuids) ? r.allowed_fax_uuids : [],
     }
   }
@@ -1200,19 +1207,55 @@ export default function Users() {
   }
 
   const togglePage = (path) => {
-    setForm(p => ({
-      ...p,
-      allowed_pages: p.allowed_pages.includes(path)
+    setForm(p => {
+      const has = p.allowed_pages.includes(path)
+      const allowed_pages = has
         ? p.allowed_pages.filter(x => x !== path)
-        : [...p.allowed_pages, path],
-    }))
+        : [...p.allowed_pages, path]
+      const allowed_actions = { ...p.allowed_actions }
+      if (ACTION_CONTROLLED_PAGES.includes(path)) {
+        if (has) {
+          // Page removed — drop its action grants.
+          delete allowed_actions[path]
+        } else if (!allowed_actions[path]) {
+          // Page newly granted — default to full actions (admin can pare down).
+          allowed_actions[path] = [...ACTIONS]
+        }
+      }
+      return { ...p, allowed_pages, allowed_actions }
+    })
+  }
+
+  // Toggle a single action for an action-controlled page.
+  const toggleAction = (path, action) => {
+    setForm(p => {
+      const current = p.allowed_actions[path] || []
+      const next = current.includes(action)
+        ? current.filter(a => a !== action)
+        : [...current, action]
+      return { ...p, allowed_actions: { ...p.allowed_actions, [path]: next } }
+    })
   }
 
   const toggleAllPages = () => {
-    setForm(p => ({
-      ...p,
-      allowed_pages: p.allowed_pages.length === GRANTABLE_PATHS.length ? [] : [...GRANTABLE_PATHS],
-    }))
+    setForm(p => {
+      const selectingAll = p.allowed_pages.length !== GRANTABLE_PATHS.length
+      const allowed_actions = { ...p.allowed_actions }
+      if (selectingAll) {
+        // Seed full actions for every action-controlled page.
+        for (const path of ACTION_CONTROLLED_PAGES) {
+          if (!allowed_actions[path]) allowed_actions[path] = [...ACTIONS]
+        }
+      } else {
+        // Clearing all pages clears all action grants too.
+        for (const path of ACTION_CONTROLLED_PAGES) delete allowed_actions[path]
+      }
+      return {
+        ...p,
+        allowed_pages: selectingAll ? [...GRANTABLE_PATHS] : [],
+        allowed_actions,
+      }
+    })
   }
 
   const toggleFaxBox = (uuid) => {
@@ -1263,6 +1306,15 @@ export default function Users() {
       admin_tenant_uuids: form.role === 'admin' ? form.admin_tenant_uuids : [],
       // Per-user page grants only apply to standard users; clear for admin/superuser.
       allowed_pages: form.role === 'user' ? form.allowed_pages : [],
+      // Per-page action grants: only for a standard user, pruned to pages that are
+      // both action-controlled and actually granted. Clear for admin/superuser.
+      allowed_actions: form.role === 'user'
+        ? Object.fromEntries(
+            ACTION_CONTROLLED_PAGES
+              .filter(p => form.allowed_pages.includes(p) && (form.allowed_actions[p] || []).length > 0)
+              .map(p => [p, form.allowed_actions[p]])
+          )
+        : {},
       // Fax-box scoping only applies to a standard user who has the Fax page granted
       // and explicitly chose to restrict to selected boxes. Otherwise [] = all boxes.
       allowed_fax_uuids:
@@ -1496,20 +1548,43 @@ export default function Users() {
                       </div>
                       {group.items.map(item => {
                         const checked = form.allowed_pages.includes(item.path)
+                        const actionable = ACTION_CONTROLLED_PAGES.includes(item.path)
+                        const pageActions = form.allowed_actions[item.path] || []
                         return (
-                          <label
-                            key={item.path}
-                            className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/50 select-none"
-                          >
-                            <input
-                              type="checkbox"
-                              className="h-4 w-4 shrink-0 rounded border-input accent-primary"
-                              checked={checked}
-                              onChange={() => togglePage(item.path)}
-                            />
-                            <span className="text-sm">{item.label}</span>
-                            {checked && <Check className="h-3.5 w-3.5 text-primary ml-auto shrink-0" />}
-                          </label>
+                          <div key={item.path}>
+                            <label
+                              className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/50 select-none"
+                            >
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 shrink-0 rounded border-input accent-primary"
+                                checked={checked}
+                                onChange={() => togglePage(item.path)}
+                              />
+                              <span className="text-sm">{item.label}</span>
+                              {actionable && checked && (
+                                <span className="text-[10px] text-muted-foreground ml-2">
+                                  ({pageActions.length ? pageActions.map(a => ACTION_LABELS[a]).join(', ') : 'no actions'})
+                                </span>
+                              )}
+                              {checked && <Check className="h-3.5 w-3.5 text-primary ml-auto shrink-0" />}
+                            </label>
+                            {actionable && checked && (
+                              <div className="flex flex-wrap gap-3 px-3 pb-2 pl-10">
+                                {ACTIONS.map(a => (
+                                  <label key={a} className="flex items-center gap-1.5 cursor-pointer select-none">
+                                    <input
+                                      type="checkbox"
+                                      className="h-3.5 w-3.5 shrink-0 rounded border-input accent-primary"
+                                      checked={pageActions.includes(a)}
+                                      onChange={() => toggleAction(item.path, a)}
+                                    />
+                                    <span className="text-xs text-muted-foreground">{ACTION_LABELS[a]}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         )
                       })}
                     </div>
@@ -1609,7 +1684,7 @@ export default function Users() {
       {/* Tab switcher */}
       <div className="flex items-center gap-1 border-b">
         {[
-          { key: 'uc',  label: 'UC Users' },
+          ...(canSeeUcUsers ? [{ key: 'uc', label: 'UC Users' }] : []),
           { key: 'pbx', label: 'PBX Users' },
         ].map(tab => (
           <button
@@ -1628,12 +1703,14 @@ export default function Users() {
       {/* ── PBX Users ── */}
       {activeTab === 'pbx' && (
         <>
-          <div className="flex items-center gap-3">
-            <div className="relative flex-1 max-w-xs">
+          <div className="flex items-center justify-end gap-3">
+            <div className="relative w-72">
               <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input placeholder="Search users..." className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
-            <CompanyFilter tenants={allTenants} value={companyFilter} onChange={setCompanyFilter} />
+            {allTenants.length > 1 && (
+              <CompanyFilter tenants={allTenants} value={companyFilter} onChange={setCompanyFilter} />
+            )}
             <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" />Add User</Button>
           </div>
 
@@ -1677,7 +1754,13 @@ export default function Users() {
                                 ? <span className="text-xs text-muted-foreground italic">All companies</span>
                                 : r.tenant_name || r.tenant_code
                                   ? <span>{r.tenant_name || r.tenant_code}{r.tenant_name && r.tenant_code && <span className="block text-xs text-muted-foreground">{r.tenant_code}</span>}</span>
-                                  : <span className="text-muted-foreground">—</span>}
+                                  : r.admin_tenants?.length > 0
+                                    ? <div className="flex flex-wrap gap-1">
+                                        {r.admin_tenants.map(t => (
+                                          <Badge key={t.tenant_uuid} variant="outline" className="text-xs">{t.tenant_name || t.tenant_code}</Badge>
+                                        ))}
+                                      </div>
+                                    : <span className="text-muted-foreground">—</span>}
                             </TableCell>
                             <TableCell>
                               {role === 'superuser'
@@ -1727,7 +1810,7 @@ export default function Users() {
       )}
 
       {/* ── UC Users ── */}
-      {activeTab === 'uc' && (
+      {canSeeUcUsers && activeTab === 'uc' && (
         <UcUsersTab
           tenantCode={currentTenant?.tenant_code}
           tenantUuid={currentTenant?.tenant_uuid}

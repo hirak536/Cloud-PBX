@@ -1,6 +1,9 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
+import { useSelector } from 'react-redux'
+import { selectAuth } from '@/store'
+import { canPerformAction } from '@/lib/permissions'
 import { conferences as api } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,6 +23,11 @@ export default function Conferences() {
   const isCreate   = location.pathname.endsWith('/conferences/new')
   const routeId    = editParamId
   const editorOpen = isCreate || routeId !== undefined
+
+  const { user: authUser } = useSelector(selectAuth)
+  const canAdd    = canPerformAction(authUser, 'conferences', 'add')
+  const canEdit   = canPerformAction(authUser, 'conferences', 'edit')
+  const canDelete = canPerformAction(authUser, 'conferences', 'delete')
 
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -124,7 +132,7 @@ export default function Conferences() {
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input placeholder="Search conferences..." className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
-        <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" />Add Conference</Button>
+        {canAdd && (<Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" />Add Conference</Button>)}
       </div>
       <Card><CardContent className="p-0 overflow-x-auto">
         <Table>
@@ -143,10 +151,10 @@ export default function Conferences() {
                   <TableCell>{r.conference_pin ? '••••' : '—'}</TableCell>
                   <TableCell><Badge variant={r.conference_enabled !== false ? 'success' : 'secondary'}>{r.conference_enabled !== false ? 'Active' : 'Disabled'}</Badge></TableCell>
                   <TableCell><div className="flex gap-1">
-                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}><Pencil className="h-3.5 w-3.5" /></Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => handleDelete(id)} disabled={deleting === id}>
+                    {canEdit && (<Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}><Pencil className="h-3.5 w-3.5" /></Button>)}
+                    {canDelete && (<Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => handleDelete(id)} disabled={deleting === id}>
                       {deleting === id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                    </Button>
+                    </Button>)}
                   </div></TableCell>
                 </TableRow>
               })}

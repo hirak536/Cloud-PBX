@@ -96,6 +96,48 @@ export const GRANTABLE_PAGES = [
 // Flat list of all grantable page paths.
 export const GRANTABLE_PATHS = GRANTABLE_PAGES.flatMap(g => g.items.map(i => i.path))
 
+// ── Per-page action grants ─────────────────────────────────────────────────────
+// Pages opted into action-level (view/add/edit/delete) control. Only these pages
+// expose action checkboxes in the user editor and are enforced per-action on the
+// backend (see core.permissions._PAGE_PERMISSION_PREFIXES). A page not listed
+// here keeps page-level-only behavior: access to the page implies all actions.
+// Keys must match the page path stored in allowed_pages.
+export const ACTIONS = ['view', 'add', 'edit', 'delete']
+
+export const ACTION_LABELS = {
+  view:   'View',
+  add:    'Create',
+  edit:   'Edit',
+  delete: 'Delete',
+}
+
+export const ACTION_CONTROLLED_PAGES = [
+  'extensions',
+  'ring-groups',
+  'ivr-menus',
+  'call-flows',
+  'destinations',
+  'voicemails',
+  'call-centers',
+  'conferences',
+  'working-hours',
+]
+
+// True if `user` may perform `action` ('view'|'add'|'edit'|'delete') on `page`.
+// - Superusers and admins (any is_staff) bypass — full access, like allowed_pages.
+// - For pages NOT under action control, access to the page implies all actions.
+// - For standard users on an action-controlled page, the action must be present
+//   in allowed_actions[page].
+export function canPerformAction(user, page, action) {
+  if (roleOf(user) !== 'user') return true
+  if (!ACTION_CONTROLLED_PAGES.includes(page)) return true
+  const grants = user?.allowed_actions && typeof user.allowed_actions === 'object'
+    ? user.allowed_actions
+    : {}
+  const allowed = Array.isArray(grants[page]) ? grants[page] : []
+  return allowed.includes(action)
+}
+
 // True if `user` may access the route identified by `page` (path without slash).
 // - Role-gated pages (in PAGE_ROLES) use the role tier check.
 // - For standard users, other pages require an explicit grant in allowed_pages.

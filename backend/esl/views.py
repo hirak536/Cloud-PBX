@@ -193,22 +193,62 @@ class FSApiView(APIView):
             )
 
 
+# Sentinel returned when a non-superuser cannot be resolved to a tenant they are
+# authorized for. Callers MUST treat this as "return nothing" — never as "no
+# filter", which would leak every tenant's data.
+_TENANT_DENY = object()
+
+
 def _tenant_code_for_request(request):
-    """Return the tenant_code for the current request.
-    For superusers, resolves from the ?tenant=<uuid> query param sent by the frontend.
-    Returns None only if no tenant can be determined (should not happen in normal use).
+    """Resolve the tenant_code a request is scoped to.
+
+    Rules (fail-closed for non-superusers):
+      * Superuser: ?tenant=<uuid> selects any tenant; None (no param) = all tenants.
+      * Everyone else: ?tenant=<uuid> is honored ONLY if the user is bound to that
+        tenant (via user.tenant) or administers it (admin_tenants M2M). Otherwise,
+        fall back to the user's own tenant. If neither yields an authorized tenant,
+        return _TENANT_DENY so the caller returns an empty result rather than
+        exposing other tenants' data.
+
+    Returns: a tenant_code str, None (superuser = unscoped), or _TENANT_DENY.
     """
-    # Superuser/staff: ?tenant= param takes priority over the user's own tenant binding
-    if request.user.is_authenticated and (request.user.is_superuser or request.user.is_staff):
-        tenant_uuid = request.query_params.get('tenant') or request.GET.get('tenant')
-        if tenant_uuid:
-            from core.models import Tenant
-            t = Tenant.objects.filter(tenant_uuid=tenant_uuid).first()
-            return t.tenant_code if t else None
-    tenant = getattr(request, 'tenant', None)
-    if tenant:
-        return tenant.tenant_code
-    return None
+    from core.models import Tenant
+
+    user = request.user
+    if not user.is_authenticated:
+        return _TENANT_DENY
+
+    requested_uuid = request.query_params.get('tenant') or request.GET.get('tenant')
+
+    # Superuser: full cross-tenant visibility, optionally narrowed by ?tenant=.
+    if user.is_superuser:
+        if requested_uuid:
+            t = Tenant.objects.filter(tenant_uuid=requested_uuid).first()
+            return t.tenant_code if t else _TENANT_DENY
+        return None  # unscoped — sees all
+
+    # Non-superuser: build the set of tenants this user may view.
+    own_tenant = getattr(user, 'tenant', None)
+    allowed = {}
+    if own_tenant:
+        allowed[str(own_tenant.tenant_uuid)] = own_tenant.tenant_code
+    # Tenant admins (own tenant FK is typically null) manage tenants via M2M.
+    for t in user.admin_tenants.all():
+        allowed[str(t.tenant_uuid)] = t.tenant_code
+
+    if not allowed:
+        return _TENANT_DENY
+
+    if requested_uuid:
+        # Honor the selection only if the user is authorized for it.
+        code = allowed.get(str(requested_uuid))
+        return code if code is not None else _TENANT_DENY
+
+    # No explicit selection: if the user administers exactly one tenant, use it.
+    if len(allowed) == 1:
+        return next(iter(allowed.values()))
+    # Ambiguous (multi-tenant admin, no selection) — deny rather than leak.
+    return _TENANT_DENY
 
 
 def _call_belongs_to_tenant(row: dict, tenant_code: str) -> bool:
@@ -242,6 +282,8 @@ class FSCallsView(APIView):
             raw = esl.show_calls()
             rows = _normalize_json_rows(raw)
             tenant_code = _tenant_code_for_request(request)
+            if tenant_code is _TENANT_DENY:
+                return Response({'calls': []})
             if tenant_code:
                 rows = [r for r in rows if _call_belongs_to_tenant(r, tenant_code)]
             calls = [
@@ -263,6 +305,101 @@ class FSCallsView(APIView):
                 {'error': str(e)},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+
+
+def _tenant_code_from_call(row: dict) -> str:
+    """Extract the tenant_code embedded in a live call row.
+
+    SIP usernames are formatted `ext-TENANTCODE`, so the tenant code is the
+    suffix after the last dash on cid_num / dest / username. Returns '' when no
+    tenant marker is present (e.g. raw external legs)."""
+    for key in ('cid_num', 'dest', 'username'):
+        val = str(row.get(key, '') or '')
+        # strip any @domain part first
+        val = val.split('@', 1)[0]
+        if '-' in val:
+            code = val.rsplit('-', 1)[-1]
+            if code:
+                return code
+    return ''
+
+
+class FSCallsByTenantView(APIView):
+    """
+    GET /api/v1/freeswitch/calls-by-tenant/
+    Superuser/staff only. Returns, per tenant:
+      - active:  count of live FreeSWITCH channels attributed to the tenant
+      - today:   count of CDR records with start_stamp today (tenant-local)
+    plus grand totals. Tenants with no activity today and no active calls are
+    omitted.
+    """
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        from django.utils import timezone
+        from django.db.models import Count
+        from core.models import Tenant
+        from apps.xml_cdr.models import XmlCdr
+
+        # ── Live active calls grouped by tenant_code ──────────────────────────
+        active_by_code = {}
+        total_active = 0
+        try:
+            esl = get_esl_client()
+            rows = _normalize_json_rows(esl.show_calls())
+            for row in rows:
+                code = _tenant_code_from_call(row)
+                active_by_code[code] = active_by_code.get(code, 0) + 1
+                total_active += 1
+        except Exception as e:
+            logger.error(f"FSCallsByTenantView (calls) error: {e}")
+
+        # ── Today's CDR counts grouped by tenant_code ─────────────────────────
+        today = timezone.localdate()
+        today_by_code = {}
+        try:
+            cdr_rows = (
+                XmlCdr.objects
+                .filter(start_stamp__date=today)
+                .values('tenant_code')
+                .annotate(n=Count('xml_cdr_uuid'))
+            )
+            today_by_code = {r['tenant_code']: r['n'] for r in cdr_rows}
+        except Exception as e:
+            logger.error(f"FSCallsByTenantView (cdr) error: {e}")
+
+        # ── Resolve names & merge ─────────────────────────────────────────────
+        codes = {c for c in (set(active_by_code) | set(today_by_code)) if c}
+        name_by_code = {
+            t.tenant_code: t.tenant_name
+            for t in Tenant.objects.filter(tenant_code__in=codes)
+        }
+
+        tenants = []
+        for code in codes:
+            tenants.append({
+                'tenant_code': code,
+                'tenant_name': name_by_code.get(code, code or 'Unknown'),
+                'active': active_by_code.get(code, 0),
+                'today': today_by_code.get(code, 0),
+            })
+        # Unattributed live legs (no tenant marker), if any
+        unknown_active = active_by_code.get('', 0)
+        if unknown_active:
+            tenants.append({
+                'tenant_code': '',
+                'tenant_name': 'Unattributed',
+                'active': unknown_active,
+                'today': today_by_code.get('', 0),
+            })
+
+        tenants.sort(key=lambda t: (-t['active'], -t['today'], t['tenant_name'].lower()))
+
+        return Response({
+            'tenants': tenants,
+            'total_active': total_active,
+            'total_today': sum(today_by_code.values()),
+        })
 
 
 class FSChannelsView(APIView):
@@ -304,6 +441,8 @@ class FSRegistrationsView(APIView):
             raw = esl.show_registrations()
             rows = _normalize_json_rows(raw)
             tenant_code = _tenant_code_for_request(request)
+            if tenant_code is _TENANT_DENY:
+                return Response({'registrations': []})
             if tenant_code:
                 rows = [r for r in rows if _reg_belongs_to_tenant(r, tenant_code)]
 
@@ -388,6 +527,8 @@ class FSExtensionStatusView(APIView):
             )
 
         tenant_code = _tenant_code_for_request(request)
+        if tenant_code is _TENANT_DENY:
+            return Response({'extensions': {}})
         if tenant_code:
             tenant_exts = set(
                 Extension.objects.filter(
@@ -417,6 +558,8 @@ class FSPeerHistoryView(APIView):
 
         # Tenant-scope check for non-superusers
         tenant_code = _tenant_code_for_request(request)
+        if tenant_code is _TENANT_DENY:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
         if tenant_code and not sip_username.endswith(f'-{tenant_code}'):
             return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -457,7 +600,12 @@ class FSRebootView(APIView):
         if not call_id:
             return Response({'error': 'call_id is required'}, status=status.HTTP_400_BAD_REQUEST)
         tenant_code = _tenant_code_for_request(request)
+        if tenant_code is _TENANT_DENY:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
         if not tenant_code:
+            # Only superusers may target a tenant via the request body.
+            if not request.user.is_superuser:
+                return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
             tenant_code = request.data.get('tenant_code', '').strip()
         if not tenant_code:
             return Response({'error': 'tenant_code is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -490,8 +638,12 @@ class FSDeregisterView(APIView):
             return Response({'error': 'call_id is required'}, status=status.HTTP_400_BAD_REQUEST)
         # Resolve tenant_code — required for everyone including superusers
         tenant_code = _tenant_code_for_request(request)
+        if tenant_code is _TENANT_DENY:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
         if not tenant_code:
-            # Superuser must supply tenant_code in the request body
+            # Only superusers may supply tenant_code in the request body.
+            if not request.user.is_superuser:
+                return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
             tenant_code = request.data.get('tenant_code', '').strip()
         if not tenant_code:
             return Response({'error': 'tenant_code is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -542,6 +694,8 @@ class FSOriginateView(APIView):
             dst = dst[1:]
 
         tenant_code = _tenant_code_for_request(request)
+        if tenant_code is _TENANT_DENY:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
         context = f'default-{tenant_code}' if tenant_code else 'default'
 
         # If src is a plain extension number (no / or @), wrap as user/ endpoint

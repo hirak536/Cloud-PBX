@@ -1,6 +1,9 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
+import { useSelector } from 'react-redux'
+import { selectAuth } from '@/store'
+import { canPerformAction } from '@/lib/permissions'
 import { ivrMenus as api, extensions as extensionsApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -71,6 +74,11 @@ export default function IvrMenus() {
   const isCreate   = location.pathname.endsWith('/ivr-menus/new')
   const routeId    = editParamId
   const editorOpen = isCreate || routeId !== undefined
+
+  const { user: authUser } = useSelector(selectAuth)
+  const canAdd    = canPerformAction(authUser, 'ivr-menus', 'add')
+  const canEdit   = canPerformAction(authUser, 'ivr-menus', 'edit')
+  const canDelete = canPerformAction(authUser, 'ivr-menus', 'delete')
 
   const [rows, setRows]             = useState([])
   const [loading, setLoading]       = useState(true)
@@ -477,7 +485,7 @@ export default function IvrMenus() {
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input placeholder="Search IVR menus…" className="pl-8" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" /> Add IVR Menu</Button>
+        {canAdd && (<Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" /> Add IVR Menu</Button>)}
       </div>
 
       {/* Table */}
@@ -513,13 +521,13 @@ export default function IvrMenus() {
                         </TableCell>
                         <TableCell>
                           <div className="flex gap-1">
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
+                            {canEdit && (<Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
                               <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                            </Button>)}
+                            {canDelete && (<Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
                               onClick={() => handleDelete(id)} disabled={deleting === id}>
                               {deleting === id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                            </Button>
+                            </Button>)}
                           </div>
                         </TableCell>
                       </TableRow>

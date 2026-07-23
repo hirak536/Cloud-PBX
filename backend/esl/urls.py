@@ -5,6 +5,7 @@ urlpatterns = [
     path('status/', views.FSStatusView.as_view(), name='fs-status'),
     path('api/', views.FSApiView.as_view(), name='fs-api'),
     path('calls/', views.FSCallsView.as_view(), name='fs-calls'),
+    path('calls-by-tenant/', views.FSCallsByTenantView.as_view(), name='fs-calls-by-tenant'),
     path('channels/', views.FSChannelsView.as_view(), name='fs-channels'),
     path('registrations/', views.FSRegistrationsView.as_view(), name='fs-registrations'),
     path('extension-status/', views.FSExtensionStatusView.as_view(), name='fs-extension-status'),

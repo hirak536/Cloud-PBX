@@ -2,6 +2,9 @@ import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
+import { useSelector } from 'react-redux'
+import { selectAuth } from '@/store'
+import { canPerformAction } from '@/lib/permissions'
 import { ringGroups as api, extensions as extensionsApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -117,6 +120,11 @@ export default function RingGroups() {
   const isCreate   = location.pathname.endsWith('/ring-groups/new')
   const routeId    = editParamId
   const editorOpen = isCreate || routeId !== undefined
+
+  const { user: authUser } = useSelector(selectAuth)
+  const canAdd    = canPerformAction(authUser, 'ring-groups', 'add')
+  const canEdit   = canPerformAction(authUser, 'ring-groups', 'edit')
+  const canDelete = canPerformAction(authUser, 'ring-groups', 'delete')
 
   const [rows, setRows]           = useState([])
   const [loading, setLoading]     = useState(true)
@@ -552,9 +560,9 @@ export default function RingGroups() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
-        <Button size="sm" onClick={openCreate}>
+        {canAdd && (<Button size="sm" onClick={openCreate}>
           <Plus className="h-4 w-4" /> Add Ring Group
-        </Button>
+        </Button>)}
       </div>
 
       {/* Table */}
@@ -597,17 +605,17 @@ export default function RingGroups() {
                         </TableCell>
                         <TableCell>
                           <div className="flex gap-1">
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
+                            {canEdit && (<Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
                               <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
+                            </Button>)}
+                            {canDelete && (<Button
                               variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
                               onClick={() => handleDelete(id)} disabled={deleting === id}
                             >
                               {deleting === id
                                 ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                 : <Trash2 className="h-3.5 w-3.5" />}
-                            </Button>
+                            </Button>)}
                           </div>
                         </TableCell>
                       </TableRow>

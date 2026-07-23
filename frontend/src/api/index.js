@@ -283,6 +283,7 @@ export const statsReport = {
 export const freeswitch = {
   status: () => api.get('/freeswitch/status/'),
   calls: () => api.get('/freeswitch/calls/'),
+  callsByTenant: () => api.get('/freeswitch/calls-by-tenant/'),
   registrations: () => api.get('/freeswitch/registrations/'),
   allRegistrations: () => api.get('/freeswitch/registrations/', { params: { tenant: null } }),
   extensionStatus: () => api.get('/freeswitch/extension-status/'),
@@ -312,6 +313,7 @@ export const tenants = {
   get: (id) => api.get(`/tenants/${id}/`),
   create: (data) => api.post('/tenants/', data),
   update: (id, data) => api.put(`/tenants/${id}/`, data),
+  patch: (id, data) => api.patch(`/tenants/${id}/`, data),
   delete: (id) => api.delete(`/tenants/${id}/`),
   applyRecording: (id) => api.post(`/tenants/${id}/apply-recording/`),
   applyPushNotifications: (id) => api.post(`/tenants/${id}/apply-push-notifications/`),
@@ -319,10 +321,15 @@ export const tenants = {
 
 export const users = {
   list: (p) => api.get('/users/', { params: p }),
-  get: (id) => api.get(`/users/${id}/`),
-  create: (data) => api.post('/users/', data),
-  update: (id, data) => api.put(`/users/${id}/`, data),
-  delete: (id) => api.delete(`/users/${id}/`),
+  // Single-user reads/writes must NOT inherit the global tenant selector: the
+  // target user may belong to a different company than the one selected at the
+  // top of the page. Passing `tenant: null` tells the request interceptor to
+  // skip stamping the active tenant, so lookups resolve by id alone and the
+  // tenant assignment comes solely from the form body.
+  get: (id) => api.get(`/users/${id}/`, { params: { tenant: null } }),
+  create: (data) => api.post('/users/', data, { params: { tenant: null } }),
+  update: (id, data) => api.put(`/users/${id}/`, data, { params: { tenant: null } }),
+  delete: (id) => api.delete(`/users/${id}/`, { params: { tenant: null } }),
 }
 
 const UC_API_TOKEN = import.meta.env.VITE_UC_API_TOKEN

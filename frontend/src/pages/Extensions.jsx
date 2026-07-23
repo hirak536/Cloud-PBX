@@ -4,7 +4,8 @@ import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useInfiniteList } from '@/hooks/useInfiniteList'
 import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import { useSelector } from 'react-redux'
-import { selectTenant } from '@/store'
+import { selectTenant, selectAuth } from '@/store'
+import { canPerformAction } from '@/lib/permissions'
 import { extensions as extensionsApi, voicemails as voicemailsApi, gateways as gatewaysApi, ringGroups as ringGroupsApi, destinations as destinationsApi, freeswitch as freeswitchApi, freeswitchCache } from '@/api'
 import DestinationPicker, { EMPTY_DEST } from '@/components/DestinationPicker'
 import { useDestinationData } from '@/hooks/useDestinationData'
@@ -1529,6 +1530,11 @@ export default function Extensions() {
   const routeId    = editParamId
   const editorOpen = isCreate || routeId !== undefined
 
+  const { user: authUser } = useSelector(selectAuth)
+  const canAdd    = canPerformAction(authUser, 'extensions', 'add')
+  const canEdit   = canPerformAction(authUser, 'extensions', 'edit')
+  const canDelete = canPerformAction(authUser, 'extensions', 'delete')
+
   const [search, setSearch] = useState('')
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [saving, setSaving] = useState(false)
@@ -2003,10 +2009,12 @@ export default function Extensions() {
           {flushing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 text-amber-500" />}
           Flush Cache
         </Button>
+        {canAdd && (
         <Button variant="outline" size="sm" onClick={() => setBulkOpen(true)}>
           <Layers className="h-4 w-4" />
           Bulk Add
         </Button>
+        )}
         <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting} title="Export extensions to Excel">
           {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
           {exporting ? 'Exporting…' : 'Export'}
@@ -2015,10 +2023,12 @@ export default function Extensions() {
           {exportingGs ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
           {exportingGs ? 'Exporting…' : 'Grandstream'}
         </Button>
+        {canAdd && (
         <Button size="sm" onClick={openCreate}>
           <Plus className="h-4 w-4" />
           Add Extension
         </Button>
+        )}
       </div>
 
       <BulkAddExtensionsDialog
@@ -2123,9 +2133,12 @@ export default function Extensions() {
                           >
                             {copiedId === id ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
                           </Button>
+                          {canEdit && (
                           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(row)}>
                             <Pencil className="h-3.5 w-3.5" />
                           </Button>
+                          )}
+                          {canDelete && (
                           <Button
                             variant="ghost" size="icon"
                             className="h-7 w-7 text-destructive hover:text-destructive"
@@ -2134,6 +2147,7 @@ export default function Extensions() {
                           >
                             {deleting === id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                           </Button>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -2155,7 +2169,7 @@ export default function Extensions() {
       {/* Floating selection action bar */}
       <div
         className={`pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-4 transition-all duration-300
-          ${selectedIds.size > 0 ? 'translate-y-0 opacity-100' : 'translate-y-8 opacity-0'}`}
+          ${canDelete && selectedIds.size > 0 ? 'translate-y-0 opacity-100' : 'translate-y-8 opacity-0'}`}
       >
         <div className="pointer-events-auto flex items-center gap-3 rounded-full border bg-background/95 px-5 py-2.5 shadow-xl backdrop-blur supports-[backdrop-filter]:bg-background/80">
           <span className="grid h-6 min-w-6 place-items-center rounded-full bg-primary px-2 text-xs font-semibold text-primary-foreground">

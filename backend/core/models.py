@@ -385,6 +385,14 @@ class User(AbstractBaseUser):
     # and superusers get full role-based access regardless of this list.
     # Empty list = no extra pages granted; null/absent = treated as empty.
     allowed_pages = models.JSONField(default=list, blank=True)
+    # Per-user action grants within a granted page. Maps a page key to the list
+    # of actions the user may perform, e.g.
+    #   {"extensions": ["view", "add", "edit"], "ring-groups": ["view"]}
+    # Canonical actions: view / add / edit / delete. A missing page or missing
+    # action means "not allowed". Only consulted for standard (non-staff) users;
+    # admins and superusers bypass. Defaults to full actions on granted pages via
+    # the accompanying data migration so existing users keep current behavior.
+    allowed_actions = models.JSONField(default=dict, blank=True)
     # Per-user fax-box scoping. List of Fax box UUIDs (as strings) this user may
     # see. Empty list = NO restriction (all fax boxes in their tenant). Only
     # consulted for standard (non-staff) users; admins/superusers see all.

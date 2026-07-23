@@ -10,6 +10,22 @@ from .models import Domain
 logger = logging.getLogger(__name__)
 
 
+class NoCacheApiMiddleware(MiddlewareMixin):
+    """Stop browsers from heuristically caching API GETs.
+
+    DRF responses carry no Cache-Control header, so browsers apply heuristic
+    caching and can serve a stale list right after a create/delete (the deleted
+    row keeps showing until a hard refresh). Mark every /api/ response as
+    no-store so refetches always hit the server.
+    """
+
+    def process_response(self, request, response):
+        if request.path.startswith('/api/'):
+            response['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+            response['Pragma'] = 'no-cache'
+        return response
+
+
 class TenantMiddleware(MiddlewareMixin):
     """Resolves the current Tenant from the JWT bearer token and attaches it
     to the request as ``request.tenant``.

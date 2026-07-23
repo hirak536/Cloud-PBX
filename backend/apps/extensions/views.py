@@ -8,11 +8,12 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from core.mixins import TenantScopedViewSetMixin
 from .models import Extension, ExtensionUser
 from .serializers import ExtensionSerializer, ExtensionListSerializer, ExtensionUserSerializer
+from .permissions import ExtensionPermission
 
 
 class ExtensionViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Extension.objects.select_related('tenant', 'domain', 'outbound_did')
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, ExtensionPermission]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['enabled', 'voicemail_enabled', 'call_group', 'user_context', 'extension']
     search_fields = ['extension', 'number_alias', 'effective_caller_id_name',

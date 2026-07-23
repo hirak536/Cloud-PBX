@@ -1,14 +1,16 @@
-from rest_framework import viewsets, filters, status
+from rest_framework import viewsets, filters, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from core.mixins import TenantScopedViewSetMixin
 from .models import CallFlow, CallFlowOption
 from .serializers import CallFlowSerializer, CallFlowListSerializer, CallFlowOptionSerializer
+from .permissions import CallFlowPermission
 
 class CallFlowViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = CallFlow.objects.select_related('tenant', 'domain').prefetch_related('options')
     serializer_class = CallFlowSerializer
+    permission_classes = [permissions.IsAuthenticated, CallFlowPermission]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['domain', 'call_flow_enabled']
     search_fields = ['call_flow_name', 'call_flow_extension']

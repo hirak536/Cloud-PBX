@@ -1,5 +1,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
+import { useSelector } from 'react-redux'
+import { selectAuth } from '@/store'
+import { canPerformAction } from '@/lib/permissions'
 import {
   destinations as destinationsApi,
   extensions as extensionsApi,
@@ -715,6 +718,11 @@ function DayNightSection() {
   const routeId    = editParamId
   const editorOpen = isCreate || routeId !== undefined
 
+  const { user: authUser } = useSelector(selectAuth)
+  const canAdd    = canPerformAction(authUser, 'call-flows', 'add')
+  const canEdit   = canPerformAction(authUser, 'call-flows', 'edit')
+  const canDelete = canPerformAction(authUser, 'call-flows', 'delete')
+
   const [switches, setSwitches]   = useState([])
   const [loading, setLoading]     = useState(true)
   const [toggling, setToggling]   = useState(null)
@@ -776,9 +784,9 @@ function DayNightSection() {
           <ToggleLeft className="h-4 w-4 text-amber-500" />
           <h2 className="text-sm font-semibold text-foreground">Day/Night Switches</h2>
         </div>
-        <Button size="sm" onClick={openNew} className="h-7 text-xs gap-1">
+        {canAdd && (<Button size="sm" onClick={openNew} className="h-7 text-xs gap-1">
           <Plus className="h-3.5 w-3.5" /> New Switch
-        </Button>
+        </Button>)}
       </div>
 
       <Card>
@@ -857,13 +865,13 @@ function DayNightSection() {
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1 justify-end">
-                          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(cf)}>
+                          {canEdit && (<Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(cf)}>
                             <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                          </Button>)}
+                          {canDelete && (<Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
                             disabled={isDeleting} onClick={() => handleDelete(cf)}>
                             {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                          </Button>
+                          </Button>)}
                         </div>
                       </TableCell>
                     </TableRow>

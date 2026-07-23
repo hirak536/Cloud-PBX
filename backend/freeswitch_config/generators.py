@@ -135,17 +135,34 @@ def _add_recording_actions(cond, domain_name):
                      data='api_on_answer_2=uuid_record ${uuid} start ${record_file}')
 
 
+def _tenant_active(domain):
+    """A domain is servable only if it has no tenant (universal/global) or its
+    tenant is enabled. Disabling a tenant keeps all its data in the DB but
+    excludes it from every XML lookup — the domain simply reads as 'not found'."""
+    if domain is None:
+        return False
+    tenant = domain.tenant
+    return tenant is None or tenant.tenant_enabled
+
+
 def _resolve_domain(domain_name):
-    """Look up a Domain by name, falling back to domain alias settings."""
+    """Look up a Domain by name, falling back to domain alias settings.
+
+    Domains belonging to a disabled tenant are treated as non-existent so their
+    directory/dialplan XML is never generated (see _tenant_active)."""
     from core.models import Domain, DomainSetting
     try:
-        return Domain.objects.get(domain_name=domain_name, domain_enabled=True)
+        domain = Domain.objects.select_related('tenant').get(
+            domain_name=domain_name, domain_enabled=True,
+        )
+        if _tenant_active(domain):
+            return domain
     except Domain.DoesNotExist:
         pass
     # Fall back to domain alias: a DomainSetting with category='domain',
     # subcategory='alias', value=<alias_name> maps an IP or alternate name
     # to an existing domain (same storage pattern as original FusionPBX).
-    setting = DomainSetting.objects.select_related('domain').filter(
+    setting = DomainSetting.objects.select_related('domain', 'domain__tenant').filter(
         domain_setting_category='domain',
         domain_setting_subcategory='alias',
         domain_setting_name='text',
@@ -153,17 +170,22 @@ def _resolve_domain(domain_name):
         domain_setting_enabled=True,
         domain__domain_enabled=True,
     ).first()
-    if setting:
+    if setting and _tenant_active(setting.domain):
         return setting.domain
 
     # If no match found and domain_name looks like an IP, check for universal or single-tenant fallback.
     if re.match(r'^\d+\.\d+\.\d+\.\d+$', domain_name):
         # 1. Try universal domain
-        universal = Domain.objects.filter(domain_universal=True, domain_enabled=True).first()
-        if universal:
+        universal = Domain.objects.select_related('tenant').filter(
+            domain_universal=True, domain_enabled=True,
+        ).first()
+        if _tenant_active(universal):
             return universal
-        # 2. If exactly one enabled domain exists, assume it's the target
-        domains = list(Domain.objects.filter(domain_enabled=True))
+        # 2. If exactly one enabled domain exists (with an active tenant), assume it's the target
+        domains = [
+            d for d in Domain.objects.select_related('tenant').filter(domain_enabled=True)
+            if _tenant_active(d)
+        ]
         if len(domains) == 1:
             return domains[0]
 
@@ -2199,8 +2221,14 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
     if domain is None:
         # External profile sends hostname (e.g. "freeswitch") instead of SIP domain.
         # Fall back to the first enabled domain so inbound DID routing still works.
+        # Skip domains of disabled tenants — their DIDs must not route.
         from core.models import Domain
-        domain = Domain.objects.filter(domain_enabled=True).order_by('domain_name').first()
+        domain = next(
+            (d for d in Domain.objects.select_related('tenant')
+                 .filter(domain_enabled=True).order_by('domain_name')
+             if _tenant_active(d)),
+            None,
+        )
     if domain is None:
         return not_found_xml()
 
@@ -2254,9 +2282,10 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
     # Carriers often send calls to the server IP or a generic hostname, bypassing
     # our domain resolution. To ensure DIDs always work, we include all enabled
     # destinations from all domains in the 'public' context.
+    # Exclude DIDs of disabled tenants — data is kept but must not route inbound.
     dests = list(Destination.objects.select_related('domain', 'tenant').filter(
         destination_enabled=True,
-    ).order_by('destination_number'))
+    ).exclude(tenant__tenant_enabled=False).order_by('destination_number'))
 
     logger.info(f"Generating global public context with {len(dests)} destinations.")
 

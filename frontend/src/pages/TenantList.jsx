@@ -29,6 +29,7 @@ const EMPTY = {
   timezone: 'UTC',
   provisioning_webhook_url: '',
   recording_enabled: false,
+  tenant_enabled: true,
 }
 
 const EMPTY_PARKING = { enabled: false, slot_start: 700, slot_end: 720 }
@@ -55,6 +56,7 @@ export default function TenantList() {
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
   const [deleting, setDeleting] = useState(null)
+  const [toggling, setToggling] = useState(null)
 
   // Webhook URL state
   const [webhookPreset, setWebhookPreset] = useState(DEFAULT_WEBHOOK_URL)
@@ -81,6 +83,7 @@ export default function TenantList() {
     tenant_name: r.tenant_name || '',
     tenant_code: r.tenant_code || '',
     timezone: 'UTC',
+    tenant_enabled: r.tenant_enabled !== false,
   })
 
   // Navigate to the full-page editor; the route effect below loads the form.
@@ -144,7 +147,8 @@ export default function TenantList() {
 
       let newTenantUuid = editId
       if (editId) {
-        await api.update(editId, payload)
+        // PATCH: the edit form only holds a subset of fields, so send just those.
+        await api.patch(editId, payload)
       } else {
         const { data: created } = await api.create(payload)
         newTenantUuid = created.tenant_uuid
@@ -180,6 +184,17 @@ export default function TenantList() {
     if (!confirm('Delete this tenant? This cannot be undone.')) return
     setDeleting(id)
     try { await api.delete(id); load(); fetchTenants() } finally { setDeleting(null) }
+  }
+
+  const handleToggleEnabled = async (r) => {
+    const next = r.tenant_enabled === false
+    if (!next && !confirm(
+      `Disable "${r.tenant_name}"?\n\nData is kept, but the tenant is excluded from ` +
+      `FreeSWITCH — no registrations, calls, or inbound DID routing until re-enabled.`
+    )) return
+    setToggling(r.tenant_uuid)
+    try { await api.patch(r.tenant_uuid, { tenant_enabled: next }); load(); fetchTenants() }
+    finally { setToggling(null) }
   }
 
   const filtered = rows.filter(r =>
@@ -229,6 +244,41 @@ export default function TenantList() {
               <div className="space-y-1.5">
                 <Label>Timezone</Label>
                 <Input value="UTC" disabled readOnly />
+              </div>
+            </div>
+
+            {/* ── Status (enable / disable) — available on create and edit ── */}
+            <div className="flex items-center justify-between rounded-md border px-4 py-3">
+              <div>
+                <Label className="text-sm font-medium">Status</Label>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Disabling keeps all tenant data but excludes it from FreeSWITCH
+                  (no registrations, calls, or inbound DID routing).
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setForm(p => ({ ...p, tenant_enabled: false }))}
+                  className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                    !form.tenant_enabled
+                      ? 'bg-destructive text-destructive-foreground'
+                      : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                  }`}
+                >
+                  Disabled
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setForm(p => ({ ...p, tenant_enabled: true }))}
+                  className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                    form.tenant_enabled
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                  }`}
+                >
+                  Active
+                </button>
               </div>
             </div>
 
@@ -428,9 +478,21 @@ export default function TenantList() {
                       <TableCell className="text-sm text-muted-foreground">{r.timezone || '—'}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">{r.domain_count ?? '—'}</TableCell>
                       <TableCell>
-                        <Badge variant={r.tenant_enabled !== false ? 'success' : 'secondary'}>
-                          {r.tenant_enabled !== false ? 'Active' : 'Disabled'}
-                        </Badge>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleEnabled(r)}
+                          disabled={toggling === r.tenant_uuid}
+                          title={r.tenant_enabled !== false ? 'Click to disable' : 'Click to enable'}
+                          className="disabled:opacity-60 disabled:cursor-wait"
+                        >
+                          <Badge
+                            variant={r.tenant_enabled !== false ? 'success' : 'secondary'}
+                            className="cursor-pointer gap-1 hover:opacity-80 transition-opacity"
+                          >
+                            {toggling === r.tenant_uuid && <Loader2 className="h-3 w-3 animate-spin" />}
+                            {r.tenant_enabled !== false ? 'Active' : 'Disabled'}
+                          </Badge>
+                        </button>
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-1">

@@ -3,6 +3,40 @@
 All notable changes to IHS-PBX are documented in this file.
 Newest entries on top.
 
+## 2026-07-21
+
+### Security — tenant isolation leak on the FreeSWITCH live views (active calls, registrations)
+A tenant admin could see **other tenants' live data** (e.g. a CGH admin seeing IHDT's active calls on the dashboard). Root cause: `_tenant_code_for_request()` in `backend/esl/views.py` granted the `?tenant=` override to any `is_staff` user (not just superusers) and returned `None` — interpreted downstream as *no filter* — whenever `request.tenant` was null. Tenant admins administer tenants via the `admin_tenants` M2M and typically have a null `tenant` FK, so their requests fell through to the unscoped path.
+
+- **Rewrote `_tenant_code_for_request()` to fail closed.** Superusers: `?tenant=` selects any tenant, absent = all. Everyone else: the requested tenant is honored **only if** the user owns it (`user.tenant`) or administers it (`admin_tenants`); an unauthorized or ambiguous request returns a new `_TENANT_DENY` sentinel instead of `None`.
+- **All 7 call sites now handle `_TENANT_DENY`** as "return nothing" (empty list / `403`), never as "no filter": `FSCallsView`, `FSRegistrationsView`, `FSExtensionStatusView`, `FSPeerHistoryView`, `FSRebootView`, `FSDeregisterView`, `FSOriginateView`.
+- **Body `tenant_code` fallback** on the reboot/deregister actions is now superuser-only.
+
+### Tenants — enable/disable option (keeps data, excludes from FreeSWITCH XML)
+Disabling a tenant now retains all its data in the DB but removes it from every FreeSWITCH XML lookup — no registrations, calls, or inbound DID routing until re-enabled. Reuses the existing `Tenant.tenant_enabled` field (no migration).
+
+- **XML exclusion** (`backend/freeswitch_config/generators.py`): new `_tenant_active()` helper; `_resolve_domain()` treats a disabled tenant's domain as non-existent (directory + dialplan return not-found), the dialplan fallback-domain picker skips disabled tenants, and the global public/DID context excludes disabled tenants' destinations.
+- **Cache invalidation** (`backend/freeswitch_config/signals.py`): registered a `Tenant` post_save/post_delete handler that flushes dialplan + directory + sticky-DID caches so a toggle takes effect immediately.
+- **Frontend** (`frontend/src/pages/TenantList.jsx`): a Status (Active/Disabled) toggle in the tenant create/edit form, plus an inline clickable status badge in the list for one-click enable/disable. Edit now saves via PATCH (`tenants.patch` added in `api/index.js`) so it only sends the form's fields.
+
+### API — stop browsers caching list responses (stale-after-delete fix)
+Deleting a row (e.g. an extension) left the deleted item visible in the list until a hard refresh. DRF responses carried no `Cache-Control`, so browsers applied heuristic caching to `GET` list calls.
+
+- Added `NoCacheApiMiddleware` (`backend/core/middleware.py`, registered in `config/settings/base.py`) setting `Cache-Control: no-store` on all `/api/` responses. App-wide fix — every list page, not just Extensions.
+
+## 2026-07-20
+
+### pgbouncer — connection pooler in front of all Postgres databases
+Installed pgbouncer to front all three PostgreSQL databases — `ihspbx`, `ihspbx_cdr`, `ihspbx_metrics` — on `127.0.0.1:6432` in **transaction** pooling mode. Django (and the ESL listener, Celery, and metrics samplers) now connect through the pooler instead of hitting Postgres `5432` directly.
+
+- **Cutover** (`.env`): `DB_HOST` `localhost` → `127.0.0.1`, `DB_PORT` `5432` → `6432`; the CDR/metrics DB configs inherit the same host/port. Pre-cutover `.env` preserved as `.env.bak.pgbouncer`.
+- **Config** (`/etc/pgbouncer/`): `pgbouncer.ini` + `userlist.txt` (both `0640 postgres:postgres`); original stock config kept as `pgbouncer.ini.orig`.
+- **Gotchas worked through:**
+  - **SCRAM auth**: the SCRAM verifier from `pg_authid` (and `auth_query`) fails the server-side leg — pgbouncer needs the **cleartext password in `userlist.txt`** so it can complete a fresh SCRAM handshake to the backend while still verifying the client's SCRAM handshake.
+  - **`search_path` startup option**: Django sends `-c search_path=public`, which pgbouncer rejects unless `ignore_startup_parameters = extra_float_digits,search_path` is set. Also pinned at the role level (`ALTER ROLE ihspbx SET search_path=public`).
+  - **Server-side cursors**: transaction pooling breaks them → `DISABLE_SERVER_SIDE_CURSORS = True` in `config/settings/base.py`.
+- **Observability note:** metrics samplers read the same `.env`, so the `pg_conns=X/Y` figure now reflects the pgbouncer-side pool rather than the raw client connection count.
+
 ## 2026-06-23
 
 ### HOMER SIP capture — deployed as the capture engine (native, no Docker)

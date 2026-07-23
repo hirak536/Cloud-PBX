@@ -1,4 +1,4 @@
-from rest_framework import viewsets, filters
+from rest_framework import viewsets, filters, permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from core.mixins import TenantScopedViewSetMixin
 from .models import WorkingHours, WorkingHoursDay, WorkingHoursHoliday
@@ -8,11 +8,13 @@ from .serializers import (
     WorkingHoursDaySerializer,
     WorkingHoursHolidaySerializer,
 )
+from .permissions import WorkingHoursPermission
 
 
 class WorkingHoursViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = WorkingHours.objects.select_related('tenant', 'domain').prefetch_related('days', 'holidays')
     serializer_class = WorkingHoursSerializer
+    permission_classes = [permissions.IsAuthenticated, WorkingHoursPermission]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['domain', 'working_hours_enabled']
     search_fields = ['working_hours_name', 'dialplan_extension']

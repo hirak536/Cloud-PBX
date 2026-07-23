@@ -140,6 +140,7 @@ export default function App() {
           <Route path="destinations/new"    element={page('destinations', Destinations)} />
           <Route path="destinations/:id/edit" element={page('destinations', Destinations)} />
           <Route path="working-hours"      element={page('working-hours', WorkingHours)} />
+          <Route path="working-hours/:id/edit" element={page('working-hours', WorkingHours)} />
           <Route path="custom-destinations" element={page('custom-destinations', CustomDestinations)} />
           <Route path="custom-destinations/new" element={page('custom-destinations', CustomDestinations)} />
           <Route path="custom-destinations/:id/edit" element={page('custom-destinations', CustomDestinations)} />

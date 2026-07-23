@@ -127,6 +127,14 @@ def _on_extension_model(sender, instance, **kwargs):
     _invalidate_directory_all()
 
 
+def _on_tenant_model(sender, instance, **kwargs):
+    """Tenant change: enabling/disabling a tenant gates all its domains out of
+    XML generation, so flush dialplan + directory + DID caches everywhere."""
+    _invalidate_dialplan_all()
+    _invalidate_directory_all()
+    _reset_sticky_did_cache()
+
+
 # ── Signal registration ───────────────────────────────────────────────────────
 
 def register_signals():
@@ -152,6 +160,7 @@ def register_signals():
     from apps.voicemails.models import Voicemail
     from apps.fax.models import Fax
     from apps.gateways.models import Gateway
+    from core.models import Tenant
 
     def _connect(handler, model):
         name = model.__name__
@@ -160,6 +169,9 @@ def register_signals():
 
     # Extension: dialplan + directory
     _connect(_on_extension_model, Extension)
+
+    # Tenant: enable/disable gates all its domains — flush everything
+    _connect(_on_tenant_model, Tenant)
 
     # Voicemail: dialplan + directory + voicemail.conf
     _connect(_on_voicemail_model, Voicemail)

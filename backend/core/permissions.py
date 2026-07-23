@@ -24,6 +24,60 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Per-user action grants
+# ---------------------------------------------------------------------------
+# The per-page action grants stored on ``User.allowed_actions`` use frontend
+# page keys × canonical actions (view/add/edit/delete). The DRF viewsets, on the
+# other hand, gate on FusionPBX-style permission strings (``extension_add``,
+# ``ivr_menu_delete``, …). This registry bridges the two so a per-user grant can
+# satisfy a viewset's ``action_permissions`` check regardless of the app-specific
+# prefix. Only the pages opted into action-level control are listed; permission
+# strings not present here are never satisfied by ``allowed_actions`` and fall
+# back to group-based checks (unchanged behavior).
+#
+# Shape: permission_string -> (page_key, action)
+ACTION_PERMISSION_REGISTRY = {}
+
+
+def _register_page_actions(page_key, prefix):
+    """Map ``{prefix}_{view,add,edit,delete}`` permission strings to (page, action)."""
+    for action in ('view', 'add', 'edit', 'delete'):
+        ACTION_PERMISSION_REGISTRY[f'{prefix}_{action}'] = (page_key, action)
+
+
+# page_key (matches the frontend route/allowed_pages key) -> permission prefix
+_PAGE_PERMISSION_PREFIXES = {
+    'extensions':    'extension',
+    'ring-groups':   'ring_group',
+    'ivr-menus':     'ivr_menu',
+    'call-flows':    'call_flow',
+    'destinations':  'destination',
+    'voicemails':    'voicemail',
+    'call-centers':  'call_center',
+    'conferences':   'conferences',
+    'working-hours': 'working_hours',
+}
+for _page, _prefix in _PAGE_PERMISSION_PREFIXES.items():
+    _register_page_actions(_page, _prefix)
+
+
+def user_action_allowed(user, permission_name: str) -> bool:
+    """True if *user*'s per-user ``allowed_actions`` grants ``permission_name``.
+
+    Returns False for permission strings not covered by the action registry, so
+    callers can fall through to group-based checks. Never grants for the empty
+    string.
+    """
+    mapping = ACTION_PERMISSION_REGISTRY.get(permission_name)
+    if not mapping:
+        return False
+    page, action = mapping
+    grants = getattr(user, 'allowed_actions', None) or {}
+    page_actions = grants.get(page) or []
+    return action in page_actions
+
+
+# ---------------------------------------------------------------------------
 # Low-level helper
 # ---------------------------------------------------------------------------
 
@@ -45,6 +99,12 @@ def check_permission(user, permission_name: str) -> bool:
     if not user or not user.is_authenticated:
         return False
     if getattr(user, 'is_superuser', False):
+        return True
+
+    # Per-user action grants (allowed_actions) can satisfy action-level
+    # permission strings without group membership. Group permissions below
+    # remain a valid alternative source.
+    if user_action_allowed(user, permission_name):
         return True
 
     return GroupPermission.objects.filter(
@@ -114,6 +174,12 @@ class IsTenantAdmin(BasePermission):
             return False
         if getattr(user, 'is_superuser', False):
             return True
+        # Tenant-scoped admins are modeled via the ``admin_tenants`` M2M
+        # (UserTenantAccess), not group permissions. Recognize them here so the
+        # serializer/UI notion of "Admin" matches this gate. Object-level tenant
+        # scoping is enforced separately in the affected viewsets.
+        if user.admin_tenants.exists():
+            return True
         return check_permission(user, self.PERMISSION_NAME)
 
 
@@ -158,11 +224,20 @@ class HasPBXPermission(BasePermission):
         user = request.user
         if not user or not user.is_authenticated:
             return False
-        if getattr(user, 'is_superuser', False):
+        # Superusers and staff admins bypass action-level gating: per-user action
+        # grants only constrain standard (non-staff) users, mirroring how
+        # allowed_pages works. Admins retain full access to every action.
+        if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
             return True
 
-        # Action-level map takes priority (ViewSet actions).
-        action_permissions = getattr(view, 'action_permissions', {})
+        # Action-level map takes priority (ViewSet actions). The map may live on
+        # the permission subclass (e.g. ExtensionPermission.action_permissions)
+        # or be overridden per-view; prefer the view, then this instance.
+        action_permissions = (
+            getattr(view, 'action_permissions', None)
+            or getattr(self, 'action_permissions', None)
+            or {}
+        )
         action = getattr(view, 'action', None)
         if action and action in action_permissions:
             required = action_permissions[action]
@@ -170,8 +245,12 @@ class HasPBXPermission(BasePermission):
                 return True
             return check_permission(user, required)
 
-        # Fall back to a single required_permission.
-        required = getattr(view, 'required_permission', None)
+        # Fall back to a single required_permission (view first, then instance).
+        required = (
+            getattr(view, 'required_permission', None)
+            if getattr(view, 'required_permission', None) is not None
+            else getattr(self, 'required_permission', None)
+        )
         if required is None:
             return True  # No restriction defined — allow authenticated users.
         if required == '':

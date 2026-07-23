@@ -1,13 +1,15 @@
 from django.db.models import Q
-from rest_framework import viewsets, filters
+from rest_framework import viewsets, filters, permissions
 from django_filters.rest_framework import DjangoFilterBackend
 from core.mixins import TenantScopedViewSetMixin
 from .models import Destination
 from .serializers import DestinationSerializer, DestinationListSerializer
+from .permissions import DestinationPermission
 
 class DestinationViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Destination.objects.select_related('tenant', 'domain', 'domain__tenant').prefetch_related('actions')
     serializer_class = DestinationSerializer
+    permission_classes = [permissions.IsAuthenticated, DestinationPermission]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['domain', 'dest_type', 'destination_enabled', 'fax']
     search_fields = ['destination_number', 'destination_name', 'destination_description']

@@ -1,6 +1,9 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
+import { useSelector } from 'react-redux'
+import { selectAuth } from '@/store'
+import { canPerformAction } from '@/lib/permissions'
 import { destinations as api, fax as faxApi } from '@/api'
 import { useDestinationData } from '@/hooks/useDestinationData'
 import { useInfiniteList } from '@/hooks/useInfiniteList'
@@ -16,7 +19,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { Plus, Pencil, Trash2, Search, Loader2, X, ChevronDown, PhoneForwarded, PhoneOff, Layers, AlertCircle, CheckCircle2, Sparkles, History, Download } from 'lucide-react'
+import { Plus, Pencil, Trash2, Search, Loader2, X, ChevronDown, PhoneForwarded, PhoneOff, Layers, AlertCircle, CheckCircle2, Sparkles, History, Download, ArrowUpRight } from 'lucide-react'
+import { destRoute } from '@/components/DestinationPicker'
 import { AffinityPanel } from './CustomDestinations'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -172,6 +176,7 @@ function actionLabel(type, targetUuid, extNumber, data) {
 }
 
 function DestinationPicker({ action, onChange, data, loading, searchLoading, onSearch }) {
+  const navigate            = useNavigate()
   const [open, setOpen]     = useState(false)
   const [dropUp, setDropUp] = useState(false)
   const [query, setQuery]   = useState('')
@@ -227,9 +232,10 @@ function DestinationPicker({ action, onChange, data, loading, searchLoading, onS
 
   const label = actionLabel(action.type, action.target_uuid, action.external_number, data)
   const meta  = action.type ? DEST_META[action.type] : null
+  const route = destRoute(action)
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative flex items-center gap-1.5">
       <button
         type="button"
         onClick={toggleOpen}
@@ -254,6 +260,20 @@ function DestinationPicker({ action, onChange, data, loading, searchLoading, onS
         )}
         <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
       </button>
+
+      {route && (
+        <button
+          type="button"
+          onClick={() => navigate(route)}
+          title={`Open ${meta?.label ?? 'destination'} setup`}
+          className={cn(
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-muted-foreground shadow-sm',
+            'hover:border-ring/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors',
+          )}
+        >
+          <ArrowUpRight className="h-4 w-4" />
+        </button>
+      )}
 
       {open && (
         <div className={cn("absolute z-50 w-full min-w-[300px] rounded-xl border border-border/60 bg-card shadow-2xl shadow-black/10 animate-dropdown-in", dropUp ? "bottom-full mb-1" : "mt-1")}>
@@ -1100,6 +1120,11 @@ export default function Destinations() {
   const routeId    = editParamId
   const editorOpen = isCreate || routeId !== undefined
 
+  const { user: authUser } = useSelector(selectAuth)
+  const canAdd    = canPerformAction(authUser, 'destinations', 'add')
+  const canEdit   = canPerformAction(authUser, 'destinations', 'edit')
+  const canDelete = canPerformAction(authUser, 'destinations', 'delete')
+
   const [pageSize, setPageSize]   = useState(DEFAULT_PAGE_SIZE)
   const [search, setSearch]       = useState('')
   const debouncedSearch           = useDebounce(search, 300)
@@ -1238,12 +1263,16 @@ export default function Destinations() {
         destination_number:        form.destination_number,
         destination_number_regex:  form.destination_number_regex,
         destination_name:          form.destination_name,
-        actions: form.actions.map((a, i) => ({
-          dest_type:            a.type,
-          dest_target_uuid:     a.target_uuid || null,
-          dest_external_number: a.external_number || '',
-          order:                i,
-        })),
+        // Drop empty/unset action rows — an action with no type is not a valid
+        // routing step and the API rejects a blank dest_type.
+        actions: form.actions
+          .filter(a => a.type)
+          .map((a, i) => ({
+            dest_type:            a.type,
+            dest_target_uuid:     a.target_uuid || null,
+            dest_external_number: a.external_number || '',
+            order:                i,
+          })),
         max_channels:              form.max_channels !== '' ? parseInt(form.max_channels, 10) : null,
         notify_over_limit:         form.notify_over_limit,
         use_cnam_service:          form.use_cnam_service,
@@ -1428,14 +1457,14 @@ export default function Destinations() {
           <Input placeholder="Search DIDs…" className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
         <PageSizeSelector value={pageSize} onChange={setPageSize} />
-        <Button variant="outline" size="sm" onClick={() => setBulkOpen(true)}>
+        {canAdd && (<Button variant="outline" size="sm" onClick={() => setBulkOpen(true)}>
           <Layers className="h-4 w-4 mr-1" />Bulk Add
-        </Button>
+        </Button>)}
         <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting} title="Export DIDs to Excel">
           {exporting ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Download className="h-4 w-4 mr-1" />}
           {exporting ? 'Exporting…' : 'Export'}
         </Button>
-        <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />Define DID</Button>
+        {canAdd && (<Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />Define DID</Button>)}
       </div>
 
       <BulkAddDIDsDialog
@@ -1479,10 +1508,10 @@ export default function Destinations() {
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-1">
-                          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
+                          {canEdit && (<Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}>
                             <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
+                          </Button>)}
+                          {canDelete && (<Button
                             variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
                             onClick={() => handleDelete(r.destination_uuid)}
                             disabled={deleting === r.destination_uuid}
@@ -1490,7 +1519,7 @@ export default function Destinations() {
                             {deleting === r.destination_uuid
                               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                               : <Trash2 className="h-3.5 w-3.5" />}
-                          </Button>
+                          </Button>)}
                         </div>
                       </TableCell>
                     </TableRow>

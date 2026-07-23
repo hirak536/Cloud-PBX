@@ -11,6 +11,15 @@ class CallCenterPermission(HasPBXPermission):
     edit_permission = 'call_center_edit'
     delete_permission = 'call_center_delete'
 
+    action_permissions = {
+        'list': 'call_center_view',
+        'retrieve': 'call_center_view',
+        'create': 'call_center_add',
+        'update': 'call_center_edit',
+        'partial_update': 'call_center_edit',
+        'destroy': 'call_center_delete',
+    }
+
 
 class CallCenterAgentPermission(HasPBXPermission):
     """Permission class for Call Center Agents."""

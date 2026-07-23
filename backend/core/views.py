@@ -16,7 +16,7 @@ from django.core.mail import EmailMultiAlternatives
 from apps.common.email_templates import password_reset_email, forgot_password_email, welcome_email
 from django.db import IntegrityError
 from django.db.models import Q
-from rest_framework import status, viewsets
+from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -356,6 +356,17 @@ class TenantViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.is_superuser:
             return Tenant.objects.all().order_by('tenant_code')
+        # Tenant-scoped admins manage one or more tenants via the admin_tenants
+        # M2M (their tenant FK is typically null). Surface all of them so the
+        # company/tenant dropdown is populated.
+        admin_tenant_uuids = list(
+            user.admin_tenants.values_list('tenant_uuid', flat=True)
+        )
+        if admin_tenant_uuids:
+            qs = Tenant.objects.filter(tenant_uuid__in=admin_tenant_uuids)
+            if user.tenant_id:
+                qs = qs | Tenant.objects.filter(pk=user.tenant_id)
+            return qs.distinct().order_by('tenant_code')
         if user.tenant_id:
             return Tenant.objects.filter(pk=user.tenant_id)
         return Tenant.objects.none()
@@ -529,6 +540,11 @@ class UserViewSet(viewsets.ModelViewSet):
     """
 
     permission_classes = [IsAuthenticated, IsDomainAdmin]
+    # ?search= filters the (already tenant-scoped) queryset by name/username/email.
+    # DRF applies filter backends after get_queryset(), so this composes with the
+    # company/tenant_code scoping instead of replacing it.
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['full_name', 'username', 'user_email']
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -552,10 +568,22 @@ class UserViewSet(viewsets.ModelViewSet):
         tenant_codes = [c for c in tenant_codes if c]
 
         def apply_tenant_scope(qs):
+            # Match users bound to the tenant via the single-tenant FK OR, for
+            # admins (tenant FK is null), via the admin_tenants M2M. Superusers
+            # are tenant-agnostic and always included. distinct() guards against
+            # row duplication from the M2M join.
             if tenant_codes:
-                return qs.filter(Q(tenant__tenant_code__in=tenant_codes) | Q(is_superuser=True))
+                return qs.filter(
+                    Q(tenant__tenant_code__in=tenant_codes)
+                    | Q(admin_tenants__tenant_code__in=tenant_codes)
+                    | Q(is_superuser=True)
+                ).distinct()
             if tenant_filter:
-                return qs.filter(Q(tenant_id=tenant_filter) | Q(is_superuser=True))
+                return qs.filter(
+                    Q(tenant_id=tenant_filter)
+                    | Q(admin_tenants__tenant_uuid=tenant_filter)
+                    | Q(is_superuser=True)
+                ).distinct()
             return qs
 
         if user.is_superuser:
@@ -568,6 +596,23 @@ class UserViewSet(viewsets.ModelViewSet):
             qs = User.objects.filter(domain_id=user.domain_id).select_related(
                 'tenant', 'domain'
             ).prefetch_related('user_groups__group', 'admin_tenants').order_by('username')
+            return apply_tenant_scope(qs)
+
+        # Tenant-scoped admins (via the admin_tenants M2M). They manage one or
+        # more tenants but have no domain_admin permission and typically a null
+        # tenant FK. Show every user belonging to their tenant(s) — bound either
+        # through the tenant FK or as a co-admin via admin_tenants — plus self.
+        admin_tenant_uuids = list(
+            user.admin_tenants.values_list('tenant_uuid', flat=True)
+        )
+        if admin_tenant_uuids:
+            qs = User.objects.filter(
+                Q(tenant__tenant_uuid__in=admin_tenant_uuids)
+                | Q(admin_tenants__tenant_uuid__in=admin_tenant_uuids)
+                | Q(pk=user.pk)
+            ).select_related('tenant', 'domain').prefetch_related(
+                'user_groups__group', 'admin_tenants'
+            ).distinct().order_by('username')
             return apply_tenant_scope(qs)
 
         # Regular users — return only themselves.

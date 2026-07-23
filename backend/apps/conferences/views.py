@@ -6,12 +6,13 @@ from rest_framework.filters import SearchFilter
 from core.mixins import TenantScopedViewSetMixin
 from .models import Conference, ConferenceProfile, ConferenceProfileSetting, ConferenceCenter
 from .serializers import ConferenceSerializer, ConferenceProfileSerializer, ConferenceCenterSerializer
+from .permissions import ConferencePermission
 
 
 class ConferenceViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Conference.objects.select_related('tenant', 'domain', 'conference_profile')
     serializer_class = ConferenceSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, ConferencePermission]
     filter_backends = [DjangoFilterBackend, SearchFilter]
     filterset_fields = ['conference_enabled', 'conference_record']
     search_fields = ['conference_name', 'conference_extension', 'conference_description']

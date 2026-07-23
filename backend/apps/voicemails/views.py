@@ -16,6 +16,7 @@ from rest_framework.filters import SearchFilter
 from core.mixins import TenantScopedViewSetMixin
 from .models import Voicemail, VoicemailMessage, VoicemailReadState
 from .serializers import VoicemailSerializer, VoicemailMessageSerializer
+from .permissions import VoicemailPermission, VoicemailMessagePermission
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 class VoicemailViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Voicemail.objects.select_related('tenant', 'domain').prefetch_related('options')
     serializer_class = VoicemailSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, VoicemailPermission]
     filter_backends = [DjangoFilterBackend, SearchFilter]
     filterset_fields = ['voicemail_enabled']
     search_fields = ['voicemail_id', 'voicemail_mail_to', 'voicemail_description']
@@ -96,7 +97,7 @@ class VoicemailMessageViewSet(viewsets.ViewSet):
       DELETE /api/voicemail-messages/{uuid}/      delete row + audio file from disk
       GET    /api/voicemail-messages/{uuid}/audio/ stream the audio file
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, VoicemailMessagePermission]
 
     def _get_message(self, uuid):
         try:

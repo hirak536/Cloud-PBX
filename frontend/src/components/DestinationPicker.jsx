@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
-import { Search, Loader2, X, ChevronDown, PhoneForwarded, PhoneOff } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Search, Loader2, X, ChevronDown, PhoneForwarded, PhoneOff, ArrowUpRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useDebounce } from '@/hooks/useDebounce'
 
@@ -52,15 +53,43 @@ export function destLabel(dest, data) {
   return null
 }
 
+// ─── Setup-page route resolver ────────────────────────────────────────────────
+// Returns the edit route for destinations that have a dedicated setup page, or
+// null for types with nothing to navigate to (hangup, number, unset).
+
+export function destRoute(dest) {
+  if (!dest?.type || !dest.target_uuid) return null
+  switch (dest.type) {
+    case 'extension':          return `/extensions/${dest.target_uuid}/edit`
+    case 'voicemail':          return `/voicemails/${dest.target_uuid}/edit`
+    case 'ivr_menu':           return `/ivr-menus/${dest.target_uuid}/edit`
+    case 'ring_group':         return `/ring-groups/${dest.target_uuid}/edit`
+    case 'working_hours':      return `/working-hours/${dest.target_uuid}/edit`
+    case 'custom_destination': return `/custom-destinations/${dest.target_uuid}/edit`
+    default:                   return null
+  }
+}
+
 // ─── Destination chip (used in multiple mode) ─────────────────────────────────
 
-function DestChip({ dest, data, onRemove }) {
+function DestChip({ dest, data, onRemove, onOpen }) {
   const meta  = DEST_META[dest.type]
   const label = destLabel(dest, data)
+  const route = destRoute(dest)
   if (!label) return null
   return (
     <span className={cn('inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium', meta?.color, meta?.bg)}>
       {label}
+      {route && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onOpen(route) }}
+          title={`Open ${meta?.label ?? 'destination'} setup`}
+          className="hover:opacity-70 transition-opacity"
+        >
+          <ArrowUpRight className="h-2.5 w-2.5" />
+        </button>
+      )}
       <button type="button" onClick={onRemove} className="hover:opacity-70 transition-opacity">
         <X className="h-2.5 w-2.5" />
       </button>
@@ -115,6 +144,7 @@ export default function DestinationPicker({
   searchLoading = false,
   onSearch,
 }) {
+  const navigate            = useNavigate()
   const [open, setOpen]     = useState(false)
   const [dropUp, setDropUp] = useState(false)
   const [query, setQuery]   = useState('')
@@ -219,6 +249,7 @@ export default function DestinationPicker({
 
   const singleLabel = !multiple ? destLabel(value, data) : null
   const singleMeta  = !multiple && value?.type ? DEST_META[value.type] : null
+  const singleRoute = !multiple ? destRoute(value) : null
   const multiArr    = multiple ? (Array.isArray(value) ? value : []) : []
 
   const h = compact ? 'h-8' : 'h-9'
@@ -226,7 +257,8 @@ export default function DestinationPicker({
   return (
     <div ref={containerRef} className="relative">
 
-      {/* ── Trigger ─────────────────────────────────────────────────────── */}
+      {/* ── Trigger (+ optional deep-link arrow) ────────────────────────── */}
+      <div className="flex items-center gap-1.5">
       <button
         type="button"
         onClick={toggleOpen}
@@ -244,7 +276,7 @@ export default function DestinationPicker({
           multiArr.length > 0 ? (
             <span className="flex flex-wrap gap-1 flex-1">
               {multiArr.map((d, i) => (
-                <DestChip key={i} dest={d} data={data} onRemove={(e) => { e.stopPropagation(); removeItem(i) }} />
+                <DestChip key={i} dest={d} data={data} onOpen={(r) => navigate(r)} onRemove={(e) => { e.stopPropagation(); removeItem(i) }} />
               ))}
             </span>
           ) : (
@@ -262,6 +294,21 @@ export default function DestinationPicker({
         )}
         <ChevronDown className={cn('shrink-0 text-muted-foreground', compact ? 'h-3 w-3' : 'h-3.5 w-3.5')} />
       </button>
+
+      {singleRoute && (
+        <button
+          type="button"
+          onClick={() => navigate(singleRoute)}
+          title={`Open ${singleMeta?.label ?? 'destination'} setup`}
+          className={cn(
+            `flex ${h} shrink-0 aspect-square items-center justify-center rounded-xl border border-input bg-background text-muted-foreground shadow-sm`,
+            'hover:border-ring/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors',
+          )}
+        >
+          <ArrowUpRight className={compact ? 'h-3.5 w-3.5' : 'h-4 w-4'} />
+        </button>
+      )}
+      </div>
 
       {/* ── Dropdown ────────────────────────────────────────────────────── */}
       {open && (

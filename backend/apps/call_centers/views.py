@@ -6,12 +6,13 @@ from rest_framework.filters import SearchFilter
 from core.mixins import TenantScopedViewSetMixin
 from .models import CallCenter, CallCenterAgent, CallCenterTier
 from .serializers import CallCenterSerializer, CallCenterAgentSerializer, CallCenterTierSerializer
+from .permissions import CallCenterPermission
 
 
 class CallCenterViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = CallCenter.objects.select_related('tenant', 'domain').prefetch_related('tiers')
     serializer_class = CallCenterSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, CallCenterPermission]
     filter_backends = [DjangoFilterBackend, SearchFilter]
     filterset_fields = ['enabled', 'strategy']
     search_fields = ['queue_name', 'description']

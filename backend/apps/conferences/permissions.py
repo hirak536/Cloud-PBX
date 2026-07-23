@@ -11,6 +11,15 @@ class ConferencePermission(HasPBXPermission):
     edit_permission = 'conferences_edit'
     delete_permission = 'conferences_delete'
 
+    action_permissions = {
+        'list': 'conferences_view',
+        'retrieve': 'conferences_view',
+        'create': 'conferences_add',
+        'update': 'conferences_edit',
+        'partial_update': 'conferences_edit',
+        'destroy': 'conferences_delete',
+    }
+
 
 class ConferenceProfilePermission(HasPBXPermission):
     """Permission class for Conference Profiles."""

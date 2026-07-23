@@ -106,6 +106,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'core.middleware.TenantMiddleware',
+    'core.middleware.NoCacheApiMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -183,6 +184,13 @@ DATABASES = {
         },
     },
 }
+
+# All three PostgreSQL databases are fronted by pgbouncer in transaction-pooling
+# mode (see /etc/pgbouncer/pgbouncer.ini). Transaction pooling hands a server
+# connection back to the pool at the end of each transaction, so Django must not
+# rely on server-side cursors (which span multiple statements outside a single
+# transaction). Disable them globally; querysets fall back to client-side fetch.
+DISABLE_SERVER_SIDE_CURSORS = True
 
 DATABASE_ROUTERS = [
     'freeswitch_config.routers.VoicemailSQLiteRouter',
@@ -385,10 +393,12 @@ LOGGING = {
             'formatter': 'verbose',
         },
         'file': {
-            'class': 'logging.handlers.RotatingFileHandler',
+            # Rotate daily at midnight and keep 30 days of history, instead of
+            # size-based rotation (10MB x5 held only ~minutes under load).
+            'class': 'logging.handlers.TimedRotatingFileHandler',
             'filename': config('LOG_FILE'),
-            'maxBytes': 10 * 1024 * 1024,  # 10MB
-            'backupCount': 5,
+            'when': 'midnight',
+            'backupCount': 30,
             'formatter': 'verbose',
             'delay': True,
         },

@@ -6,11 +6,12 @@ from rest_framework.filters import SearchFilter
 from core.mixins import TenantScopedViewSetMixin
 from .models import RingGroup, RingGroupDestination
 from .serializers import RingGroupSerializer, RingGroupListSerializer, RingGroupDestinationSerializer
+from .permissions import RingGroupPermission
 
 
 class RingGroupViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = RingGroup.objects.select_related('tenant', 'domain').prefetch_related('destinations')
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, RingGroupPermission]
 
     def get_serializer_class(self):
         return RingGroupListSerializer if self.action == 'list' else RingGroupSerializer

@@ -1,5 +1,9 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { useSelector } from 'react-redux'
+import { selectAuth } from '@/store'
+import { canPerformAction } from '@/lib/permissions'
 import { workingHours as api } from '@/api'
 import DestinationPicker, { DEST_META, EMPTY_DEST } from '@/components/DestinationPicker'
 import { useDestinationData } from '@/hooks/useDestinationData'
@@ -430,6 +434,11 @@ function GridPresets({ setGrid }) {
 
 
 export default function WorkingHours() {
+  const { user: authUser } = useSelector(selectAuth)
+  const canAdd    = canPerformAction(authUser, 'working-hours', 'add')
+  const canEdit   = canPerformAction(authUser, 'working-hours', 'edit')
+  const canDelete = canPerformAction(authUser, 'working-hours', 'delete')
+
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
@@ -444,6 +453,8 @@ export default function WorkingHours() {
   const [tzTime, setTzTime]           = useState('')
   const { destData, destLoading, loadDestData } = useDestinationData()
   const scrollRef                               = useRef(null)
+  const navigate                                = useNavigate()
+  const { id: routeId }                         = useParams()
 
   useEffect(() => {
     const tick = () => {
@@ -484,11 +495,26 @@ export default function WorkingHours() {
       setGrid(apiDaysToGrid(data.days || []))
       setForm(p => ({
         ...p,
+        working_hours_name:        data.working_hours_name ?? p.working_hours_name,
+        working_hours_description: data.working_hours_description ?? p.working_hours_description,
+        working_hours_enabled:     data.working_hours_enabled !== false,
+        timezone:                  data.timezone || p.timezone,
         open_dest:   { type: data.open_dest_type === 'external' && data.open_dest_external_number ? 'number' : (data.open_dest_type || ''), target_uuid: data.open_dest_target_uuid || '', external_number: data.open_dest_external_number || '' },
         closed_dest: { type: data.closed_dest_type === 'external' && data.closed_dest_external_number ? 'number' : (data.closed_dest_type || ''), target_uuid: data.closed_dest_target_uuid || '', external_number: data.closed_dest_external_number || '' },
       }))
     } catch { /* keep */ }
   }
+
+  const closeEditor = () => {
+    setDialogOpen(false)
+    if (routeId) navigate('/working-hours', { replace: true })
+  }
+
+  // Deep-link: /working-hours/:id/edit opens the editor for that record.
+  useEffect(() => {
+    if (routeId && routeId !== editId) openEdit({ working_hours_uuid: routeId })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId])
 
   const handleSave = async () => {
     if (!form.working_hours_name) { setFormError('Name is required.'); return }
@@ -523,7 +549,7 @@ export default function WorkingHours() {
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input placeholder="Search schedules..." className="pl-8" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
-        <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" />Add Schedule</Button>
+        {canAdd && (<Button size="sm" onClick={openCreate}><Plus className="h-4 w-4" />Add Schedule</Button>)}
       </div>
 
       {/* Table */}
@@ -554,10 +580,10 @@ export default function WorkingHours() {
                         <TableCell>{closedMeta ? <Badge variant="secondary" className={cn('text-xs', closedMeta.color)}>{closedMeta.label}</Badge> : <span className="text-muted-foreground text-sm">—</span>}</TableCell>
                         <TableCell><Badge variant={r.working_hours_enabled !== false ? 'success' : 'secondary'}>{r.working_hours_enabled !== false ? 'Active' : 'Disabled'}</Badge></TableCell>
                         <TableCell><div className="flex gap-1">
-                          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}><Pencil className="h-3.5 w-3.5" /></Button>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => handleDelete(id)} disabled={deleting === id}>
+                          {canEdit && (<Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(r)}><Pencil className="h-3.5 w-3.5" /></Button>)}
+                          {canDelete && (<Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => handleDelete(id)} disabled={deleting === id}>
                             {deleting === id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                          </Button>
+                          </Button>)}
                         </div></TableCell>
                       </TableRow>
                     )
@@ -567,9 +593,9 @@ export default function WorkingHours() {
       </CardContent></Card>
 
       {/* Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog open={dialogOpen} onOpenChange={(v) => { if (!v) closeEditor(); else setDialogOpen(true) }}>
         <DialogContent className="max-w-[min(95vw,860px)] p-0 overflow-hidden flex flex-col max-h-[95vh]">
-          <DialogClose onClose={() => setDialogOpen(false)} />
+          <DialogClose onClose={closeEditor} />
 
           {/* Header */}
           <DialogHeader className="px-6 pt-5 pb-4 border-b border-border/60 shrink-0">
@@ -640,7 +666,7 @@ export default function WorkingHours() {
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-border/60 bg-muted/30 rounded-b-2xl shrink-0">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+            <Button variant="outline" onClick={closeEditor}>Cancel</Button>
             <Button onClick={handleSave} disabled={saving}>
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
               {editId ? 'Save Changes' : 'Create Schedule'}
