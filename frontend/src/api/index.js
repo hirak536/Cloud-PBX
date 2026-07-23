@@ -332,31 +332,6 @@ export const users = {
   delete: (id) => api.delete(`/users/${id}/`, { params: { tenant: null } }),
 }
 
-const UC_API_TOKEN = import.meta.env.VITE_UC_API_TOKEN
-const UC_API_BASE_URL = import.meta.env.VITE_UC_API_BASE_URL || 'https://fsapi.ihsclients.com'
-
-const ucAxios = axios.create({
-  baseURL: UC_API_BASE_URL,
-  headers: { Authorization: `Bearer django-secure-p=bnajkpqq2_(l3)1$$vaf($jq#uw7qdysxi3$one3p$=55_` },
-})
-
-export const ucUsers = {
-  // Passing a tenantCode scopes the list to that company. Omitting it (falsy)
-  // hits /user/listpbx with no code, which returns UC users across all tenants.
-  list: (tenantCode, page = 1, pageSize = 20) =>
-    ucAxios.get(tenantCode ? `/user/listpbx/${tenantCode}` : '/user/listpbx', { params: { page, page_size: pageSize } }),
-  create: (data) =>
-    ucAxios.post('/user/useraddpbx', data),
-  update: (data) =>
-    ucAxios.post(`/user/editTokenpbx`, data),
-  listCompanies: () =>
-    ucAxios.get('/company/listPBXCompany'),
-  resetPassword: (data) =>
-    ucAxios.post('/user/resetUserPBX', data),
-  notify: (data) =>
-    ucAxios.post('/user/userNotify', data),
-}
-
 export const firewall = {
   fail2banStatus: () => api.get('/firewall/fail2ban/'),
   ban: (data) => api.post('/firewall/fail2ban/ban/', data),
