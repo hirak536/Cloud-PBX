@@ -321,15 +321,29 @@ export const tenants = {
 
 export const users = {
   list: (p) => api.get('/users/', { params: p }),
-  // Single-user reads/writes must NOT inherit the global tenant selector: the
-  // target user may belong to a different company than the one selected at the
-  // top of the page. Passing `tenant: null` tells the request interceptor to
-  // skip stamping the active tenant, so lookups resolve by id alone and the
-  // tenant assignment comes solely from the form body.
   get: (id) => api.get(`/users/${id}/`, { params: { tenant: null } }),
   create: (data) => api.post('/users/', data, { params: { tenant: null } }),
   update: (id, data) => api.put(`/users/${id}/`, data, { params: { tenant: null } }),
   delete: (id) => api.delete(`/users/${id}/`, { params: { tenant: null } }),
+}
+
+const ORG_API_BASE_URL = import.meta.env.VITE_ORG_API_BASE_URL || 'https://api.ihsphone.com'
+const ORG_API_TOKEN = 'django-secure-p=bnajkpqq2_(l3)1$$vaf($jq#uw7qdysxi3$one3p$=55_'
+
+const orgAxios = axios.create({
+  baseURL: ORG_API_BASE_URL,
+  headers: { Authorization: `Bearer ${ORG_API_TOKEN}` },
+})
+
+export const organizations = {
+  list: ({ search = '', page = 1, page_size = 10, is_active } = {}) => {
+    const params = { search, page, page_size }
+    if (is_active !== undefined) params.is_active = is_active
+    return orgAxios.get('/company/listPBXCompany', { params })
+  },
+  // POST /company/companyEditPBX
+  // Payload: { id, useremail (logged-in PBX user), voiceenable, smsenable, faxenable, is_active }
+  update: (data) => orgAxios.post('/company/companyEditPBX', data),
 }
 
 export const firewall = {

@@ -4,7 +4,7 @@ import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useSelector } from 'react-redux'
 import { selectTenant, selectAuth } from '@/store'
 import { roleOf, creatableRoles, GRANTABLE_PAGES, GRANTABLE_PATHS, ACTION_CONTROLLED_PAGES, ACTIONS, ACTION_LABELS } from '@/lib/permissions'
-import { users as api, tenants as tenantsApi, auth as authApi, fax as faxApi } from '@/api'
+import { users as api, tenants as tenantsApi, auth as authApi, fax as faxApi, organizations as orgApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -17,7 +17,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useInfiniteList } from '@/hooks/useInfiniteList'
 import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import ExtensionPicker from '@/components/ExtensionPicker'
-import { Plus, Pencil, Trash2, Search, Loader2, ShieldCheck, Shield, User2, KeyRound, Check, Eye, EyeOff, ChevronDown, X } from 'lucide-react'
+import { Plus, Pencil, Trash2, Search, Loader2, ShieldCheck, Shield, User2, KeyRound, Check, Eye, EyeOff, ChevronDown, X, Building2, Phone, MessageSquare, Printer, Power, Lock } from 'lucide-react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
 const ROLES = [
@@ -80,6 +81,344 @@ function buildUsername(first, last) {
   return (f.charAt(0) + l).toLowerCase()
 }
 
+// ── Organization Settings tab ─────────────────────────────────────────────────
+// Superadmin-only. Searchable, paginated list of organizations sourced from the
+// external IHS Phone company directory (organizations.list).
+const ORG_PAGE_SIZE = 10
+
+function OrganizationSettingsTab({ userEmail }) {
+  const [search, setSearch]   = useState('')
+  const debouncedSearch       = useDebounce(search, 300)
+  const [page, setPage]       = useState(1)
+  const [rows, setRows]       = useState([])
+  const [pagination, setPagination] = useState({ total: 0, page: 1, total_pages: 1 })
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState('')
+  const [editOrg, setEditOrg] = useState(null)   // row being edited (null = closed)
+  const [reloadKey, setReloadKey] = useState(0)  // bump to refetch after a save
+  // is_active filter: 'active' | 'inactive' | 'all'. Defaults to active.
+  const [activeFilter, setActiveFilter] = useState('active')
+
+  // Reset to page 1 whenever the search term or filter changes.
+  useEffect(() => { setPage(1) }, [debouncedSearch, activeFilter])
+
+  useEffect(() => {
+    let alive = true
+    setLoading(true); setError('')
+    const params = { search: debouncedSearch, page, page_size: ORG_PAGE_SIZE }
+    // Only apply the is_active filter when NOT searching, and not for 'all'.
+    if (!debouncedSearch && activeFilter !== 'all') {
+      params.is_active = activeFilter === 'active'
+    }
+    orgApi.list(params)
+      .then(({ data }) => {
+        if (!alive) return
+        setRows(data.success || [])
+        setPagination(data.pagination || { total: 0, page, total_pages: 1 })
+      })
+      .catch((e) => {
+        if (!alive) return
+        setError(e?.response?.data?.message || 'Failed to load organizations.')
+        setRows([])
+      })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [debouncedSearch, page, reloadKey, activeFilter])
+
+  const totalPages = pagination.total_pages || 1
+
+  const FeatureBadge = ({ on, label }) => (
+    <Badge variant={on ? 'success' : 'secondary'} className="text-[10px]">{label}</Badge>
+  )
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="relative w-72">
+            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search organizations…"
+              className="pl-8"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <Select
+            value={activeFilter}
+            onChange={(e) => setActiveFilter(e.target.value)}
+            disabled={!!debouncedSearch}
+            wrapperClassName="w-36"
+            title={debouncedSearch ? 'Status filter is ignored while searching' : undefined}
+          >
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+            <option value="all">All statuses</option>
+          </Select>
+        </div>
+        <span className="text-xs text-muted-foreground">
+          {pagination.total} organization{pagination.total !== 1 ? 's' : ''}
+        </span>
+      </div>
+
+      {error && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      <Card><CardContent className="p-0 overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Organization</TableHead>
+              <TableHead>Code</TableHead>
+              <TableHead>SIP Domain</TableHead>
+              <TableHead>Features</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="w-16" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading
+              ? [...Array(6)].map((_, i) => (
+                  <TableRow key={i}>
+                    {[...Array(6)].map((_, j) => <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>)}
+                  </TableRow>
+                ))
+              : rows.length === 0
+                ? <TableRow><TableCell colSpan={6} className="text-center py-10 text-muted-foreground">No organizations found.</TableCell></TableRow>
+                : rows.map((r) => (
+                    <TableRow key={r.id}>
+                      <TableCell className="font-medium">{r.companyName}</TableCell>
+                      <TableCell className="font-mono text-sm">{r.code}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground font-mono">{r.sip_domain || '—'}</TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <FeatureBadge on={r.voiceenable} label="Voice" />
+                          <FeatureBadge on={r.smsenable} label="SMS" />
+                          <FeatureBadge on={r.faxenable} label="Fax" />
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={r.is_active !== false ? 'success' : 'secondary'}>
+                          {r.is_active !== false ? 'Active' : 'Disabled'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit organization" onClick={() => setEditOrg(r)}>
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+            }
+          </TableBody>
+        </Table>
+      </CardContent></Card>
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="outline" size="sm" disabled={page <= 1 || loading} onClick={() => setPage(p => Math.max(1, p - 1))}>
+            ← Prev
+          </Button>
+          <span className="text-xs text-muted-foreground">Page {pagination.page} of {totalPages}</span>
+          <Button variant="outline" size="sm" disabled={page >= totalPages || loading} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>
+            Next →
+          </Button>
+        </div>
+      )}
+
+      <OrgEditDialog
+        org={editOrg}
+        userEmail={userEmail}
+        onClose={() => setEditOrg(null)}
+        onSaved={() => { setEditOrg(null); setReloadKey(k => k + 1) }}
+      />
+    </div>
+  )
+}
+
+// Edit dialog for a single organization. The companyEditPBX endpoint only
+// updates the feature flags (voice/sms/fax) and active status — name/code/domain
+// are read-only here. Requires the logged-in PBX user's email in the payload.
+function OrgEditDialog({ org, userEmail, onClose, onSaved }) {
+  const [form, setForm] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  // Password is locked behind an Override toggle — only editable and only sent
+  // when override is on.
+  const [pwOverride, setPwOverride] = useState(false)
+  const [password, setPassword] = useState('')
+
+  useEffect(() => {
+    if (!org) { setForm(null); return }
+    setError('')
+    setPwOverride(false)
+    setPassword('')
+    setForm({
+      voiceenable: !!org.voiceenable,
+      smsenable:   !!org.smsenable,
+      faxenable:   !!org.faxenable,
+      is_active:   org.is_active !== false,
+    })
+  }, [org])
+
+  const save = async () => {
+    if (!userEmail) { setError('Cannot determine the logged-in user email.'); return }
+    if (pwOverride && !password.trim()) { setError('Enter a new password or turn off Override.'); return }
+    setSaving(true); setError('')
+    try {
+      await orgApi.update({
+        id: String(org.id),
+        useremail: userEmail,
+        voiceenable: form.voiceenable,
+        smsenable:   form.smsenable,
+        faxenable:   form.faxenable,
+        is_active:   form.is_active,
+        // Only include the password when the admin explicitly overrides it.
+        ...(pwOverride && password.trim() ? { password } : {}),
+      })
+      toast.success('Organization updated.')
+      onSaved()
+    } catch (e) {
+      setError(e?.response?.data?.message || 'Failed to update organization.')
+    } finally { setSaving(false) }
+  }
+
+  // A feature/status row: colored icon + label + on/off toggle switch.
+  const ToggleRow = ({ label, hint, k, icon: Icon, tint }) => {
+    const on = form[k]
+    return (
+      <div className="flex items-center gap-3 px-3 py-2.5">
+        <div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', on ? tint : 'bg-muted text-muted-foreground')}>
+          <Icon className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium leading-none">{label}</p>
+          {hint && <p className="text-[11px] text-muted-foreground mt-0.5">{hint}</p>}
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={on}
+          aria-label={label}
+          disabled={saving}
+          onClick={() => setForm(p => ({ ...p, [k]: !p[k] }))}
+          className={cn(
+            'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-2 border-transparent transition-colors',
+            on ? 'bg-primary' : 'bg-input',
+            saving && 'opacity-50 cursor-not-allowed',
+          )}
+        >
+          <span className={cn('block h-4 w-4 rounded-full bg-white shadow transition-transform', on ? 'translate-x-4' : 'translate-x-0')} />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <Dialog open={!!org} onOpenChange={(v) => { if (!v && !saving) onClose() }}>
+      <DialogContent className="w-[95vw] max-w-lg p-0 gap-0 overflow-hidden">
+        {/* Header — org identity */}
+        <DialogHeader className="px-6 pt-5 pb-4 border-b">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Building2 className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <DialogTitle className="truncate text-base">{org?.companyName || 'Organization'}</DialogTitle>
+              {org && (
+                <p className="text-xs text-muted-foreground font-mono mt-0.5">
+                  {org.code}{org.sip_domain ? ` · ${org.sip_domain}` : ''}
+                </p>
+              )}
+            </div>
+          </div>
+        </DialogHeader>
+
+        {org && form && (
+          <div className="px-6 py-5 space-y-5 max-h-[70vh] overflow-y-auto">
+            {error && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
+            )}
+
+            {/* Features */}
+            <div className="space-y-1.5">
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Features</p>
+              <div className="rounded-xl border divide-y">
+                <ToggleRow label="Voice" k="voiceenable" icon={Phone}         tint="bg-blue-500/10 text-blue-500" />
+                <ToggleRow label="SMS"   k="smsenable"   icon={MessageSquare} tint="bg-green-600/10 text-green-600" />
+                <ToggleRow label="Fax"   k="faxenable"   icon={Printer}       tint="bg-orange-500/10 text-orange-500" />
+              </div>
+            </div>
+
+            {/* Status */}
+            <div className="space-y-1.5">
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Status</p>
+              <div className="rounded-xl border">
+                <ToggleRow label="Active" hint="Suspends the organization when disabled." k="is_active" icon={Power} tint="bg-emerald-500/10 text-emerald-500" />
+              </div>
+            </div>
+
+            {/* Password */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Password</p>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <span className="text-xs text-muted-foreground">Override</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={pwOverride}
+                    disabled={saving}
+                    onClick={() => {
+                      const next = !pwOverride
+                      setPwOverride(next)
+                      if (!next) setPassword('')  // turning off discards any typed value
+                    }}
+                    className={cn(
+                      'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-2 border-transparent transition-colors',
+                      pwOverride ? 'bg-primary' : 'bg-input',
+                      saving && 'opacity-50 cursor-not-allowed',
+                    )}
+                  >
+                    <span className={cn('block h-4 w-4 rounded-full bg-white shadow transition-transform', pwOverride ? 'translate-x-4' : 'translate-x-0')} />
+                  </button>
+                </label>
+              </div>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                <Input
+                  type="password"
+                  placeholder={pwOverride ? 'Enter new password' : 'Enable Override to change'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={!pwOverride || saving}
+                  autoComplete="new-password"
+                  className={cn('pl-9', !pwOverride && 'bg-muted text-muted-foreground')}
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {pwOverride
+                  ? 'The password will be updated on save.'
+                  : 'Leave off to keep the current password unchanged.'}
+              </p>
+            </div>
+          </div>
+        )}
+        <DialogFooter className="px-6 py-4 border-t bg-muted/30">
+          <Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button onClick={save} disabled={saving || !form}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+            Save Changes
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Users() {
@@ -97,6 +436,10 @@ export default function Users() {
   const myRole = roleOf(loggedInUser)
   // Roles the logged-in user is allowed to create (superuser → all; admin → user only).
   const allowedRoles = creatableRoles(myRole)
+
+  // Organization Settings tab is superadmin-only; superadmins land there first.
+  const isSuperadmin = myRole === 'superuser'
+  const [activeTab, setActiveTab] = useState(isSuperadmin ? 'organization' : 'pbx')
 
   const [rows, setRows]            = useState([])
   const [loading, setLoading]      = useState(true)
@@ -704,8 +1047,35 @@ export default function Users() {
 
   return (
     <div className="space-y-4">
+      {/* Tab switcher — Organization Settings is superadmin-only */}
+      {isSuperadmin && (
+        <div className="flex items-center gap-1 border-b">
+          {[
+            { key: 'organization', label: 'Organization Settings' },
+            { key: 'pbx',          label: 'PBX Users' },
+          ].map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors duration-150 -mb-px
+                ${activeTab === tab.key
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── Organization Settings ── */}
+      {isSuperadmin && activeTab === 'organization' && (
+        <OrganizationSettingsTab userEmail={loggedInUser?.user_email || loggedInUser?.email || ''} />
+      )}
+
       {/* ── PBX Users ── */}
-      <>
+      {activeTab === 'pbx' && (
+        <>
           <div className="flex items-center justify-end gap-3">
             <div className="relative w-72">
               <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -810,6 +1180,7 @@ export default function Users() {
             </Table>
           </CardContent></Card>
         </>
+      )}
 
     </div>
   )

@@ -1,11 +1,11 @@
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useSelector, useDispatch } from 'react-redux'
 import { selectAuth, selectTheme, selectTenant } from '@/store'
 import { logoutThunk } from '@/store/slices/authSlice'
 import { setTheme } from '@/store/slices/themeSlice'
 import { setCurrentTenant } from '@/store/slices/tenantSlice'
 import { Button } from '@/components/ui/button'
-import { PanelLeftClose, PanelLeftOpen, LogOut, ChevronRight, Sun, Moon, Monitor, Check, Building2, ChevronDown, Search, Menu } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, LogOut, ChevronRight, Sun, Moon, Monitor, Check, Building2, ChevronDown, Search, Menu, Users } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 
 const routeMeta = {
@@ -28,13 +28,14 @@ const routeMeta = {
   '/operator-panel': { title: 'Operator Panel',       group: 'Monitoring' },
   '/freeswitch':     { title: 'FreeSWITCH',           group: 'Monitoring' },
   '/domains':        { title: 'Domains',              group: 'Administration' },
-  '/users':          { title: 'Users',                group: 'Administration' },
+  '/users':          { title: 'Organization',         group: 'Administration' },
   '/super-users':    { title: 'Super Admins',         group: 'Administration' },
   '/audit-log':      { title: 'Audit Log',            group: 'Administration' },
 }
 
 export default function TopBar({ collapsed, onToggle, onMobileToggle }) {
   const { pathname } = useLocation()
+  const navigate = useNavigate()
   const meta = routeMeta[pathname] || { title: 'IHS PBX', group: null }
   const dispatch = useDispatch()
   const { user } = useSelector(selectAuth)
@@ -159,6 +160,19 @@ export default function TopBar({ collapsed, onToggle, onMobileToggle }) {
           </div>
         )}
       </div>
+
+      {/* Organization / Users (superadmin only) */}
+      {user?.is_superuser && (
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => navigate('/users')}
+          className="shrink-0 text-muted-foreground hover:text-foreground transition-all duration-200"
+          title="Organization"
+        >
+          <Users className="h-4 w-4" />
+        </Button>
+      )}
 
       {/* Theme selector */}
       <div className="relative shrink-0" ref={themeRef}>
