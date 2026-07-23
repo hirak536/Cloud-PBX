@@ -88,8 +88,15 @@ export default function IvrMenus() {
   const [form, setForm]             = useState(EMPTY_FORM)
   const [saving, setSaving]         = useState(false)
   const [formError, setFormError]   = useState('')
+  const errorRef                    = useRef(null)
   const [deleting, setDeleting]     = useState(null)
   const [tab, setTab]               = useState('settings')
+
+  // Scroll the error banner into view whenever an error is shown (e.g. after a
+  // failed save when the banner is above the fold).
+  useEffect(() => {
+    if (formError) errorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [formError])
   const [numStatus, setNumStatus]   = useState(null)
   const [numConflict, setNumConflict] = useState('')
   const debouncedExt = useDebounce(form.ivr_menu_extension, 600)
@@ -199,8 +206,30 @@ export default function IvrMenus() {
 
   // ── Save ──────────────────────────────────────────────────────────────────
 
+  // Navigate between tabs. Moving forward off the Settings tab requires the
+  // mandatory Name; moving back is always allowed.
+  const goToTab = (targetId) => {
+    const curIdx = TABS.findIndex(t => t.id === tab)
+    const nextIdx = TABS.findIndex(t => t.id === targetId)
+    if (nextIdx > curIdx && tab === 'settings' && !form.ivr_menu_name.trim()) {
+      setFormError('Name is required.')
+      return
+    }
+    setFormError('')
+    setTab(targetId)
+  }
+
   const handleSave = async () => {
-    if (!form.ivr_menu_name)      { setFormError('Name is required.'); setTab('settings'); return }
+    if (!form.ivr_menu_name.trim()) { setFormError('Name is required.'); setTab('settings'); return }
+    // Require the menu to actually do something: at least one key option (0-9/*/#),
+    // a timeout/invalid/hangup destination, or a welcome/options message.
+    const hasOption  = OPTION_KEYS.some(({ digit }) => form.options[digit]?.type)
+    const hasMessage = !!(form.ivr_menu_greet_long || form.ivr_menu_greet_short)
+    if (!hasOption && !hasMessage) {
+      setFormError('Configure at least one key option or a welcome/options message before saving.')
+      setTab('keys')
+      return
+    }
     setSaving(true); setFormError('')
     try {
       const optionsPayload = OPTION_KEYS
@@ -267,7 +296,7 @@ export default function IvrMenus() {
           <div className="px-6 pt-3 border-b shrink-0">
             <div className="flex">
               {TABS.map(t => (
-                <button key={t.id} type="button" onClick={() => setTab(t.id)}
+                <button key={t.id} type="button" onClick={() => goToTab(t.id)}
                   className={cn(
                     'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
                     tab === t.id
@@ -283,7 +312,7 @@ export default function IvrMenus() {
           {/* Body */}
           <div className="px-6 py-5 space-y-5">
             {formError && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <div ref={errorRef} className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive scroll-mt-20">
                 {formError}
               </div>
             )}
@@ -455,12 +484,12 @@ export default function IvrMenus() {
               <div className="flex gap-2">
                 <Button variant="outline" onClick={closeEditor}>Cancel</Button>
                 {TABS.findIndex(t => t.id === tab) > 0 && (
-                  <Button variant="outline" onClick={() => setTab(TABS[TABS.findIndex(t => t.id === tab) - 1].id)}>
+                  <Button variant="outline" onClick={() => goToTab(TABS[TABS.findIndex(t => t.id === tab) - 1].id)}>
                     ← Back
                   </Button>
                 )}
                 {TABS.findIndex(t => t.id === tab) < TABS.length - 1 ? (
-                  <Button onClick={() => setTab(TABS[TABS.findIndex(t => t.id === tab) + 1].id)}>
+                  <Button onClick={() => goToTab(TABS[TABS.findIndex(t => t.id === tab) + 1].id)}>
                     Next →
                   </Button>
                 ) : (

@@ -449,11 +449,17 @@ export default function WorkingHours() {
   const [grid, setGrid]               = useState(makeDefaultGrid)
   const [saving, setSaving]           = useState(false)
   const [formError, setFormError]     = useState('')
+  const errorRef                      = useRef(null)
   const [deleting, setDeleting]       = useState(null)
   const [tzTime, setTzTime]           = useState('')
   const { destData, destLoading, loadDestData } = useDestinationData()
   const scrollRef                               = useRef(null)
   const navigate                                = useNavigate()
+
+  // Scroll the error banner into view whenever a validation error appears.
+  useEffect(() => {
+    if (formError) errorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [formError])
   const { id: routeId }                         = useParams()
 
   useEffect(() => {
@@ -517,7 +523,9 @@ export default function WorkingHours() {
   }, [routeId])
 
   const handleSave = async () => {
-    if (!form.working_hours_name) { setFormError('Name is required.'); return }
+    if (!form.working_hours_name.trim()) { setFormError('Name is required.'); return }
+    if (!form.open_dest.type)   { setFormError('Open Hours destination is required.'); return }
+    if (!form.closed_dest.type) { setFormError('Closed Hours destination is required.'); return }
     setSaving(true); setFormError('')
     try {
       const payload = {
@@ -610,7 +618,7 @@ export default function WorkingHours() {
           {/* Body */}
           <div className="overflow-y-auto flex-1 px-6 py-5 space-y-5">
             {formError && (
-              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
+              <div ref={errorRef} className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive scroll-mt-4">
                 {formError}
               </div>
             )}
@@ -618,7 +626,7 @@ export default function WorkingHours() {
             {/* Name + Timezone */}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>Schedule Name *</Label>
+                <Label>Schedule Name <span className="text-destructive">*</span></Label>
                 <Input placeholder="Business Hours" value={form.working_hours_name} onChange={f('working_hours_name')} />
               </div>
               <div className="space-y-1.5">
@@ -650,14 +658,14 @@ export default function WorkingHours() {
               <div className="space-y-1.5 pt-4">
                 <Label className="flex items-center gap-1.5">
                   <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
-                  Destination when open
+                  Destination when open <span className="text-destructive">*</span>
                 </Label>
                 <DestinationPicker value={form.open_dest} onChange={(d) => setForm(p => ({ ...p, open_dest: d }))} data={destData} loading={destLoading} placeholder="Select open destination…" />
               </div>
               <div className="space-y-1.5 pt-4">
                 <Label className="flex items-center gap-1.5">
                   <span className="inline-block h-2 w-2 rounded-full bg-red-400" />
-                  Destination when closed
+                  Destination when closed <span className="text-destructive">*</span>
                 </Label>
                 <DestinationPicker value={form.closed_dest} onChange={(d) => setForm(p => ({ ...p, closed_dest: d }))} data={destData} loading={destLoading} placeholder="Select closed destination…" />
               </div>

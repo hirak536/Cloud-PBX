@@ -419,10 +419,13 @@ function DestinationPicker({ action, onChange, data, loading, searchLoading, onS
 
 // ── UI helpers ─────────────────────────────────────────────────────────────────
 
-function Field({ label, hint, children, className }) {
+function Field({ label, hint, children, className, required }) {
   return (
     <div className={cn('space-y-1.5', className)}>
-      <Label className="text-sm font-medium">{label}</Label>
+      <Label className="text-sm font-medium">
+        {label}
+        {required && <span className="text-destructive ml-0.5">*</span>}
+      </Label>
       {children}
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
@@ -551,51 +554,9 @@ function FaxBoxFormDialog({ open, editBox, didNumber, dids, onClose }) {
             <Field label="Name *" hint="Also used as the outbound caller ID name.">
               <Input placeholder="Main Fax" value={form.fax_name} onChange={sf('fax_name')} disabled={saving} />
             </Field>
-            <Field label="Extension" hint="Tied to this DID number — one fax box per number.">
+            <Field label="DID" hint="Tied to this DID number — one fax box per number.">
               <Input value={form.fax_extension} readOnly disabled className="font-mono" />
             </Field>
-            <Field label="Received Fax Delivery" hint="What to do with inbound faxes." className="sm:col-span-2">
-              <Select value={form.fax_delivery_mode} onChange={sf('fax_delivery_mode')} disabled={saving}>
-                <option value="email">Email</option>
-                <option value="ftp">FTP server</option>
-                <option value="both">Email + FTP</option>
-              </Select>
-            </Field>
-            {(form.fax_delivery_mode === 'email' || form.fax_delivery_mode === 'both') && (
-              <Field label="Notification Email" hint="Inbound faxes are emailed here. Separate multiple addresses with commas." className="sm:col-span-2">
-                <Input type="text" placeholder="fax@company.com, alerts@company.com" value={form.fax_email} onChange={sf('fax_email')} disabled={saving} />
-              </Field>
-            )}
-            {(form.fax_delivery_mode === 'ftp' || form.fax_delivery_mode === 'both') && (
-              <div className="sm:col-span-2 rounded-md border bg-muted/30 p-4">
-                <p className="text-sm font-medium mb-3">FTP Server</p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <Field label="FTP Host *" className="sm:col-span-2">
-                    <Input placeholder="ftp.example.com" value={form.fax_ftp_host} onChange={sf('fax_ftp_host')} disabled={saving} />
-                  </Field>
-                  <Field label="Port">
-                    <Input type="number" value={form.fax_ftp_port}
-                      onChange={(e) => setForm(p => ({ ...p, fax_ftp_port: e.target.value === '' ? '' : Number(e.target.value) }))}
-                      disabled={saving} />
-                  </Field>
-                  <Field label="Use FTPS (TLS)">
-                    <Select value={String(form.fax_ftp_use_tls)} onChange={(e) => setForm(p => ({ ...p, fax_ftp_use_tls: e.target.value === 'true' }))} disabled={saving}>
-                      <option value="false">No</option>
-                      <option value="true">Yes</option>
-                    </Select>
-                  </Field>
-                  <Field label="Username">
-                    <Input placeholder="anonymous" value={form.fax_ftp_username} onChange={sf('fax_ftp_username')} disabled={saving} autoComplete="off" />
-                  </Field>
-                  <Field label="Password" hint={editBox ? 'Leave blank to keep the current password.' : undefined}>
-                    <Input type="password" value={form.fax_ftp_password} onChange={sf('fax_ftp_password')} disabled={saving} autoComplete="new-password" />
-                  </Field>
-                  <Field label="Remote Path" hint="Directory to store faxes in (created if missing)." className="sm:col-span-2">
-                    <Input placeholder="/incoming-faxes" value={form.fax_ftp_path} onChange={sf('fax_ftp_path')} disabled={saving} />
-                  </Field>
-                </div>
-              </div>
-            )}
             <Field label="Status">
               <Select value={String(form.fax_enabled)} onChange={(e) => setForm(p => ({ ...p, fax_enabled: e.target.value === 'true' }))} disabled={saving}>
                 <option value="true">Enabled</option>
@@ -635,40 +596,116 @@ function FaxBoxFormDialog({ open, editBox, didNumber, dids, onClose }) {
   )
 }
 
-// ── Tab body ───────────────────────────────────────────────────────────────────
-
-// Inline notification-email editor shown under a linked fax box. Saves on blur
-// (only when the value actually changed) so admins can set the inbound-fax email
-// without opening the full box form.
-function FaxBoxEmailField({ box, onSave }) {
-  const [value, setValue] = useState(box.fax_email || '')
+// Inline inbound-fax delivery editor for a linked fax box, shown on the DID's
+// Fax tab. Covers delivery mode, notification email, and the FTP server block.
+// Keeps its own local copy and saves (PATCH) only the delivery-related fields.
+function FaxDeliveryEditor({ box, onSave }) {
+  const seed = (b) => ({
+    fax_delivery_mode: b.fax_delivery_mode || 'email',
+    fax_email:         b.fax_email || '',
+    fax_ftp_host:      b.fax_ftp_host || '',
+    fax_ftp_port:      b.fax_ftp_port ?? 21,
+    fax_ftp_use_tls:   b.fax_ftp_use_tls === true,
+    fax_ftp_username:  b.fax_ftp_username || '',
+    fax_ftp_password:  '', // write-only; blank = keep existing
+    fax_ftp_path:      b.fax_ftp_path || '',
+  })
+  const [local, setLocal] = useState(seed(box))
   const [saving, setSaving] = useState(false)
-  useEffect(() => { setValue(box.fax_email || '') }, [box.fax_uuid, box.fax_email])
+  const [error, setError] = useState('')
+  useEffect(() => { setLocal(seed(box)); setError('') }, [box.fax_uuid])
 
-  const commit = async () => {
-    if (value === (box.fax_email || '')) return
-    setSaving(true)
-    try { await onSave(box, value) } finally { setSaving(false) }
+  const sf = (key) => (e) => setLocal(p => ({ ...p, [key]: e.target.value }))
+  const wantsEmail = local.fax_delivery_mode === 'email' || local.fax_delivery_mode === 'both'
+  const wantsFtp   = local.fax_delivery_mode === 'ftp'   || local.fax_delivery_mode === 'both'
+
+  const save = async () => {
+    if (wantsEmail && !local.fax_email.trim()) {
+      setError('Notification email is required for the selected delivery mode.'); return
+    }
+    if (wantsFtp) {
+      if (!local.fax_ftp_host.trim())     { setError('FTP host is required.'); return }
+      if (!String(local.fax_ftp_port).trim()) { setError('FTP port is required.'); return }
+      if (!local.fax_ftp_username.trim()) { setError('FTP username is required.'); return }
+      if (!local.fax_ftp_path.trim())     { setError('FTP remote path is required.'); return }
+      // Password is write-only: required only when the box has none stored yet.
+      // If one already exists, blank means "keep the current password".
+      if (!local.fax_ftp_password && !box.fax_ftp_host) {
+        setError('FTP password is required.'); return
+      }
+    }
+    setSaving(true); setError('')
+    const payload = { ...local }
+    if (!payload.fax_ftp_password) delete payload.fax_ftp_password  // blank = leave unchanged
+    try { await onSave(box, payload) } finally { setSaving(false) }
   }
 
   return (
-    <Field label="Notification Email" hint="Incoming faxes are emailed here as a PDF. Separate multiple addresses with commas.">
-      <div className="relative">
-        <Input
-          type="text"
-          placeholder="fax@company.com, alerts@company.com"
-          value={value}
-          onChange={e => setValue(e.target.value)}
-          onBlur={commit}
-          disabled={saving}
-        />
-        {saving && <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+    <div className="space-y-3 rounded-xl border px-4 py-3">
+      <Field label="Received Fax Delivery" hint="What to do with inbound faxes.">
+        <Select value={local.fax_delivery_mode} onChange={sf('fax_delivery_mode')} disabled={saving}>
+          <option value="email">Email</option>
+          <option value="ftp">FTP server</option>
+          <option value="both">Email + FTP</option>
+        </Select>
+      </Field>
+      {wantsEmail && (
+        <Field label="Notification Email" required hint="Inbound faxes are emailed here. Separate multiple addresses with commas.">
+          <Input type="text" placeholder="fax@company.com, alerts@company.com" value={local.fax_email} onChange={sf('fax_email')} disabled={saving} />
+        </Field>
+      )}
+      {wantsFtp && (
+        <div className="rounded-md border bg-muted/30 p-4">
+          <p className="text-sm font-medium mb-3">FTP Server</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="FTP Host" required className="sm:col-span-2">
+              <Input placeholder="ftp.example.com" value={local.fax_ftp_host} onChange={sf('fax_ftp_host')} disabled={saving} />
+            </Field>
+            <Field label="Port" required>
+              <Input type="number" value={local.fax_ftp_port}
+                onChange={(e) => setLocal(p => ({ ...p, fax_ftp_port: e.target.value === '' ? '' : Number(e.target.value) }))}
+                disabled={saving} />
+            </Field>
+            <Field label="Use FTPS (TLS)">
+              <Select value={String(local.fax_ftp_use_tls)} onChange={(e) => setLocal(p => ({ ...p, fax_ftp_use_tls: e.target.value === 'true' }))} disabled={saving}>
+                <option value="false">No</option>
+                <option value="true">Yes</option>
+              </Select>
+            </Field>
+            <Field label="Username" required>
+              <Input placeholder="anonymous" value={local.fax_ftp_username} onChange={sf('fax_ftp_username')} disabled={saving} autoComplete="off" />
+            </Field>
+            <Field label="Password" required={!box.fax_ftp_host} hint={box.fax_ftp_host ? 'Leave blank to keep the current password.' : undefined}>
+              <Input type="password" value={local.fax_ftp_password} onChange={sf('fax_ftp_password')} disabled={saving} autoComplete="new-password" />
+            </Field>
+            <Field label="Remote Path" required hint="Directory to store faxes in (created if missing)." className="sm:col-span-2">
+              <Input placeholder="/incoming-faxes" value={local.fax_ftp_path} onChange={sf('fax_ftp_path')} disabled={saving} />
+            </Field>
+          </div>
+        </div>
+      )}
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <div className="flex justify-end">
+        <Button type="button" size="sm" onClick={save} disabled={saving}>
+          {saving && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}
+          Save Delivery
+        </Button>
       </div>
-    </Field>
+    </div>
   )
 }
 
-function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearchLoading, onSearch, onNewFaxBox, onEditFaxBox, onAutoCreateFaxBox, autoCreatingFax, onUpdateFaxBoxEmail }) {
+// ── Tab body ───────────────────────────────────────────────────────────────────
+
+function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearchLoading, onSearch, onNewFaxBox, onEditFaxBox, onAutoCreateFaxBox, autoCreatingFax, onUpdateFaxDelivery }) {
+  // Match Regex is locked by default — auto-derived from the DID number on the
+  // backend. Turn on Override to hand-edit it. When editing a DID that already
+  // has a custom regex stored, start in override mode so it's visible/editable.
+  const [regexOverride, setRegexOverride] = useState(false)
+  useEffect(() => {
+    if (form.destination_number_regex) setRegexOverride(true)
+  }, [form.destination_number_regex])
+
   const addAction    = () => setForm(p => ({ ...p, actions: [...p.actions, { ...EMPTY_ACTION }] }))
   const removeAction = (idx) => setForm(p => ({ ...p, actions: p.actions.filter((_, i) => i !== idx) }))
   const updateAction = (idx, v) => setForm(p => ({
@@ -679,18 +716,60 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearc
   if (tab === 'information') return (
     <div className="space-y-3">
       <Row>
-        <Field label="DID / Phone Number *">
-          <Input placeholder="+12025551234" value={form.destination_number} onChange={set('destination_number')} />
+        <Field label="DID / Phone Number" required hint="10-digit US number.">
+          <div className="flex">
+            <span className="inline-flex items-center rounded-l-xl border border-r-0 border-input bg-muted px-3 text-sm text-muted-foreground font-mono select-none">
+              +1
+            </span>
+            <Input
+              type="tel"
+              inputMode="numeric"
+              placeholder="2025551234"
+              maxLength={10}
+              className="rounded-l-none font-mono"
+              // Store the full E.164 (+1XXXXXXXXXX); show only the 10 local digits.
+              value={(form.destination_number || '').replace(/^\+1/, '')}
+              onChange={(e) => {
+                const digits = e.target.value.replace(/\D/g, '').slice(0, 10)
+                setForm(p => ({ ...p, destination_number: digits ? `+1${digits}` : '' }))
+              }}
+            />
+          </div>
         </Field>
-        <Field label="Friendly Name">
+        <Field label="Friendly Name" required>
           <Input placeholder="e.g. IHS Main" value={form.destination_name} onChange={set('destination_name')} />
         </Field>
       </Row>
-      <Field label="Match Regex" hint="Override carrier number matching (e.g. ^\+?1?2025551234$). Leave blank to match exactly.">
-        <Input placeholder="^\+?1?2025551234$" value={form.destination_number_regex} onChange={set('destination_number_regex')} />
-      </Field>
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <Label className="text-sm font-medium">Match Regex</Label>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Override</span>
+            <Toggle
+              checked={regexOverride}
+              onChange={(v) => {
+                setRegexOverride(v)
+                // Turning override off reverts to auto-matching (blank regex).
+                if (!v) setForm(p => ({ ...p, destination_number_regex: '' }))
+              }}
+            />
+          </div>
+        </div>
+        <Input
+          placeholder="^\+?1?2025551234$"
+          value={form.destination_number_regex}
+          onChange={set('destination_number_regex')}
+          disabled={!regexOverride}
+          className={cn(!regexOverride && 'bg-muted text-muted-foreground')}
+        />
+        <p className="text-xs text-muted-foreground">
+          {regexOverride
+            ? 'Custom carrier number matching (e.g. ^\\+?1?2025551234$).'
+            : 'Auto-matched from the DID number. Enable Override to set a custom regex.'}
+        </p>
+      </div>
 
-      <SectionTitle>Priority Routing</SectionTitle>
+      <SectionTitle>Priority Routing <span className="text-destructive">*</span></SectionTitle>
       <p className="text-xs text-muted-foreground -mt-1">
         Routes are tried in order. Add multiple for failover (e.g. Extension → Ring Group → Voicemail).
       </p>
@@ -850,7 +929,7 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearc
                 <X className="h-3.5 w-3.5 mr-1" />Unlink
               </Button>
             </div>
-            <FaxBoxEmailField box={selectedBox} onSave={onUpdateFaxBoxEmail} />
+            <FaxDeliveryEditor box={selectedBox} onSave={onUpdateFaxDelivery} />
           </div>
         ) : (
           <div className="flex items-center justify-between rounded-xl border border-dashed px-4 py-3">
@@ -1134,6 +1213,7 @@ export default function Destinations() {
   const [tab, setTab]             = useState('information')
   const [saving, setSaving]       = useState(false)
   const [formError, setFormError] = useState('')
+  const errorRef                  = useRef(null)
   const [deleting, setDeleting]   = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [affinityOpen, setAffinityOpen] = useState(false)
@@ -1194,15 +1274,16 @@ export default function Destinations() {
     setEditFaxBox(null)
   }
 
-  // Patch just the notification email on a linked fax box (inline edit).
-  const updateFaxBoxEmail = useCallback(async (box, email) => {
+  // Save the inbound-fax delivery fields (mode/email/FTP) of a linked box from
+  // the DID Fax tab, without opening the full box modal.
+  const updateFaxDelivery = useCallback(async (box, payload) => {
     try {
-      await faxApi.patch(box.fax_uuid, { fax_email: email })
+      await faxApi.patch(box.fax_uuid, payload)
       await reloadFaxBoxes()
-      toast.success('Notification email saved.')
+      toast.success('Fax delivery saved.')
     } catch (err) {
       const d = err?.response?.data
-      toast.error(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Could not save email.')
+      toast.error(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Could not save fax delivery.')
     }
   }, [reloadFaxBoxes])
 
@@ -1253,9 +1334,51 @@ export default function Destinations() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeId, isCreate])
 
+  // Scroll the error banner into view whenever an error appears.
+  useEffect(() => {
+    if (formError) errorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [formError])
+
+  // 10-digit US number check (form stores the E.164 +1XXXXXXXXXX form).
+  const validNumber = () => /^\+1\d{10}$/.test(form.destination_number || '')
+
+  // Navigate tabs. Moving forward off Information requires a valid DID number;
+  // moving back is always allowed.
+  const goToTab = (targetId) => {
+    const curIdx = TABS.findIndex(t => t.id === tab)
+    const nextIdx = TABS.findIndex(t => t.id === targetId)
+    if (nextIdx > curIdx && tab === 'information') {
+      if (!validNumber()) { setFormError('Enter a valid 10-digit DID / Phone Number.'); return }
+      if (!form.destination_name.trim()) { setFormError('Friendly Name is required.'); return }
+      if (!form.actions.some(a => a.type)) { setFormError('Add at least one route under Priority Routing.'); return }
+    }
+    setFormError('')
+    setTab(targetId)
+  }
+
   const handleSave = async () => {
-    if (!form.destination_number.trim()) {
-      setFormError('DID / Phone Number is required.'); setTab('information'); return
+    if (!validNumber()) {
+      setFormError('Enter a valid 10-digit DID / Phone Number.'); setTab('information'); return
+    }
+    if (!form.destination_name.trim()) {
+      setFormError('Friendly Name is required.'); setTab('information'); return
+    }
+    // Require at least one routing destination so the DID goes somewhere.
+    if (!form.actions.some(a => a.type)) {
+      setFormError('Add at least one route under Priority Routing.'); setTab('information'); return
+    }
+    // If a fax box is linked, its delivery config must be complete.
+    const linkedBox = (destData.fax_boxes || []).find(b => b.fax_uuid === form.fax_id)
+    if (linkedBox) {
+      const mode = linkedBox.fax_delivery_mode || 'email'
+      const wantsEmail = mode === 'email' || mode === 'both'
+      const wantsFtp   = mode === 'ftp'   || mode === 'both'
+      if (wantsEmail && !(linkedBox.fax_email || '').trim()) {
+        setFormError('Notification email is required — set it under Fax → Received Fax Delivery.'); setTab('fax'); return
+      }
+      if (wantsFtp && (!(linkedBox.fax_ftp_host || '').trim() || !(linkedBox.fax_ftp_username || '').trim() || !(linkedBox.fax_ftp_path || '').trim())) {
+        setFormError('FTP delivery is incomplete — fill the FTP fields under Fax → Received Fax Delivery.'); setTab('fax'); return
+      }
     }
     setSaving(true); setFormError('')
     try {
@@ -1384,7 +1507,7 @@ export default function Destinations() {
             {TABS.map(t => (
               <button
                 key={t.id}
-                onClick={() => setTab(t.id)}
+                onClick={() => goToTab(t.id)}
                 className={cn(
                   'px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-all duration-150',
                   tab === t.id
@@ -1400,7 +1523,7 @@ export default function Destinations() {
           {/* Body */}
           <CardContent className="px-6 py-5 space-y-1">
             {formError && (
-              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive mb-3">
+              <div ref={errorRef} className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive mb-3 scroll-mt-20">
                 {formError}
               </div>
             )}
@@ -1410,7 +1533,7 @@ export default function Destinations() {
               destSearchLoading={destSearchLoading} onSearch={searchDestData}
               onNewFaxBox={openNewFaxBox} onEditFaxBox={openEditFaxBox}
               onAutoCreateFaxBox={autoCreateFaxBox} autoCreatingFax={autoCreatingFax}
-              onUpdateFaxBoxEmail={updateFaxBoxEmail}
+              onUpdateFaxDelivery={updateFaxDelivery}
             />
           </CardContent>
 
@@ -1422,10 +1545,10 @@ export default function Destinations() {
             <div className="flex gap-2">
               <Button variant="outline" onClick={closeEditor}>Cancel</Button>
               {tabIndex > 0 && (
-                <Button variant="outline" onClick={() => setTab(TABS[tabIndex - 1].id)}>← Back</Button>
+                <Button variant="outline" onClick={() => goToTab(TABS[tabIndex - 1].id)}>← Back</Button>
               )}
               {tabIndex < TABS.length - 1 ? (
-                <Button onClick={() => setTab(TABS[tabIndex + 1].id)}>Next →</Button>
+                <Button onClick={() => goToTab(TABS[tabIndex + 1].id)}>Next →</Button>
               ) : (
                 <Button onClick={handleSave} disabled={saving}>
                   {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
