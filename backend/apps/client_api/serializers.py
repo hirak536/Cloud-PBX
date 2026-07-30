@@ -253,8 +253,15 @@ class ClientVoicemailMessageSerializer(serializers.ModelSerializer):
     # voicemail_id not on model directly; injected by view via context
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        data['voicemail_id'] = self.context.get('voicemail_map', {}).get(
-            f'{instance.username}@{instance.domain}', instance.username
+        # Messages store the mailbox UUID in `username`, so prefer the explicit
+        # UUID → voicemail_id map when the view supplies one (required when several
+        # mailboxes are merged into one result set).
+        uuid_to_vm_id = self.context.get('uuid_to_vm_id') or {}
+        data['voicemail_id'] = uuid_to_vm_id.get(
+            str(instance.username),
+            self.context.get('voicemail_map', {}).get(
+                f'{instance.username}@{instance.domain}', instance.username
+            ),
         )
         return data
 

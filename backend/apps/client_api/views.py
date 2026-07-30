@@ -1025,6 +1025,22 @@ def _normalize_voicemail_id(voicemail_id, tenant):
     return voicemail_id
 
 
+def _parse_voicemail_ids(request, tenant):
+    """Parse the voicemail_id query param into a de-duplicated, order-preserving list.
+
+    Accepts a comma-separated value (`?voicemail_id=901,905`) and/or repeated
+    params (`?voicemail_id=901&voicemail_id=905`). Each id is tenant_code-normalized.
+    """
+    raw_values = request.query_params.getlist('voicemail_id')
+    ids = []
+    for raw in raw_values:
+        for part in str(raw).split(','):
+            vm_id = _normalize_voicemail_id(part.strip(), tenant)
+            if vm_id and vm_id not in ids:
+                ids.append(vm_id)
+    return ids
+
+
 def _build_voicemail_map(tenant):
     """Return (domain_names_list, vm_map) for a tenant.
     Falls back to Voicemail-linked domains when Domain.tenant FK is not set."""
@@ -1070,7 +1086,8 @@ class ClientVoicemailMessageView(APIView):
             )
             from apps.voicemails.models import Voicemail as VoicemailModel  # noqa: PLC0415
 
-            voicemail_id_filter = _normalize_voicemail_id(request.query_params.get('voicemail_id'), tenant)
+            voicemail_ids = _parse_voicemail_ids(request, tenant)
+            voicemail_id_filter = voicemail_ids[0] if voicemail_ids else None
 
             if not voicemail_id_filter:
                 # No mailbox specified — return per-mailbox summary
@@ -1099,14 +1116,36 @@ class ClientVoicemailMessageView(APIView):
                     })
                 return Response(summary)
 
-            # Single mailbox: find by voicemail_id + tenant, filter messages by its UUID
-            vm_obj = VoicemailModel.objects.filter(
-                voicemail_id=voicemail_id_filter, tenant=tenant
-            ).first()
-            if vm_obj is None:
-                return Response({'voicemail_id': voicemail_id_filter, 'total': 0, 'unread': 0, 'results': []})
-            vm_uuid_str = str(vm_obj.voicemail_uuid)
-            all_msgs = VoicemailMessage.objects.filter(username=vm_uuid_str)
+            # One or more mailboxes: resolve by voicemail_id + tenant, then filter
+            # messages by their UUIDs (messages key the mailbox UUID in `username`).
+            vm_objs = list(VoicemailModel.objects.filter(
+                voicemail_id__in=voicemail_ids, tenant=tenant
+            ))
+            # Preserve the order the caller asked for.
+            by_id = {vm.voicemail_id: vm for vm in vm_objs}
+            vm_objs = [by_id[vm_id] for vm_id in voicemail_ids if vm_id in by_id]
+            multi = len(voicemail_ids) > 1
+            # voicemail UUID → voicemail_id, so each message can name its mailbox.
+            uuid_to_vm_id = {str(vm.voicemail_uuid): vm.voicemail_id for vm in vm_objs}
+
+            if not vm_objs:
+                empty = {'total': 0, 'unread': 0, 'results': []}
+                if multi:
+                    empty['voicemail_ids'] = voicemail_ids
+                    empty['per_mailbox'] = [
+                        {'voicemail_id': vm_id, 'total': 0, 'unread': 0} for vm_id in voicemail_ids
+                    ]
+                else:
+                    empty['voicemail_id'] = voicemail_id_filter
+                return Response(empty)
+
+            # `created_epoch` is second-granularity, so it alone is not a stable sort
+            # key — same-second rows can come back in a different order per query and
+            # duplicate or drop across page boundaries. `uuid` is the tiebreaker.
+            # Applied for one or many mailboxes so ordering is uniform.
+            all_msgs = VoicemailMessage.objects.filter(
+                username__in=list(uuid_to_vm_id.keys())
+            ).order_by('-created_epoch', 'uuid')
             filtered_msgs = all_msgs
             qs = all_msgs
 
@@ -1146,10 +1185,12 @@ class ClientVoicemailMessageView(APIView):
                 except VoicemailMessage.DoesNotExist:
                     raise NotFound()
                 ser_ctx = {'read_uuids': read_uuids, 'voicemail_map': voicemail_map,
+                           'uuid_to_vm_id': uuid_to_vm_id,
                            'request': request, 'tenant_uuid': tenant_uuid}
                 return Response(ClientVoicemailMessageSerializer(obj, context=ser_ctx).data)
 
             ser_ctx = {'read_uuids': read_uuids, 'voicemail_map': voicemail_map,
+                       'uuid_to_vm_id': uuid_to_vm_id,
                        'request': request, 'tenant_uuid': tenant_uuid}
             total = qs.count()
             # Global unread — ignores search/number filters (whole mailbox).
@@ -1164,12 +1205,40 @@ class ClientVoicemailMessageView(APIView):
             paginated = paginator.get_paginated_response(
                 ClientVoicemailMessageSerializer(page, many=True, context=ser_ctx).data
             )
-            paginated.data.update({
-                'voicemail_id': voicemail_id_filter,
+            extra = {
                 'total': total,
                 'unread': global_unread,
                 'filtered_unread': filtered_unread,
-            })
+            }
+            if multi:
+                # `.order_by()` clears the list ordering first: Django folds ordering
+                # fields into the GROUP BY of a values().annotate(), so leaving it on
+                # would group by uuid (unique per row) and report every count as 1.
+                per_msgs = all_msgs.order_by()
+                per_totals = {
+                    row['username']: row['total']
+                    for row in per_msgs.values('username').annotate(total=Count('uuid'))
+                }
+                per_unread = {
+                    row['username']: row['total']
+                    for row in per_msgs.exclude(uuid__in=read_uuids)
+                    .values('username').annotate(total=Count('uuid'))
+                }
+                # Include requested-but-unknown mailboxes as zeroes so the caller
+                # gets one entry per id it asked for.
+                vm_uuid_by_id = {vm.voicemail_id: str(vm.voicemail_uuid) for vm in vm_objs}
+                extra['voicemail_ids'] = voicemail_ids
+                extra['per_mailbox'] = [
+                    {
+                        'voicemail_id': vm_id,
+                        'total': per_totals.get(vm_uuid_by_id.get(vm_id), 0),
+                        'unread': per_unread.get(vm_uuid_by_id.get(vm_id), 0),
+                    }
+                    for vm_id in voicemail_ids
+                ]
+            else:
+                extra['voicemail_id'] = voicemail_id_filter
+            paginated.data.update(extra)
             return paginated
         except Exception as e:
             logger.error('ClientVoicemailMessageView.get error: %s', e, exc_info=True)
@@ -1409,11 +1478,11 @@ class ClientVoicemailUnreadCountsView(APIView):
                 reader=VoicemailReadState.READER_CLIENT, is_read=True
             ).values_list('message_uuid', flat=True))
 
-            voicemail_id_filter = _normalize_voicemail_id(request.query_params.get('voicemail_id'), tenant)
+            voicemail_ids = _parse_voicemail_ids(request, tenant)
             from apps.voicemails.models import Voicemail as VoicemailModel  # noqa: PLC0415
             vm_qs = VoicemailModel.objects.filter(tenant=tenant)
-            if voicemail_id_filter:
-                vm_qs = vm_qs.filter(voicemail_id=voicemail_id_filter)
+            if voicemail_ids:
+                vm_qs = vm_qs.filter(voicemail_id__in=voicemail_ids)
             # Map voicemail UUID → voicemail_id for the response
             uuid_to_id = {str(vm.voicemail_uuid): vm.voicemail_id for vm in vm_qs}
             messages_qs = VoicemailMessage.objects.filter(username__in=uuid_to_id.keys())
