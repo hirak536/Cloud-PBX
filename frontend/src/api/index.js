@@ -377,6 +377,8 @@ export const firewall = {
   unban: (data) => api.post('/firewall/fail2ban/unban/', data),
   whitelist: (data) => api.post('/firewall/fail2ban/whitelist/', data),
   ufwStatus: () => api.get('/firewall/ufw/'),
+  ufwAdd: (data) => api.post('/firewall/ufw/', data),
+  ufwDelete: (data) => api.delete('/firewall/ufw/', { data }),
   checkIp: (ip) => api.get('/firewall/iptables/', { params: { ip } }),
   unblockIp: (data) => api.delete('/firewall/iptables/', { data }),
 }

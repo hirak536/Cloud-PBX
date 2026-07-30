@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import {
   RefreshCw, Loader2, ShieldOff, Shield, Search, X,
   ShieldCheck, ShieldAlert, AlertTriangle, CheckCircle2,
-  Ban, ListFilter, Activity,
+  Ban, ListFilter, Activity, Plus, Trash2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -57,6 +57,15 @@ export default function Firewall() {
   const [inlineBanning, setInlineBanning] = useState({})
   const [jailTab, setJailTab] = useState('banned')
 
+  // UFW add/delete
+  const [ufwForm, setUfwForm] = useState({
+    action: 'allow', direction: 'in', port: '', proto: '', from_ip: '', comment: '',
+  })
+  const [ufwAdding, setUfwAdding] = useState(false)
+  const [ufwMsg, setUfwMsg] = useState(null)
+  const [ufwDeleting, setUfwDeleting] = useState({})
+  const [showUfwForm, setShowUfwForm] = useState(false)
+
   // action panel
   const [tab, setTab]               = useState('unban')
   const [actionIp, setActionIp]     = useState('')
@@ -82,6 +91,43 @@ export default function Firewall() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // ── UFW add / delete ──────────────────────────────────────────────────────
+  const addUfwRule = async (e) => {
+    e?.preventDefault()
+    setUfwAdding(true)
+    setUfwMsg(null)
+    try {
+      const { data } = await firewallApi.ufwAdd(ufwForm)
+      setUfwMsg({ type: 'success', text: `Added: ${data.command}` })
+      setUfwForm({ action: 'allow', direction: 'in', port: '', proto: '', from_ip: '', comment: '' })
+      await load()
+    } catch (err) {
+      setUfwMsg({ type: 'error', text: err.response?.data?.error || 'Failed to add rule' })
+    } finally {
+      setUfwAdding(false)
+    }
+  }
+
+  // Sends `raw` so the backend can reject the delete if rule numbers shifted.
+  const deleteUfwRule = async (rule) => {
+    if (!window.confirm(`Delete UFW rule ${rule.num}?\n\n${rule.raw}`)) return
+    setUfwDeleting(p => ({ ...p, [rule.num]: true }))
+    setUfwMsg(null)
+    try {
+      await firewallApi.ufwDelete({ num: rule.num, raw: rule.raw })
+      setUfwMsg({ type: 'success', text: `Deleted rule ${rule.num}: ${rule.raw}` })
+      await load()
+    } catch (err) {
+      setUfwMsg({ type: 'error', text: err.response?.data?.error || 'Failed to delete rule' })
+    } finally {
+      setUfwDeleting(p => {
+        const next = { ...p }
+        delete next[rule.num]
+        return next
+      })
+    }
+  }
 
   const totalBanned = jails.reduce((s, j) => s + j.banned_ips.length, 0)
   const totalFailed = jails.reduce((s, j) => s + j.currently_failed, 0)
@@ -143,8 +189,18 @@ export default function Firewall() {
     if (!checkResult?.ip) return
     setActionLoading(true)
     try {
-      await firewallApi.unblockIp({ ip: checkResult.ip, chain: 'INPUT' })
-      setActionMsg({ type: 'success', text: `Unblocked ${checkResult.ip} from iptables` })
+      // No chain: let the backend release fail2ban jails and raw rules alike.
+      const { data } = await firewallApi.unblockIp({ ip: checkResult.ip })
+      const jails = data?.unbanned_jails ?? []
+      const deleted = data?.deleted ?? 0
+      if (!jails.length && !deleted) {
+        setActionMsg({ type: 'error', text: data?.message || `${checkResult.ip} was not blocked` })
+        return
+      }
+      const parts = []
+      if (jails.length) parts.push(`unbanned from ${jails.join(', ')}`)
+      if (deleted) parts.push(`${deleted} iptables rule${deleted === 1 ? '' : 's'} removed`)
+      setActionMsg({ type: 'success', text: `${checkResult.ip}: ${parts.join('; ')}` })
       setCheckResult(null)
       setActionIp('')
     } catch (e) {
@@ -357,18 +413,107 @@ export default function Firewall() {
                       : 'bg-muted text-muted-foreground')}>
                     {ufw.status}
                   </Badge>
+                  <Button
+                    size="sm"
+                    variant={showUfwForm ? 'secondary' : 'outline'}
+                    className="ml-auto h-7 text-xs"
+                    onClick={() => { setShowUfwForm(v => !v); setUfwMsg(null) }}
+                  >
+                    {showUfwForm ? <><X className="h-3 w-3 mr-1" /> Cancel</> : <><Plus className="h-3 w-3 mr-1" /> Add Rule</>}
+                  </Button>
                 </CardTitle>
               </CardHeader>
+
+              {showUfwForm && (
+                <div className="border-b bg-muted/30 px-4 py-3">
+                  <form onSubmit={addUfwRule} className="flex flex-wrap items-end gap-2">
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Action</span>
+                      <select
+                        value={ufwForm.action}
+                        onChange={e => setUfwForm(f => ({ ...f, action: e.target.value }))}
+                        className="h-8 rounded-md border bg-background px-2 text-xs"
+                      >
+                        <option value="allow">allow</option>
+                        <option value="deny">deny</option>
+                        <option value="reject">reject</option>
+                        <option value="limit">limit</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Dir</span>
+                      <select
+                        value={ufwForm.direction}
+                        onChange={e => setUfwForm(f => ({ ...f, direction: e.target.value }))}
+                        className="h-8 rounded-md border bg-background px-2 text-xs"
+                      >
+                        <option value="in">in</option>
+                        <option value="out">out</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Port / range</span>
+                      <Input
+                        value={ufwForm.port}
+                        onChange={e => setUfwForm(f => ({ ...f, port: e.target.value }))}
+                        placeholder="8080 or 16384:32768"
+                        className="h-8 w-40 text-xs font-mono"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Proto</span>
+                      <select
+                        value={ufwForm.proto}
+                        onChange={e => setUfwForm(f => ({ ...f, proto: e.target.value }))}
+                        className="h-8 rounded-md border bg-background px-2 text-xs"
+                      >
+                        <option value="">any</option>
+                        <option value="tcp">tcp</option>
+                        <option value="udp">udp</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">From (IP / CIDR)</span>
+                      <Input
+                        value={ufwForm.from_ip}
+                        onChange={e => setUfwForm(f => ({ ...f, from_ip: e.target.value }))}
+                        placeholder="any"
+                        className="h-8 w-36 text-xs font-mono"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Comment</span>
+                      <Input
+                        value={ufwForm.comment}
+                        onChange={e => setUfwForm(f => ({ ...f, comment: e.target.value }))}
+                        placeholder="optional"
+                        className="h-8 w-40 text-xs"
+                      />
+                    </label>
+                    <Button type="submit" size="sm" className="h-8 text-xs" disabled={ufwAdding}>
+                      {ufwAdding
+                        ? <><Loader2 className="h-3 w-3 mr-1 animate-spin" /> Adding…</>
+                        : <><Plus className="h-3 w-3 mr-1" /> Add</>}
+                    </Button>
+                  </form>
+                  <p className="text-[10px] text-muted-foreground mt-2">
+                    A port range needs a protocol. Leave Port blank to allow all ports from a source address.
+                  </p>
+                </div>
+              )}
+
+              {ufwMsg && <div className="px-4 pt-2"><Msg msg={ufwMsg} /></div>}
+
               <CardContent className="p-0 overflow-x-auto">
                 {!ufw.rules?.length ? (
                   <div className="text-center py-8 text-muted-foreground text-sm">No rules configured</div>
                 ) : (
                   <div className="divide-y">
-                    <div className="grid grid-cols-[2rem_1fr_6rem_4rem_1fr] gap-3 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground bg-muted/30">
-                      <span>#</span><span>To / Port</span><span>Action</span><span>Dir</span><span>From</span>
+                    <div className="grid grid-cols-[2rem_1fr_6rem_4rem_1fr_2rem] gap-3 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground bg-muted/30">
+                      <span>#</span><span>To / Port</span><span>Action</span><span>Dir</span><span>From</span><span />
                     </div>
                     {ufw.rules.map(rule => (
-                      <div key={rule.num} className="grid grid-cols-[2rem_1fr_6rem_4rem_1fr] gap-3 px-4 py-2 text-xs items-center hover:bg-muted/30 transition-colors">
+                      <div key={rule.num} className="grid grid-cols-[2rem_1fr_6rem_4rem_1fr_2rem] gap-3 px-4 py-2 text-xs items-center hover:bg-muted/30 transition-colors group">
                         <span className="text-muted-foreground font-mono">{rule.num}</span>
                         <span className="font-mono truncate" title={rule.to}>{rule.to || '—'}</span>
                         <span>
@@ -381,6 +526,17 @@ export default function Firewall() {
                         </span>
                         <span className="text-muted-foreground">{rule.direction || '—'}</span>
                         <span className="font-mono truncate" title={rule.from_}>{rule.from_ || 'Anywhere'}</span>
+                        <button
+                          type="button"
+                          title={`Delete rule ${rule.num}`}
+                          onClick={() => deleteUfwRule(rule)}
+                          disabled={!!ufwDeleting[rule.num]}
+                          className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground opacity-0 transition group-hover:opacity-100 hover:bg-red-100 hover:text-red-600 disabled:opacity-50 dark:hover:bg-red-900/30"
+                        >
+                          {ufwDeleting[rule.num]
+                            ? <Loader2 className="h-3 w-3 animate-spin" />
+                            : <Trash2 className="h-3 w-3" />}
+                        </button>
                       </div>
                     ))}
                   </div>
