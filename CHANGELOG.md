@@ -3,6 +3,31 @@
 All notable changes to IHS-PBX are documented in this file.
 Newest entries on top.
 
+## 2026-07-23 (frontend)
+
+### IHSPhone integration — Organization page (Organizations + UC Users)
+Repurposed the `/users` page into an **Organization** page (superadmin-only), backed by the external IHSPhone API (`https://api.ihsphone.com`). The old in-app "UC User" listing/validation was removed first (it needed a full workflow rebuild), then rebuilt against the new API. Added a superadmin-gated TopBar entry point and set the page title to "Organization".
+
+- **API client** (`src/api/index.js`): new `organizations` (`list` w/ search+page+`is_active`, `listAll` via `data_all=true`, `update` → `POST /company/companyEditPBX`) and `ucUsers` (`list`, `create` → `/user/useraddpbx`, `update` → `/user/editTokenpbx`, `notify` → `/user/userNotify`, `delete` → `DELETE /user/deletepbx/{uuid}`) on a dedicated `orgAxios` instance. Bearer token is **hardcoded** (not `.env`) — its `$`/`(`/`#` chars get mangled by Vite's dotenv-expand, which caused 401s while curl/Postman worked.
+- **Tab shell** (`src/pages/Users.jsx`): superadmin tab switcher — Organization Settings · UC Users · PBX Users (existing).
+- **Organization Settings tab**: searchable, paginated company list (Voice/SMS/Fax feature badges + Active/Disabled status). Inline **status toggle** and an **edit dialog** (feature toggles + active + password-override; name/code/domain read-only, portalled dropdowns) → `companyEditPBX` with the acting admin's email. Status filter defaults to Active and is dropped from the request while searching.
+- **UC Users tab**: infinite-scroll list (prefetches 2 pages) with search, status filter, **multi-select userType filter**, and a company filter (from `listAll`). Per-row **Edit / Reset password / hard Delete**:
+  - **Edit** — name, userType, active toggle, single extension + multi-select DIDs sourced from the company's **PBX** extensions/DIDs (scoped by `tenant_id` via `?tenant=`). Diff-only save (always sends `userid`; whole extensions array if changed). Email read-only. Voice-off companies hide the extension UI and send a random ext/password.
+  - **Reset password** — modal: *email reset link* (`userNotify`) or *set custom password* (via edit API, `other:"0"`); generate + show/hide.
+  - **Delete** — irreversible-warning modal (wipes Chat Rooms, Contacts, Messages) → hard delete with the acting admin's email.
+  - **Add User** — email (lowercased) / first / last / userType / company (dropdown → numeric id) / password mode (email vs manual) / one PBX extension + multi DIDs (label = DID `destination_name`, ext password always sent). SMS-enabled companies require ≥1 DID; voice-enabled require an extension. Real API errors surfaced via a shared `apiErrorMessage` extractor.
+- **MultiSelectDropdown**: reusable checkbox dropdown, menu portalled to `document.body` with drop-up so it isn't clipped inside modals.
+- **TopBar** (`src/components/TopBar.jsx`): superadmin-only Organization nav icon → `/users`.
+
+### Form validation & UX across PBX modules
+Mandatory-field gating and error affordances added to the create/edit wizards.
+
+- **Extensions** (`src/pages/Extensions.jsx`): per-tab validation gates "Next" (extension 3–5 digits + password on General); a server-side duplicate-number check blocks advancing/saving when the number is already in use.
+- **Ring Groups** (`src/pages/RingGroups.jsx`): name required; at least one extension required to save.
+- **IVR Menus** (`src/pages/IvrMenus.jsx`): name required (gated on Next off Settings + on save); require at least one key option or a welcome/options message; scroll-to-error.
+- **Working Hours** (`src/pages/WorkingHours.jsx`): name + both open & closed destinations required; red asterisks; scroll-to-error.
+- **Destinations / DIDs** (`src/pages/Destinations.jsx`): `+1` shown as a fixed prefix with a 10-digit-only input; DID number + Friendly Name required and Next-gated; ≥1 route required; Match Regex locked behind an Override toggle; red required asterisks; scroll-to-error. Fax tab: delivery mode + notification email + FTP block moved inline with per-mode mandatory validation; "Extension" relabeled "DID". Also filters empty routing rows so a blank `dest_type` no longer 400s.
+
 ## 2026-07-21
 
 ### Security — tenant isolation leak on the FreeSWITCH live views (active calls, registrations)
