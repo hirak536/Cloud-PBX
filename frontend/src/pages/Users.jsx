@@ -5,7 +5,7 @@ import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useSelector } from 'react-redux'
 import { selectTenant, selectAuth } from '@/store'
 import { roleOf, creatableRoles, GRANTABLE_PAGES, GRANTABLE_PATHS, ACTION_CONTROLLED_PAGES, ACTIONS, ACTION_LABELS } from '@/lib/permissions'
-import { users as api, tenants as tenantsApi, auth as authApi, fax as faxApi, organizations as orgApi, ucUsers as ucUsersApi, extensions as extensionsApi, destinations as destinationsApi } from '@/api'
+import { users as api, tenants as tenantsApi, auth as authApi, fax as faxApi, organizations as orgApi, ucUsers as ucUsersApi, extensions as extensionsApi, destinations as destinationsApi, voicemails as voicemailsApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -599,6 +599,7 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
   const EMPTY = {
     email: '', firstName: '', lastName: '',
     userType: 'user', companyId: '', extname: '', dids: [],
+    faxUuids: [], voicemailIds: [],
     pwMode: 'email', password: '',   // pwMode: 'email' | 'manual'
   }
   const [form, setForm] = useState(EMPTY)
@@ -607,6 +608,11 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
   const [showPw, setShowPw] = useState(false)
   const [pbxExtensions, setPbxExtensions] = useState([])
   const [pbxDids, setPbxDids] = useState([])
+  const [pbxFaxes, setPbxFaxes] = useState([])
+  const [pbxVoicemails, setPbxVoicemails] = useState([])
+  // True once the user has hand-edited the voicemail selection, which stops the
+  // extension-follows-voicemail default below from overwriting their choice.
+  const vmTouchedRef = useRef(false)
 
   const selectedCompany = companies.find(c => String(c.id) === String(form.companyId)) || null
   const tenantId = selectedCompany?.tenant_id
@@ -619,12 +625,16 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
     const preset = companies.find(c => c.code === defaultCompanyCode)
     setForm({ ...EMPTY, companyId: preset ? String(preset.id) : '' })
     setError(''); setShowPw(false); setSaving(false)
+    vmTouchedRef.current = false
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  // Load the chosen company's PBX extensions + DIDs.
+  // Load the chosen company's PBX extensions, DIDs, fax boxes and voicemail boxes.
   useEffect(() => {
-    if (!open || !tenantId) { setPbxExtensions([]); setPbxDids([]); return }
+    if (!open || !tenantId) {
+      setPbxExtensions([]); setPbxDids([]); setPbxFaxes([]); setPbxVoicemails([])
+      return
+    }
     let alive = true
     const params = { page_size: 500, tenant: tenantId }
     extensionsApi.list(params)
@@ -633,8 +643,36 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
     destinationsApi.list({ ...params, destination_enabled: true })
       .then(({ data }) => { if (alive) setPbxDids(Array.isArray(data) ? data : data.results || []) })
       .catch(() => { if (alive) setPbxDids([]) })
+    faxApi.list(params)
+      .then(({ data }) => { if (alive) setPbxFaxes(Array.isArray(data) ? data : data.results || []) })
+      .catch(() => { if (alive) setPbxFaxes([]) })
+    voicemailsApi.list(params)
+      .then(({ data }) => { if (alive) setPbxVoicemails(Array.isArray(data) ? data : data.results || []) })
+      .catch(() => { if (alive) setPbxVoicemails([]) })
     return () => { alive = false }
   }, [open, tenantId])
+
+  // Default the voicemail selection to the mailbox belonging to the chosen
+  // extension. There is no FK: an Extension names its mailbox via
+  // Extension.voicemail_id, falling back to the extension number when blank —
+  // the same rule the auto_create_voicemail signal uses to create the box, so
+  // resolving it this way stays in step with whatever the Extensions page set.
+  // An extension with voicemail disabled has no mailbox to select.
+  // Skipped once the admin has touched the voicemail dropdown themselves.
+  useEffect(() => {
+    if (!open || vmTouchedRef.current) return
+    const ext = form.extname
+      ? pbxExtensions.find(x => (x.sip_username || x.extension) === form.extname)
+      : null
+    const mailboxId = ext && ext.voicemail_enabled !== false
+      ? (ext.voicemail_id || ext.extension)
+      : null
+    const vm = mailboxId
+      ? pbxVoicemails.find(v => String(v.voicemail_id) === String(mailboxId))
+      : null
+    setForm(p => ({ ...p, voicemailIds: vm ? [String(vm.voicemail_id)] : [] }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, form.extname, pbxExtensions, pbxVoicemails])
 
   const sf = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }))
 
@@ -672,6 +710,23 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
       userType:  form.userType,
       company:   Number(form.companyId),
       extensions: [extension],
+      // Fax / voicemail box grants, both JSON-encoded strings rather than
+      // native arrays (e.g. voicemail_id: "[905]"). Voicemail carries numeric
+      // mailbox ids; fax carries objects with the box's caller ID. Both are
+      // omitted entirely when nothing is selected.
+      ...(form.voicemailIds.length
+        ? { voicemail_id: JSON.stringify(form.voicemailIds.map(Number)) }
+        : {}),
+      ...(form.faxUuids.length ? {
+        fax_id: JSON.stringify(form.faxUuids.map(uuid => {
+          const f = pbxFaxes.find(x => x.fax_uuid === uuid)
+          return {
+            fax_uuid:              uuid,
+            fax_caller_id_name:    f?.fax_caller_id_name || '',
+            fax_caller_id_number:  f?.fax_caller_id_number || '',
+          }
+        })),
+      } : {}),
       // Manual mode sends the top-level password; email mode omits it.
       ...(form.pwMode === 'manual' ? { password: form.password } : {}),
     }
@@ -694,6 +749,19 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
     for (const num of form.dids) if (num && !opts.some(o => o.value === num)) opts.unshift({ value: num, label: num })
     return opts
   })()
+
+  const faxOptions = pbxFaxes.map(f => ({
+    value: f.fax_uuid,
+    label: `${f.fax_extension || ''}${f.fax_extension && f.fax_name ? ' — ' : ''}${f.fax_name || ''}` || f.fax_uuid,
+  }))
+
+  // Voicemail boxes are selected (and sent) by voicemail_id — the mailbox
+  // number, not the UUID. Values are strings here; they are cast to numbers
+  // when the payload is built.
+  const voicemailOptions = pbxVoicemails.map(v => ({
+    value: String(v.voicemail_id),
+    label: `${v.voicemail_id}${v.voicemail_name ? ` — ${v.voicemail_name}` : ''}`,
+  }))
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v && !saving) onClose() }}>
@@ -790,6 +858,31 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
                 className="w-full"
               />
               {smsEnabled && <p className="text-[11px] text-muted-foreground">Required — SMS is enabled for this company.</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Fax Boxes</Label>
+              <MultiSelectDropdown
+                options={faxOptions}
+                selected={form.faxUuids}
+                onChange={(ids) => setForm(p => ({ ...p, faxUuids: ids }))}
+                placeholder={tenantId ? 'Select fax boxes…' : 'Select a company first'}
+                summaryNoun="fax boxes"
+                className="w-full"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Voicemail Boxes</Label>
+              <MultiSelectDropdown
+                options={voicemailOptions}
+                selected={form.voicemailIds}
+                onChange={(ids) => { vmTouchedRef.current = true; setForm(p => ({ ...p, voicemailIds: ids })) }}
+                placeholder={tenantId ? 'Select voicemail boxes…' : 'Select a company first'}
+                summaryNoun="voicemail boxes"
+                className="w-full"
+              />
+              <p className="text-[11px] text-muted-foreground">Defaults to the selected extension's own mailbox.</p>
             </div>
           </div>
         </div>
@@ -980,14 +1073,19 @@ function UcUserEditDialog({ user, onClose, onSaved }) {
   // PBX extensions + DIDs for this user's tenant, populating the dropdowns.
   const [pbxExtensions, setPbxExtensions] = useState([])
   const [pbxDids, setPbxDids] = useState([])
+  const [pbxFaxes, setPbxFaxes] = useState([])
+  const [pbxVoicemails, setPbxVoicemails] = useState([])
   const tenantId = user?.company?.tenant_id
   // Voice off → the extension/DID selection is meaningless; hide it and send a
   // random ext + password on save instead.
   const voiceEnabled = user?.company?.voiceenable !== false
 
-  // Fetch the tenant's PBX extensions and DIDs when the dialog opens.
+  // Fetch the tenant's PBX extensions, DIDs, fax boxes and voicemail boxes.
   useEffect(() => {
-    if (!user || !tenantId) { setPbxExtensions([]); setPbxDids([]); return }
+    if (!user || !tenantId) {
+      setPbxExtensions([]); setPbxDids([]); setPbxFaxes([]); setPbxVoicemails([])
+      return
+    }
     let alive = true
     const params = { page_size: 500, tenant: tenantId }
     extensionsApi.list(params)
@@ -996,6 +1094,12 @@ function UcUserEditDialog({ user, onClose, onSaved }) {
     destinationsApi.list({ ...params, destination_enabled: true })
       .then(({ data }) => { if (alive) setPbxDids(Array.isArray(data) ? data : data.results || []) })
       .catch(() => { if (alive) setPbxDids([]) })
+    faxApi.list(params)
+      .then(({ data }) => { if (alive) setPbxFaxes(Array.isArray(data) ? data : data.results || []) })
+      .catch(() => { if (alive) setPbxFaxes([]) })
+    voicemailsApi.list(params)
+      .then(({ data }) => { if (alive) setPbxVoicemails(Array.isArray(data) ? data : data.results || []) })
+      .catch(() => { if (alive) setPbxVoicemails([]) })
     return () => { alive = false }
   }, [user, tenantId])
 
@@ -1008,6 +1112,14 @@ function UcUserEditDialog({ user, onClose, onSaved }) {
       lastName:  user.lastName || '',
       userType:  user.userType || 'user',
       is_active: user.is_active !== false,
+      // Existing grants, normalised to the same shapes the dropdowns use:
+      // fax as a list of UUIDs, voicemail as a list of mailbox-id strings.
+      // The API returns fax_id as objects; tolerate bare UUIDs too.
+      faxUuids: (user.fax_id || []).map(f => (typeof f === 'string' ? f : f?.fax_uuid)).filter(Boolean),
+      voicemailIds: (user.voicemail_id || [])
+        .map(v => (v && typeof v === 'object' ? v.voicemail_id : v))
+        .filter(v => v !== null && v !== undefined && v !== '')
+        .map(String),
       extensions: (user.extension || []).map(ext => ({
         extname:  ext.extname || ext.username || '',
         password: ext.password || '',
@@ -1045,6 +1157,28 @@ function UcUserEditDialog({ user, onClose, onSaved }) {
     if (form.lastName  !== orig.lastName)  payload.lastName  = form.lastName
     if (form.userType  !== orig.userType)  payload.userType  = form.userType
     if (form.is_active !== orig.is_active) payload.is_active = form.is_active
+    // Fax / voicemail grants, sent only when the set actually changed —
+    // compared order-insensitively so merely reordering isn't a "change".
+    // Sent whole (the full desired set), including [] to clear all grants.
+    const sameSet = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
+    // Both grant fields go as JSON-encoded strings, not native arrays —
+    // /user/editTokenpbx expects e.g. voicemail_id: "[905]".
+    if (!sameSet(form.voicemailIds, orig.voicemailIds)) {
+      payload.voicemail_id = JSON.stringify(form.voicemailIds.map(Number))
+    }
+    if (!sameSet(form.faxUuids, orig.faxUuids)) {
+      payload.fax_id = JSON.stringify(form.faxUuids.map(uuid => {
+        const f = pbxFaxes.find(x => x.fax_uuid === uuid)
+        // Fall back to the caller ID already on the user's grant when the box
+        // isn't in the fetched list (e.g. out of tenant scope).
+        const prev = (user.fax_id || []).find(x => x && typeof x === 'object' && x.fax_uuid === uuid)
+        return {
+          fax_uuid:             uuid,
+          fax_caller_id_name:   f?.fax_caller_id_name   ?? prev?.fax_caller_id_name   ?? '',
+          fax_caller_id_number: f?.fax_caller_id_number ?? prev?.fax_caller_id_number ?? '',
+        }
+      }))
+    }
     if (!voiceEnabled) {
       // Voice disabled: no extension UI. Always send a single random ext +
       // password so the payload carries plausible values (no phones/DIDs).
@@ -1184,6 +1318,53 @@ function UcUserEditDialog({ user, onClose, onSaved }) {
               ))}
             </div>
             )}
+
+            <div className="rounded-xl border p-3 space-y-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Fax Boxes</Label>
+                <MultiSelectDropdown
+                  options={(() => {
+                    const opts = pbxFaxes.map(f => ({
+                      value: f.fax_uuid,
+                      label: `${f.fax_extension || ''}${f.fax_extension && f.fax_name ? ' — ' : ''}${f.fax_name || ''}` || f.fax_uuid,
+                    }))
+                    // Keep an already-granted box selectable even if it's not in the fetched list.
+                    for (const id of form.faxUuids) {
+                      if (id && !opts.some(o => o.value === id)) {
+                        const prev = (user.fax_id || []).find(x => x && typeof x === 'object' && x.fax_uuid === id)
+                        opts.unshift({ value: id, label: prev?.fax_caller_id_name || id })
+                      }
+                    }
+                    return opts
+                  })()}
+                  selected={form.faxUuids}
+                  onChange={(ids) => setForm(p => ({ ...p, faxUuids: ids }))}
+                  placeholder="Select fax boxes…"
+                  summaryNoun="fax boxes"
+                  className="w-full"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Voicemail Boxes</Label>
+                <MultiSelectDropdown
+                  options={(() => {
+                    const opts = pbxVoicemails.map(v => ({
+                      value: String(v.voicemail_id),
+                      label: `${v.voicemail_id}${v.voicemail_name ? ` — ${v.voicemail_name}` : ''}`,
+                    }))
+                    for (const id of form.voicemailIds) {
+                      if (id && !opts.some(o => o.value === id)) opts.unshift({ value: id, label: id })
+                    }
+                    return opts
+                  })()}
+                  selected={form.voicemailIds}
+                  onChange={(ids) => setForm(p => ({ ...p, voicemailIds: ids }))}
+                  placeholder="Select voicemail boxes…"
+                  summaryNoun="voicemail boxes"
+                  className="w-full"
+                />
+              </div>
+            </div>
           </div>
         )}
         <DialogFooter className="px-6 py-4 border-t bg-muted/30">

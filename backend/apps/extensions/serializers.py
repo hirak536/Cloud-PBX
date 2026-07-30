@@ -11,7 +11,8 @@ class ExtensionListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Extension
         fields = ['extension_uuid', 'extension', 'number_alias', 'effective_caller_id_name',
-                  'effective_caller_id_number', 'voicemail_enabled', 'enabled', 'description',
+                  'effective_caller_id_number', 'voicemail_enabled', 'voicemail_id',
+                  'enabled', 'description',
                   'sip_username', 'password', 'domain_name', 'tenant_code',
                   'outbound_did', 'outbound_did_number', 'outbound_did_name']
 
