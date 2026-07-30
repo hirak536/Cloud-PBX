@@ -93,6 +93,15 @@ const EMPTY = {
   fax_protocol: 't38_only',
   fax_store: false,
   fax_on_receive: '',
+  // Inbound-fax forwarding (lives on the linked fax box; edited inline here).
+  fax_delivery_mode: 'email',   // 'email' | 'ftp' | 'both'
+  fax_email: '',
+  fax_ftp_host: '',
+  fax_ftp_port: 21,
+  fax_ftp_username: '',
+  fax_ftp_password: '',
+  fax_ftp_path: '',
+  fax_ftp_use_tls: false,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -596,108 +605,9 @@ function FaxBoxFormDialog({ open, editBox, didNumber, dids, onClose }) {
   )
 }
 
-// Inline inbound-fax delivery editor for a linked fax box, shown on the DID's
-// Fax tab. Covers delivery mode, notification email, and the FTP server block.
-// Keeps its own local copy and saves (PATCH) only the delivery-related fields.
-function FaxDeliveryEditor({ box, onSave }) {
-  const seed = (b) => ({
-    fax_delivery_mode: b.fax_delivery_mode || 'email',
-    fax_email:         b.fax_email || '',
-    fax_ftp_host:      b.fax_ftp_host || '',
-    fax_ftp_port:      b.fax_ftp_port ?? 21,
-    fax_ftp_use_tls:   b.fax_ftp_use_tls === true,
-    fax_ftp_username:  b.fax_ftp_username || '',
-    fax_ftp_password:  '', // write-only; blank = keep existing
-    fax_ftp_path:      b.fax_ftp_path || '',
-  })
-  const [local, setLocal] = useState(seed(box))
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  useEffect(() => { setLocal(seed(box)); setError('') }, [box.fax_uuid])
-
-  const sf = (key) => (e) => setLocal(p => ({ ...p, [key]: e.target.value }))
-  const wantsEmail = local.fax_delivery_mode === 'email' || local.fax_delivery_mode === 'both'
-  const wantsFtp   = local.fax_delivery_mode === 'ftp'   || local.fax_delivery_mode === 'both'
-
-  const save = async () => {
-    if (wantsEmail && !local.fax_email.trim()) {
-      setError('Notification email is required for the selected delivery mode.'); return
-    }
-    if (wantsFtp) {
-      if (!local.fax_ftp_host.trim())     { setError('FTP host is required.'); return }
-      if (!String(local.fax_ftp_port).trim()) { setError('FTP port is required.'); return }
-      if (!local.fax_ftp_username.trim()) { setError('FTP username is required.'); return }
-      if (!local.fax_ftp_path.trim())     { setError('FTP remote path is required.'); return }
-      // Password is write-only: required only when the box has none stored yet.
-      // If one already exists, blank means "keep the current password".
-      if (!local.fax_ftp_password && !box.fax_ftp_host) {
-        setError('FTP password is required.'); return
-      }
-    }
-    setSaving(true); setError('')
-    const payload = { ...local }
-    if (!payload.fax_ftp_password) delete payload.fax_ftp_password  // blank = leave unchanged
-    try { await onSave(box, payload) } finally { setSaving(false) }
-  }
-
-  return (
-    <div className="space-y-3 rounded-xl border px-4 py-3">
-      <Field label="Received Fax Delivery" hint="What to do with inbound faxes.">
-        <Select value={local.fax_delivery_mode} onChange={sf('fax_delivery_mode')} disabled={saving}>
-          <option value="email">Email</option>
-          <option value="ftp">FTP server</option>
-          <option value="both">Email + FTP</option>
-        </Select>
-      </Field>
-      {wantsEmail && (
-        <Field label="Notification Email" required hint="Inbound faxes are emailed here. Separate multiple addresses with commas.">
-          <Input type="text" placeholder="fax@company.com, alerts@company.com" value={local.fax_email} onChange={sf('fax_email')} disabled={saving} />
-        </Field>
-      )}
-      {wantsFtp && (
-        <div className="rounded-md border bg-muted/30 p-4">
-          <p className="text-sm font-medium mb-3">FTP Server</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field label="FTP Host" required className="sm:col-span-2">
-              <Input placeholder="ftp.example.com" value={local.fax_ftp_host} onChange={sf('fax_ftp_host')} disabled={saving} />
-            </Field>
-            <Field label="Port" required>
-              <Input type="number" value={local.fax_ftp_port}
-                onChange={(e) => setLocal(p => ({ ...p, fax_ftp_port: e.target.value === '' ? '' : Number(e.target.value) }))}
-                disabled={saving} />
-            </Field>
-            <Field label="Use FTPS (TLS)">
-              <Select value={String(local.fax_ftp_use_tls)} onChange={(e) => setLocal(p => ({ ...p, fax_ftp_use_tls: e.target.value === 'true' }))} disabled={saving}>
-                <option value="false">No</option>
-                <option value="true">Yes</option>
-              </Select>
-            </Field>
-            <Field label="Username" required>
-              <Input placeholder="anonymous" value={local.fax_ftp_username} onChange={sf('fax_ftp_username')} disabled={saving} autoComplete="off" />
-            </Field>
-            <Field label="Password" required={!box.fax_ftp_host} hint={box.fax_ftp_host ? 'Leave blank to keep the current password.' : undefined}>
-              <Input type="password" value={local.fax_ftp_password} onChange={sf('fax_ftp_password')} disabled={saving} autoComplete="new-password" />
-            </Field>
-            <Field label="Remote Path" required hint="Directory to store faxes in (created if missing)." className="sm:col-span-2">
-              <Input placeholder="/incoming-faxes" value={local.fax_ftp_path} onChange={sf('fax_ftp_path')} disabled={saving} />
-            </Field>
-          </div>
-        </div>
-      )}
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      <div className="flex justify-end">
-        <Button type="button" size="sm" onClick={save} disabled={saving}>
-          {saving && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}
-          Save Delivery
-        </Button>
-      </div>
-    </div>
-  )
-}
-
 // ── Tab body ───────────────────────────────────────────────────────────────────
 
-function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearchLoading, onSearch, onNewFaxBox, onEditFaxBox, onAutoCreateFaxBox, autoCreatingFax, onUpdateFaxDelivery }) {
+function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearchLoading, onSearch, onNewFaxBox, onEditFaxBox, onAutoCreateFaxBox, autoCreatingFax }) {
   // Match Regex is locked by default — auto-derived from the DID number on the
   // backend. Turn on Override to hand-edit it. When editing a DID that already
   // has a custom regex stored, start in override mode so it's visible/editable.
@@ -705,6 +615,27 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearc
   useEffect(() => {
     if (form.destination_number_regex) setRegexOverride(true)
   }, [form.destination_number_regex])
+
+  // Seed the inline fax-delivery fields from the linked fax box once, when the
+  // box first resolves (edited inline; saved back to the box on DID save).
+  const faxSeededRef = useRef(null)
+  useEffect(() => {
+    const box = (destData.fax_boxes || []).find(b => b.fax_uuid === form.fax_id)
+    if (!box || faxSeededRef.current === box.fax_uuid) return
+    faxSeededRef.current = box.fax_uuid
+    setForm(p => ({
+      ...p,
+      fax_delivery_mode: box.fax_delivery_mode || 'email',
+      fax_email:         box.fax_email || '',
+      fax_ftp_host:      box.fax_ftp_host || '',
+      fax_ftp_port:      box.fax_ftp_port ?? 21,
+      fax_ftp_username:  box.fax_ftp_username || '',
+      fax_ftp_password:  '',   // write-only; blank = keep existing
+      fax_ftp_path:      box.fax_ftp_path || '',
+      fax_ftp_use_tls:   box.fax_ftp_use_tls === true,
+    }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.fax_id, destData.fax_boxes])
 
   const addAction    = () => setForm(p => ({ ...p, actions: [...p.actions, { ...EMPTY_ACTION }] }))
   const removeAction = (idx) => setForm(p => ({ ...p, actions: p.actions.filter((_, i) => i !== idx) }))
@@ -929,7 +860,6 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearc
                 <X className="h-3.5 w-3.5 mr-1" />Unlink
               </Button>
             </div>
-            <FaxDeliveryEditor box={selectedBox} onSave={onUpdateFaxDelivery} />
           </div>
         ) : (
           <div className="flex items-center justify-between rounded-xl border border-dashed px-4 py-3">
@@ -959,18 +889,61 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearc
         </p>
       )}
 
+      {/* Inbound-fax forwarding — shown when fax receive is on. Saved with the DID. */}
+      {form.fax_receive && selectedBox && (() => {
+        const wantsEmail = form.fax_delivery_mode === 'email' || form.fax_delivery_mode === 'both'
+        const wantsFtp   = form.fax_delivery_mode === 'ftp'   || form.fax_delivery_mode === 'both'
+        return (
+        <div className="space-y-3 rounded-xl border px-4 py-3">
+          <Field label="Forward Received Faxes To" hint="Where inbound faxes are delivered.">
+            <Select value={form.fax_delivery_mode} onChange={set('fax_delivery_mode')}>
+              <option value="email">Email</option>
+              <option value="ftp">FTP server</option>
+              <option value="both">Email + FTP</option>
+            </Select>
+          </Field>
+          {wantsEmail && (
+            <Field label="Notification Email" hint="Inbound faxes are emailed here. Separate multiple addresses with commas.">
+              <Input type="text" placeholder="fax@company.com, alerts@company.com" value={form.fax_email} onChange={set('fax_email')} />
+            </Field>
+          )}
+          {wantsFtp && (
+            <div className="rounded-md border bg-muted/30 p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <p className="sm:col-span-2 text-sm font-medium -mb-1">FTP Server</p>
+              <Field label="FTP Host" className="sm:col-span-2">
+                <Input placeholder="ftp.example.com" value={form.fax_ftp_host} onChange={set('fax_ftp_host')} />
+              </Field>
+              <Field label="Port">
+                <Input type="number" value={form.fax_ftp_port}
+                  onChange={(e) => setForm(p => ({ ...p, fax_ftp_port: e.target.value === '' ? '' : Number(e.target.value) }))} />
+              </Field>
+              <Field label="Use FTPS (TLS)">
+                <Select value={String(form.fax_ftp_use_tls)} onChange={(e) => setForm(p => ({ ...p, fax_ftp_use_tls: e.target.value === 'true' }))}>
+                  <option value="false">No</option>
+                  <option value="true">Yes</option>
+                </Select>
+              </Field>
+              <Field label="Username">
+                <Input placeholder="anonymous" value={form.fax_ftp_username} onChange={set('fax_ftp_username')} autoComplete="off" />
+              </Field>
+              <Field label="Password" hint={selectedBox.fax_ftp_host ? 'Leave blank to keep the current password.' : undefined}>
+                <Input type="password" value={form.fax_ftp_password} onChange={set('fax_ftp_password')} autoComplete="new-password" />
+              </Field>
+              <Field label="Remote Path" hint="Directory to store faxes in (created if missing)." className="sm:col-span-2">
+                <Input placeholder="/incoming-faxes" value={form.fax_ftp_path} onChange={set('fax_ftp_path')} />
+              </Field>
+            </div>
+          )}
+        </div>
+        )
+      })()}
+
       <SectionTitle>Protocol</SectionTitle>
       <Field label="Fax Protocol">
         <Select value={form.fax_protocol} onChange={set('fax_protocol')}>
           {FAX_PROTOCOL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </Select>
       </Field>
-
-      <SectionTitle>Delivery</SectionTitle>
-      <p className="text-xs text-muted-foreground -mt-1">
-        Email notifications and caller ID are configured on the <span className="font-medium">Fax Box</span> above
-        (Create / Edit).
-      </p>
       <ToggleRow label="Store Received Faxes" checked={form.fax_store} onChange={v => setForm(p => ({ ...p, fax_store: v }))} />
     </div>
     )
@@ -1274,19 +1247,6 @@ export default function Destinations() {
     setEditFaxBox(null)
   }
 
-  // Save the inbound-fax delivery fields (mode/email/FTP) of a linked box from
-  // the DID Fax tab, without opening the full box modal.
-  const updateFaxDelivery = useCallback(async (box, payload) => {
-    try {
-      await faxApi.patch(box.fax_uuid, payload)
-      await reloadFaxBoxes()
-      toast.success('Fax delivery saved.')
-    } catch (err) {
-      const d = err?.response?.data
-      toast.error(typeof d === 'string' ? d : Object.values(d || {}).flat().join(' ') || 'Could not save fax delivery.')
-    }
-  }, [reloadFaxBoxes])
-
   const listParams = useMemo(
     () => (debouncedSearch ? { search: debouncedSearch } : {}),
     [debouncedSearch],
@@ -1367,19 +1327,8 @@ export default function Destinations() {
     if (!form.actions.some(a => a.type)) {
       setFormError('Add at least one route under Priority Routing.'); setTab('information'); return
     }
-    // If a fax box is linked, its delivery config must be complete.
+    // Fax forwarding config is optional — no required-field validation here.
     const linkedBox = (destData.fax_boxes || []).find(b => b.fax_uuid === form.fax_id)
-    if (linkedBox) {
-      const mode = linkedBox.fax_delivery_mode || 'email'
-      const wantsEmail = mode === 'email' || mode === 'both'
-      const wantsFtp   = mode === 'ftp'   || mode === 'both'
-      if (wantsEmail && !(linkedBox.fax_email || '').trim()) {
-        setFormError('Notification email is required — set it under Fax → Received Fax Delivery.'); setTab('fax'); return
-      }
-      if (wantsFtp && (!(linkedBox.fax_ftp_host || '').trim() || !(linkedBox.fax_ftp_username || '').trim() || !(linkedBox.fax_ftp_path || '').trim())) {
-        setFormError('FTP delivery is incomplete — fill the FTP fields under Fax → Received Fax Delivery.'); setTab('fax'); return
-      }
-    }
     setSaving(true); setFormError('')
     try {
       const payload = {
@@ -1425,6 +1374,24 @@ export default function Destinations() {
         fax_on_receive:            form.fax_on_receive,
       }
       editId ? await api.update(editId, payload) : await api.create(payload)
+
+      // Persist the inline fax-forwarding config back onto the linked box.
+      if (form.fax_receive && linkedBox) {
+        const faxPayload = {
+          fax_delivery_mode: form.fax_delivery_mode,
+          fax_email:         form.fax_email,
+          fax_ftp_host:      form.fax_ftp_host,
+          fax_ftp_port:      form.fax_ftp_port === '' ? null : form.fax_ftp_port,
+          fax_ftp_username:  form.fax_ftp_username,
+          fax_ftp_path:      form.fax_ftp_path,
+          fax_ftp_use_tls:   form.fax_ftp_use_tls,
+        }
+        // Blank password = keep the stored one.
+        if (form.fax_ftp_password) faxPayload.fax_ftp_password = form.fax_ftp_password
+        try { await faxApi.patch(linkedBox.fax_uuid, faxPayload); await reloadFaxBoxes() }
+        catch { /* non-fatal: DID saved; surface fax error via toast */ toast.error('DID saved, but fax delivery could not be updated.') }
+      }
+
       load(); closeEditor()
     } catch (err) {
       const d = err?.response?.data
@@ -1533,7 +1500,6 @@ export default function Destinations() {
               destSearchLoading={destSearchLoading} onSearch={searchDestData}
               onNewFaxBox={openNewFaxBox} onEditFaxBox={openEditFaxBox}
               onAutoCreateFaxBox={autoCreateFaxBox} autoCreatingFax={autoCreatingFax}
-              onUpdateFaxDelivery={updateFaxDelivery}
             />
           </CardContent>
 

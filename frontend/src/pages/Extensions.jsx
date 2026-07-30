@@ -1,5 +1,6 @@
 import { useDebounce } from '@/hooks/useDebounce'
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useInfiniteList } from '@/hooks/useInfiniteList'
 import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
@@ -307,6 +308,115 @@ function MultiSelect({ options, selected, onChange, loading, placeholder }) {
             ))
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+// ── Searchable DID select ──────────────────────────────────────────────────────
+// Single-select combobox with a search box, for the Outbound Caller ID (DID)
+// picker. Menu is portalled so it isn't clipped by the dialog's overflow.
+function SearchableDidSelect({ dids, value, onChange, placeholder = 'Select a DID…' }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [rect, setRect] = useState(null)
+  const [dropUp, setDropUp] = useState(false)
+  const ref = useRef(null)
+  const menuRef = useRef(null)
+  const inputRef = useRef(null)
+
+  const idOf = (d) => d.destination_uuid || d.id
+  const labelOf = (d) => `${d.destination_number}${d.destination_name ? ` — ${d.destination_name}` : ''}`
+  const selected = dids.find(d => idOf(d) === value)
+
+  useEffect(() => {
+    if (!open) return
+    const h = (e) => {
+      if (ref.current?.contains(e.target) || menuRef.current?.contains(e.target)) return
+      setOpen(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+
+  useEffect(() => {
+    if (!open) { setQuery(''); return }
+    const measure = () => {
+      if (!ref.current) return
+      const r = ref.current.getBoundingClientRect()
+      setRect(r)
+      setDropUp(r.bottom + 300 > window.innerHeight && r.top > 300)
+    }
+    measure()
+    requestAnimationFrame(() => inputRef.current?.focus())
+    window.addEventListener('scroll', measure, true)
+    window.addEventListener('resize', measure)
+    return () => {
+      window.removeEventListener('scroll', measure, true)
+      window.removeEventListener('resize', measure)
+    }
+  }, [open])
+
+  const q = query.trim().toLowerCase()
+  const filtered = q
+    ? dids.filter(d => `${d.destination_number} ${d.destination_name || ''}`.toLowerCase().includes(q))
+    : dids
+
+  const pick = (val) => { onChange(val); setOpen(false) }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="flex h-9 w-full items-center justify-between gap-2 rounded-xl border border-input bg-background px-3 text-sm shadow-sm hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+      >
+        <span className={cn('truncate text-left', !selected && 'text-muted-foreground')}>
+          {selected ? labelOf(selected) : placeholder}
+        </span>
+        <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
+      </button>
+      {open && rect && createPortal(
+        <div
+          ref={menuRef}
+          style={{
+            position: 'fixed', left: rect.left, width: rect.width,
+            ...(dropUp ? { bottom: window.innerHeight - rect.top + 4 } : { top: rect.bottom + 4 }),
+          }}
+          className="z-[60] rounded-xl border border-border/60 bg-card shadow-2xl shadow-black/10 animate-dropdown-in"
+        >
+          <div className="flex items-center gap-2 border-b px-3 py-1.5">
+            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search DIDs…"
+              className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
+            />
+          </div>
+          <div className="max-h-60 overflow-auto py-1">
+            <div onClick={() => pick('')} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent cursor-pointer text-muted-foreground">
+              — None (use manual fields below) —
+            </div>
+            {filtered.map(d => {
+              const val = idOf(d)
+              return (
+                <div key={val} onClick={() => pick(val)}
+                  className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent cursor-pointer">
+                  <span className={cn('flex h-4 w-4 items-center justify-center shrink-0', val === value ? 'text-primary' : 'opacity-0')}>
+                    <Check className="h-3.5 w-3.5" />
+                  </span>
+                  <span className="truncate">{labelOf(d)}</span>
+                </div>
+              )
+            })}
+            {filtered.length === 0 && (
+              <p className="px-3 py-4 text-sm text-muted-foreground text-center">No DIDs match &ldquo;{query}&rdquo;</p>
+            )}
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   )
@@ -913,10 +1023,10 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                   <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading DIDs…
                 </div>
               ) : (
-                <Select
+                <SearchableDidSelect
+                  dids={didList}
                   value={form.outbound_did}
-                  onChange={e => {
-                    const uuid = e.target.value
+                  onChange={(uuid) => {
                     const did = didList.find(d => (d.destination_uuid || d.id) === uuid)
                     setForm(f => ({
                       ...f,
@@ -925,14 +1035,8 @@ function ExtensionFormBody({ form, setForm, editId, currentTenant, formError, ri
                       outbound_caller_id_name: did ? (did.destination_name || did.destination_number) : f.outbound_caller_id_name,
                     }))
                   }}
-                >
-                  <option value="">— None (use manual fields below) —</option>
-                  {didList.map(d => (
-                    <option key={d.destination_uuid || d.id} value={d.destination_uuid || d.id}>
-                      {d.destination_number}{d.destination_name ? ` — ${d.destination_name}` : ''}
-                    </option>
-                  ))}
-                </Select>
+                  placeholder="— None (use manual fields below) —"
+                />
               )}
             </Field>
 
