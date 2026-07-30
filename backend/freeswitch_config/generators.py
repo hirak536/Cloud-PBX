@@ -79,6 +79,15 @@ def _affinity_lookup(tenant_id, caller_number: str) -> str:
         return ''
 
 
+def _is_uuid(value) -> bool:
+    """True when value parses as a UUID (used to spot voicemail mailbox lookups)."""
+    try:
+        uuid.UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 def not_found_xml():
     """Standard FreeSWITCH not-found response."""
     return '''<?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -208,10 +217,23 @@ def _get_default_gateway(domain_name):
     return None
 
 
-def generate_directory_xml(domain_name, user=None):
-    """Generate directory XML for a domain or specific user."""
+def generate_directory_xml(domain_name, user=None, action=None):
+    """Generate directory XML for a domain or specific user.
+
+    ``action`` is the value FreeSWITCH sends for the lookup it is performing
+    (e.g. 'sip_auth', 'message-count', 'voicemail-authenticate'). mod_voicemail's
+    resolve_id() takes the *id attribute* of the user it matches and uses it as the
+    voicemail_msgs.username to query, ignoring the voicemail_id variable. Because
+    messages are stored under the Voicemail row UUID, voicemail-related lookups get
+    the extension published with id=<voicemail uuid> instead of id=<ext>-<TENANT>.
+    """
     from apps.extensions.models import Extension
     from apps.voicemails.models import Voicemail
+
+    # Lookups where the returned id is consumed as a voicemail mailbox name.
+    vm_actions = {'message-count', 'voicemail-authenticate', 'voicemail-auth',
+                  'voicemail-lookup', 'vm-lookup'}
+    vm_id_lookup = bool(action) and action in vm_actions
 
     domain = _resolve_domain(domain_name)
     if domain is None:
@@ -245,7 +267,16 @@ def generate_directory_xml(domain_name, user=None):
     # Fetch extensions for this domain
     qs = Extension.objects.select_related('tenant').filter(domain=domain, enabled=True)
     if user:
-        qs = qs.filter(models.Q(sip_username=user) | models.Q(extension=user))
+        _q = models.Q(sip_username=user) | models.Q(extension=user)
+        if _is_uuid(user):
+            # A voicemail lookup can come back asking for the UUID we just published
+            # as the user id (mod_voicemail re-locates the user to read vm-password),
+            # so map it back to the extension owning that mailbox.
+            _vm_ids = list(Voicemail.objects.filter(domain=domain, voicemail_uuid=user)
+                                           .values_list('voicemail_id', flat=True))
+            if _vm_ids:
+                _q |= models.Q(voicemail_id__in=_vm_ids) | models.Q(extension__in=_vm_ids)
+        qs = qs.filter(_q)
 
     # Pre-fetch voicemails for this domain to avoid N+1 queries
     voicemail_map = {
@@ -255,18 +286,32 @@ def generate_directory_xml(domain_name, user=None):
 
     for ext in qs:
         sip_id = ext.sip_username or ext.extension
-        user_attrs = {'id': str(sip_id)}
-        # number-alias lets FreeSWITCH find the user by plain extension number
-        # when dialplan bridges to user/1002@domain instead of user/1002-IHS@domain
-        if ext.sip_username and ext.sip_username != ext.extension:
-            user_attrs['number-alias'] = ext.extension
+
+        # Look up the Voicemail box for this extension (needed before building the
+        # user id, because voicemail lookups must publish id=<voicemail uuid>).
+        mailbox_id = ext.voicemail_id or ext.extension
+        vm = voicemail_map.get((ext.tenant_id, mailbox_id))
+
+        if vm_id_lookup and vm is not None:
+            # resolve_id() will use this id as voicemail_msgs.username, and messages
+            # are stored under the UUID.
+            #
+            # FreeSWITCH matches on "id:number-alias", so the name it asked for must
+            # still be findable or the lookup fails and the count silently stays 0.
+            # It asks by the SIP username for MWI (905-IHDT, via MESSAGE_QUERY on
+            # register) but by the bare number at the *98 prompt (905) — and
+            # number-alias holds only one value, so alias whichever was requested.
+            alias = str(sip_id) if user and str(user) == str(sip_id) else str(ext.extension)
+            user_attrs = {'id': str(vm.voicemail_uuid), 'number-alias': alias}
+        else:
+            user_attrs = {'id': str(sip_id)}
+            # number-alias lets FreeSWITCH find the user by plain extension number
+            # when dialplan bridges to user/1002@domain instead of user/1002-IHS@domain
+            if ext.sip_username and ext.sip_username != ext.extension:
+                user_attrs['number-alias'] = ext.extension
         user_el = etree.SubElement(users_el, 'user', **user_attrs)
         params_u = etree.SubElement(user_el, 'params')
         etree.SubElement(params_u, 'param', name='password', value=str(ext.password or ''))
-
-        # Look up the Voicemail box for this extension
-        mailbox_id = ext.voicemail_id or ext.extension
-        vm = voicemail_map.get((ext.tenant_id, mailbox_id))
 
         # If a Voicemail box exists, always use its PIN (even if blank = no PIN required).
         # Blank PIN + allow-empty-password-auth=true in voicemail.conf = PIN-less access.
@@ -372,11 +417,11 @@ def generate_directory_xml(domain_name, user=None):
             name='voicemail_enabled',
             value='true' if ext.voicemail_enabled else 'false',
         )
-        # voicemail_id: the mailbox this extension deposits into / checks via *98.
-        # When a Voicemail box exists we use its UUID so that *98 opens the correct
-        # tenant-isolated mailbox — two tenants can have the same extension number (e.g. 901)
-        # but each Voicemail row has a unique UUID, preventing cross-tenant mailbox collisions.
-        # Falls back to the plain extension number only when no voicemail box is configured.
+        # voicemail_id: the mailbox this extension deposits into / checks via *97/*98.
+        # This is the Voicemail row UUID — it is the system-wide storage identity
+        # (messages live under storage/voicemail/default/<domain>/<uuid>/ and
+        # voicemail_msgs.username is the UUID), so it must NOT be the extension number.
+        # Two tenants can share extension 901; the UUID keeps mailboxes isolated.
         mailbox = ext.voicemail_id or ext.extension
         vm_check_id = str(vm.voicemail_uuid) if vm else str(mailbox)
         etree.SubElement(variables_u, 'variable', name='voicemail_id', value=vm_check_id)
@@ -445,6 +490,31 @@ def generate_directory_xml(domain_name, user=None):
             slot_user = etree.SubElement(users_el, 'user', id=f'park+{slot_ext}')
             slot_vars = etree.SubElement(slot_user, 'variables')
             etree.SubElement(slot_vars, 'variable', name='presence_id', value=f'park+{slot_ext}@{domain_name}')
+
+    # Add each voicemail box as a virtual directory user keyed by its UUID.
+    # mod_voicemail's 'check' resolves the mailbox through the directory, so without
+    # these entries *97/*98 log "Can't find user [<uuid>@<domain>]" and play
+    # vm-goodbye. Deposits don't need this (they use record + our ingest API), which
+    # is why only the check path was broken. vm-a1-* params carry the PIN so the
+    # login prompt can authenticate the caller.
+    vm_dir_qs = Voicemail.objects.select_related('tenant').filter(
+        domain=domain, voicemail_enabled=True)
+    if user:
+        # FreeSWITCH asks for one user at a time; *98 requests the UUID itself.
+        vm_dir_qs = vm_dir_qs.filter(voicemail_uuid=user) if _is_uuid(user) else vm_dir_qs.none()
+    for vmbox in vm_dir_qs:
+        tc = vmbox.tenant.tenant_code if vmbox.tenant_id else None
+        vm_user = etree.SubElement(users_el, 'user', id=str(vmbox.voicemail_uuid))
+        vm_params = etree.SubElement(vm_user, 'params')
+        etree.SubElement(vm_params, 'param', name='password',
+                         value=str(vmbox.voicemail_password or ''))
+        etree.SubElement(vm_params, 'param', name='vm-password',
+                         value=str(vmbox.voicemail_password or ''))
+        vm_vars = etree.SubElement(vm_user, 'variables')
+        etree.SubElement(vm_vars, 'variable', name='user_context',
+                         value=f'default-{tc}' if tc else 'default')
+        etree.SubElement(vm_vars, 'variable', name='voicemail_id',
+                         value=str(vmbox.voicemail_uuid))
 
     # Add toggle (BLF switch) custom destinations as REGISTRABLE directory users.
     # Unlike parking slots (which get presence from mod_valet_parking), a toggle's
@@ -2362,8 +2432,8 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
             ctx.append(ext_el)
 
     # ── 4. Voicemail access rules in each tenant context ─────────────────
-    # *98 → caller checks their own mailbox
-    # *97 → caller enters a mailbox number to check
+    # *97 → caller checks their own mailbox (no mailbox prompt)
+    # *98 → caller enters a mailbox number to check
     seen_contexts = set()
     for ext in _ext_qs:
         tenant_code = ext.tenant.tenant_code if ext.tenant else None
@@ -2373,23 +2443,33 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
         seen_contexts.add(ctx_name)
         ctx = get_or_create_context(ctx_name)
 
-        # *98 — check own voicemail
+        # *97 — check own voicemail (mailbox attached to the calling extension)
         vm_self = etree.SubElement(ctx, 'extension', name='voicemail_self')
         vm_self_cond = etree.SubElement(vm_self, 'condition',
-                                        field='destination_number', expression=r'^\*98$')
+                                        field='destination_number', expression=r'^\*97$')
         etree.SubElement(vm_self_cond, 'action', application='answer')
         etree.SubElement(vm_self_cond, 'action', application='sleep', data='1000')
-        # ${voicemail_id} is set per-user in the directory, so *98 always
+        # ${voicemail_id} is set per-user in the directory, so *97 always
         # opens the correct mailbox even when voicemail_id != extension number.
         etree.SubElement(vm_self_cond, 'action', application='voicemail',
                          data=f'check default {domain_name} ${{voicemail_id}}')
 
-        # *97 — check any mailbox by number
+        # *98 — prompt for a mailbox number, then check it
         vm_any = etree.SubElement(ctx, 'extension', name='voicemail_other')
         vm_any_cond = etree.SubElement(vm_any, 'condition',
-                                       field='destination_number', expression=r'^\*97$')
+                                       field='destination_number', expression=r'^\*98$')
         etree.SubElement(vm_any_cond, 'action', application='answer')
         etree.SubElement(vm_any_cond, 'action', application='sleep', data='1000')
+        # mod_voicemail only prompts for a mailbox when the id is empty: with no
+        # mailbox argument it falls back to the channel's ${voicemail_id}
+        # (mod_voicemail.c "if (zstr(id)) id = ...voicemail_id"), which the
+        # directory always sets for a registered phone — so it would silently open
+        # the caller's own box, exactly like *97. Blanking the channel variable
+        # first is what makes the "enter the mailbox number" prompt run.
+        # NB: 'auth' is NOT the flag for this — it marks the caller as already
+        # authenticated and SKIPS the PIN, so it is deliberately not used here.
+        etree.SubElement(vm_any_cond, 'action', application='set',
+                         data='voicemail_id=')
         etree.SubElement(vm_any_cond, 'action', application='voicemail',
                          data=f'check default {domain_name}')
 
@@ -3092,10 +3172,15 @@ def generate_voicemail_conf(domain_name=''):
     profiles_el = etree.SubElement(conf, 'profiles')
     profile_el = etree.SubElement(profiles_el, 'profile', name='default')
     params_el = etree.SubElement(profile_el, 'params')
-    etree.SubElement(params_el, 'param', name='odbc-dsn', value=dsn)
+    # NO odbc-dsn: mod_voicemail must use its native SQLite db
+    # (/var/lib/freeswitch/db/voicemail_default.db), because that is where this
+    # application actually stores messages — the whole stack (the ingest endpoint,
+    # celery tasks and the frontend) reads/writes via the 'voicemail_sqlite'
+    # Django alias. Pointing mod_voicemail at Postgres made it query an empty
+    # public.voicemail_msgs, so every mailbox reported zero messages while the
+    # frontend correctly showed them. Note the *_msgs table name is mod_voicemail's
+    # own and is not configurable, so 'db-name' must not be set to it either.
     etree.SubElement(params_el, 'param', name='file-extension', value='wav')
-    etree.SubElement(params_el, 'param', name='db-name', value='voicemail_msgs')
-    etree.SubElement(params_el, 'param', name='odbc-dbname', value='voicemail_msgs')
     # Disable "press any key to leave a message" — caller hears beep and records immediately
     etree.SubElement(params_el, 'param', name='ack-all', value='false')
     # After the beep instruction phrase (uses FreeSWITCH built-in phrase)

@@ -47,12 +47,21 @@ class XmlCurlView(View):
         try:
             if section == 'directory':
                 user = request.POST.get('user', request.POST.get('user_name', ''))
-                # Cache keyed by raw domain string from FreeSWITCH (e.g. "freeswitch" or "172.4.53.144").
-                # Signals invalidate by canonical domain name — see signals.py _invalidate_directory_all().
-                cache_key = f'directory:xml:{domain}:{user}' if user else f'directory:xml:{domain}'
+                # mod_voicemail's resolve_id() uses the *id attribute* of the matched
+                # directory user as the voicemail_msgs.username to query — it ignores
+                # the voicemail_id variable. Messages are stored under the Voicemail
+                # UUID, so for these lookups the user must be published with its id
+                # set to that UUID, otherwise *98 finds the mailbox but reports zero
+                # messages. FreeSWITCH tells us which case it is via 'action'.
+                action = request.POST.get('action', '')
+                # 'action' MUST be part of the cache key: the same user is fetched for
+                # sip_auth (needs id=905-IHDT so registration works) and for voicemail
+                # (needs id=<uuid>), and caching one under the other's key breaks it.
+                cache_key = (f'directory:xml:{domain}:{user}:{action}' if user
+                             else f'directory:xml:{domain}:{action}')
                 xml = cache.get(cache_key)
                 if xml is None:
-                    xml = generate_directory_xml(domain, user=user or None)
+                    xml = generate_directory_xml(domain, user=user or None, action=action or None)
                     try:
                         cache.set(cache_key, xml, timeout=3600)
                     except Exception:

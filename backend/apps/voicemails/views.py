@@ -271,7 +271,13 @@ class VoicemailIngestView(View):
                     file_path=file_path,
                     message_len=message_len,
                     flags='',
-                    read_flags='',
+                    # Must be NON-EMPTY: mod_voicemail's message_count_callback
+                    # discards any row whose read_flags is empty (zstr check), so
+                    # '' made every mailbox announce "zero messages" over the phone
+                    # even though the rows existed. 'A_NORMAL' is its own
+                    # not-urgent marker; unread state is tracked by read_epoch=0,
+                    # and this app's own "read" test is read_flags == 'read'.
+                    read_flags='A_NORMAL',
                     forwarded_by='',
                 ),
             )
