@@ -251,8 +251,35 @@ const UC_USER_TYPE_OPTIONS = [
 ]
 
 // Small multi-select dropdown (checkbox list) for the userType filter.
-function MultiSelectDropdown({ options, selected, onChange, placeholder = 'Any type', summaryNoun = 'selected', className }) {
+// Shape check only — deliberately permissive (no TLD allowlist), matching the
+// PBX-user form and Login. Deliverability is the backend's call.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+// Coerce a grant field (fax_id / voicemail_id) to an array. The API is
+// inconsistent: it may return a native array, a JSON-encoded string ("[905]" —
+// the same shape it accepts on write), or a single bare value. Anything
+// unparseable degrades to an empty list rather than throwing.
+function asGrantArray(v) {
+  if (Array.isArray(v)) return v
+  if (v === null || v === undefined || v === '') return []
+  if (typeof v === 'string') {
+    const s = v.trim()
+    if (s.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(s)
+        return Array.isArray(parsed) ? parsed : [parsed]
+      } catch { return [] }
+    }
+    return [s]
+  }
+  return [v]
+}
+
+// `searchable` adds a filter box at the top of the menu — worth it for the long
+// fax/voicemail listings, needless for the short userType filter.
+function MultiSelectDropdown({ options, selected, onChange, placeholder = 'Any type', summaryNoun = 'selected', className, searchable = false, searchPlaceholder = 'Search…' }) {
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
   const [rect, setRect] = useState(null)
   const [dropUp, setDropUp] = useState(false)
   const ref = useRef(null)
@@ -278,7 +305,9 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder = 'Any t
       if (!ref.current) return
       const r = ref.current.getBoundingClientRect()
       setRect(r)
-      setDropUp(r.bottom + 260 > window.innerHeight && r.top > 260)
+      // Menu is the 240px list plus the search row when one is shown.
+      const h = searchable ? 300 : 260
+      setDropUp(r.bottom + h > window.innerHeight && r.top > h)
     }
     measure()
     window.addEventListener('scroll', measure, true)
@@ -287,10 +316,15 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder = 'Any t
       window.removeEventListener('scroll', measure, true)
       window.removeEventListener('resize', measure)
     }
-  }, [open])
+  }, [open, searchable])
+
+  // Start each opening from an unfiltered list.
+  useEffect(() => { if (!open) setQuery('') }, [open])
 
   const toggle = (v) => onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v])
   const labels = options.filter(o => selected.includes(o.value)).map(o => o.label)
+  const q = query.trim().toLowerCase()
+  const visible = q ? options.filter(o => String(o.label).toLowerCase().includes(q)) : options
   return (
     <div className={cn('relative', className)} ref={ref}>
       <button
@@ -314,9 +348,27 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder = 'Any t
               ? { bottom: window.innerHeight - rect.top + 4 }
               : { top: rect.bottom + 4 }),
           }}
-          className="z-[60] max-h-60 overflow-auto rounded-xl border border-border/60 bg-card shadow-2xl shadow-black/10 animate-dropdown-in py-1"
+          className="z-[60] rounded-xl border border-border/60 bg-card shadow-2xl shadow-black/10 animate-dropdown-in py-1"
         >
-          {options.map(opt => (
+          {searchable && (
+            <div className="px-2 pb-1">
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  autoFocus
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={searchPlaceholder}
+                  className="h-8 pl-7 text-sm"
+                />
+              </div>
+            </div>
+          )}
+          <div className="max-h-60 overflow-auto">
+          {visible.length === 0 && (
+            <div className="px-3 py-2 text-sm text-muted-foreground">No matches</div>
+          )}
+          {visible.map(opt => (
             <div
               key={opt.value}
               onClick={() => toggle(opt.value)}
@@ -328,6 +380,7 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder = 'Any t
               <span>{opt.label}</span>
             </div>
           ))}
+          </div>
         </div>,
         document.body
       )}
@@ -606,6 +659,8 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [showPw, setShowPw] = useState(false)
+  // Inline email error waits for blur so it doesn't fire while still typing.
+  const [emailBlurred, setEmailBlurred] = useState(false)
   const [pbxExtensions, setPbxExtensions] = useState([])
   const [pbxDids, setPbxDids] = useState([])
   const [pbxFaxes, setPbxFaxes] = useState([])
@@ -613,6 +668,9 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
   // True once the user has hand-edited the voicemail selection, which stops the
   // extension-follows-voicemail default below from overwriting their choice.
   const vmTouchedRef = useRef(false)
+
+  // Only flag a non-empty value — emptiness is the "required" error's job.
+  const emailInvalid = emailBlurred && form.email.trim() !== '' && !EMAIL_RE.test(form.email.trim().toLowerCase())
 
   const selectedCompany = companies.find(c => String(c.id) === String(form.companyId)) || null
   const tenantId = selectedCompany?.tenant_id
@@ -624,7 +682,7 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
     if (!open) return
     const preset = companies.find(c => c.code === defaultCompanyCode)
     setForm({ ...EMPTY, companyId: preset ? String(preset.id) : '' })
-    setError(''); setShowPw(false); setSaving(false)
+    setError(''); setShowPw(false); setSaving(false); setEmailBlurred(false)
     vmTouchedRef.current = false
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
@@ -680,6 +738,8 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
     setError('')
     if (!userEmail)            { setError('Cannot determine the logged-in user email.'); return }
     if (!form.email.trim())    { setError('Email is required.'); return }
+    // Same normalised value that goes in the payload below.
+    if (!EMAIL_RE.test(form.email.trim().toLowerCase())) { setError('Enter a valid email address.'); return }
     if (!form.firstName.trim()){ setError('First name is required.'); return }
     if (!form.lastName.trim()) { setError('Last name is required.'); return }
     if (!form.companyId)       { setError('Select a company.'); return }
@@ -786,7 +846,19 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
             </div>
             <div className="space-y-1.5">
               <Label>Email <span className="text-destructive">*</span></Label>
-              <Input type="email" value={form.email} onChange={sf('email')} disabled={saving} placeholder="user@example.com" />
+              <Input
+                type="email"
+                value={form.email}
+                onChange={sf('email')}
+                onBlur={() => setEmailBlurred(true)}
+                disabled={saving}
+                placeholder="user@example.com"
+                aria-invalid={emailInvalid || undefined}
+                className={cn(emailInvalid && 'border-destructive focus-visible:ring-destructive/40')}
+              />
+              {emailInvalid && (
+                <p className="text-[11px] text-destructive">Enter a valid email address.</p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label>User Type</Label>
@@ -855,6 +927,8 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
                 onChange={(nums) => setForm(p => ({ ...p, dids: nums }))}
                 placeholder={tenantId ? 'Select DIDs…' : 'Select a company first'}
                 summaryNoun="DIDs"
+                searchable
+                searchPlaceholder="Search DIDs…"
                 className="w-full"
               />
               {smsEnabled && <p className="text-[11px] text-muted-foreground">Required — SMS is enabled for this company.</p>}
@@ -868,6 +942,8 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
                 onChange={(ids) => setForm(p => ({ ...p, faxUuids: ids }))}
                 placeholder={tenantId ? 'Select fax boxes…' : 'Select a company first'}
                 summaryNoun="fax boxes"
+                searchable
+                searchPlaceholder="Search fax boxes…"
                 className="w-full"
               />
             </div>
@@ -880,6 +956,8 @@ function UcUserAddDialog({ open, companies, userEmail, defaultCompanyCode, onClo
                 onChange={(ids) => { vmTouchedRef.current = true; setForm(p => ({ ...p, voicemailIds: ids })) }}
                 placeholder={tenantId ? 'Select voicemail boxes…' : 'Select a company first'}
                 summaryNoun="voicemail boxes"
+                searchable
+                searchPlaceholder="Search voicemail boxes…"
                 className="w-full"
               />
               <p className="text-[11px] text-muted-foreground">Defaults to the selected extension's own mailbox.</p>
@@ -1115,8 +1193,8 @@ function UcUserEditDialog({ user, onClose, onSaved }) {
       // Existing grants, normalised to the same shapes the dropdowns use:
       // fax as a list of UUIDs, voicemail as a list of mailbox-id strings.
       // The API returns fax_id as objects; tolerate bare UUIDs too.
-      faxUuids: (user.fax_id || []).map(f => (typeof f === 'string' ? f : f?.fax_uuid)).filter(Boolean),
-      voicemailIds: (user.voicemail_id || [])
+      faxUuids: asGrantArray(user.fax_id).map(f => (typeof f === 'string' ? f : f?.fax_uuid)).filter(Boolean),
+      voicemailIds: asGrantArray(user.voicemail_id)
         .map(v => (v && typeof v === 'object' ? v.voicemail_id : v))
         .filter(v => v !== null && v !== undefined && v !== '')
         .map(String),
@@ -1171,7 +1249,7 @@ function UcUserEditDialog({ user, onClose, onSaved }) {
         const f = pbxFaxes.find(x => x.fax_uuid === uuid)
         // Fall back to the caller ID already on the user's grant when the box
         // isn't in the fetched list (e.g. out of tenant scope).
-        const prev = (user.fax_id || []).find(x => x && typeof x === 'object' && x.fax_uuid === uuid)
+        const prev = asGrantArray(user.fax_id).find(x => x && typeof x === 'object' && x.fax_uuid === uuid)
         return {
           fax_uuid:             uuid,
           fax_caller_id_name:   f?.fax_caller_id_name   ?? prev?.fax_caller_id_name   ?? '',
@@ -1311,6 +1389,8 @@ function UcUserEditDialog({ user, onClose, onSaved }) {
                       onChange={(nums) => setExtDids(ei, nums)}
                       placeholder="Select DIDs…"
                       summaryNoun="DIDs"
+                      searchable
+                      searchPlaceholder="Search DIDs…"
                       className="w-full"
                     />
                   </div>
@@ -1331,7 +1411,7 @@ function UcUserEditDialog({ user, onClose, onSaved }) {
                     // Keep an already-granted box selectable even if it's not in the fetched list.
                     for (const id of form.faxUuids) {
                       if (id && !opts.some(o => o.value === id)) {
-                        const prev = (user.fax_id || []).find(x => x && typeof x === 'object' && x.fax_uuid === id)
+                        const prev = asGrantArray(user.fax_id).find(x => x && typeof x === 'object' && x.fax_uuid === id)
                         opts.unshift({ value: id, label: prev?.fax_caller_id_name || id })
                       }
                     }
@@ -1341,6 +1421,8 @@ function UcUserEditDialog({ user, onClose, onSaved }) {
                   onChange={(ids) => setForm(p => ({ ...p, faxUuids: ids }))}
                   placeholder="Select fax boxes…"
                   summaryNoun="fax boxes"
+                  searchable
+                  searchPlaceholder="Search fax boxes…"
                   className="w-full"
                 />
               </div>
@@ -1361,6 +1443,8 @@ function UcUserEditDialog({ user, onClose, onSaved }) {
                   onChange={(ids) => setForm(p => ({ ...p, voicemailIds: ids }))}
                   placeholder="Select voicemail boxes…"
                   summaryNoun="voicemail boxes"
+                  searchable
+                  searchPlaceholder="Search voicemail boxes…"
                   className="w-full"
                 />
               </div>
@@ -1772,8 +1856,6 @@ export default function Users() {
         : [...p.allowed_fax_uuids, uuid],
     }))
   }
-
-  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
   const handleSave = async () => {
     if (!form.username) { setFormError('Username is required.'); return }
@@ -2192,7 +2274,7 @@ export default function Users() {
         <div className="flex items-center gap-1 border-b">
           {[
             { key: 'organization', label: 'Organization Settings' },
-            { key: 'uc',           label: 'UC Users' },
+            { key: 'uc',           label: 'IHSPhone Users' },
             { key: 'pbx',          label: 'PBX Users' },
           ].map(tab => (
             <button

@@ -63,7 +63,6 @@ const navGroups = [
     items: [
       { path: '/cdr', label: 'Call Detail Records', icon: BarChart2 },
       { path: '/call-recordings', label: 'Call Recordings', icon: Mic },
-      { path: '/stats-report', label: 'Stats Report', icon: ClipboardList },
     ],
   },
   {
@@ -71,9 +70,6 @@ const navGroups = [
     items: [
       { path: '/active-calls', label: 'Active Calls', icon: Activity },
       { path: '/registrations', label: 'Peer Status', icon: MonitorPlay },
-      // HOMER SIP capture (all-tenant admin view). External link → new tab,
-      // proxied via nginx at /homer/, protected by HOMER's own login.
-      { path: '/homer/', label: 'HOMER (SIP Capture)', icon: MonitorPlay, external: true, role: 'superuser' },
     ],
   },
   {
@@ -203,11 +199,7 @@ function TenantSwitcher({ collapsed }) {
                       : 'text-[hsl(var(--sidebar-foreground))] hover:bg-[hsl(var(--sidebar-hover))]'
                   )}
                 >
-                  <div className={cn(
-                    'h-1.5 w-1.5 rounded-full shrink-0',
-                    active ? 'bg-[hsl(var(--sidebar-active))] shadow-[0_0_6px_hsl(var(--sidebar-active))]' : 'bg-[hsl(var(--sidebar-muted))]'
-                  )} />
-                  <span className="truncate flex-1">{t.tenant_name}</span>
+                  <span className="truncate flex-1 text-left">{t.tenant_name}</span>
                   {t.tenant_code && (
                     <span className="ml-auto shrink-0 text-[10px] font-mono opacity-40">{t.tenant_code}</span>
                   )}

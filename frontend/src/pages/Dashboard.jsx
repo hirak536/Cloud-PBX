@@ -176,7 +176,7 @@ export default function Dashboard() {
                 <TableHeader>
                   <TableRow className="hover:bg-transparent border-b border-border/50">
                     <TableHead className="text-xs font-semibold uppercase tracking-wide">Caller</TableHead>
-                    <TableHead className="text-xs font-semibold uppercase tracking-wide">Destination</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wide">Extension</TableHead>
                     <TableHead className="text-xs font-semibold uppercase tracking-wide">Duration</TableHead>
                   </TableRow>
                 </TableHeader>

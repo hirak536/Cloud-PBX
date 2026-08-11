@@ -13,25 +13,6 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-// Common timezones
-const TIMEZONES = [
-  'UTC',
-  'America/New_York','America/Chicago','America/Denver','America/Los_Angeles',
-  'America/Phoenix','America/Anchorage','America/Honolulu','America/Toronto',
-  'America/Vancouver','America/Mexico_City','America/Bogota','America/Lima',
-  'America/Sao_Paulo','America/Argentina/Buenos_Aires',
-  'Europe/London','Europe/Dublin','Europe/Lisbon','Europe/Paris','Europe/Berlin',
-  'Europe/Amsterdam','Europe/Brussels','Europe/Madrid','Europe/Rome',
-  'Europe/Warsaw','Europe/Stockholm','Europe/Helsinki','Europe/Athens',
-  'Europe/Istanbul','Europe/Moscow',
-  'Africa/Cairo','Africa/Johannesburg','Africa/Lagos','Africa/Nairobi',
-  'Asia/Dubai','Asia/Karachi','Asia/Kolkata','Asia/Dhaka','Asia/Bangkok',
-  'Asia/Singapore','Asia/Shanghai','Asia/Tokyo','Asia/Seoul','Asia/Hong_Kong',
-  'Asia/Jakarta','Asia/Taipei',
-  'Australia/Sydney','Australia/Melbourne','Australia/Brisbane','Australia/Perth',
-  'Pacific/Auckland','Pacific/Fiji',
-]
-
 // ── Reusable field wrapper ────────────────────────────────────────────────────
 function Field({ label, hint, children, className }) {
   return (
@@ -110,7 +91,6 @@ export default function Tenants() {
       setForm({
         tenant_name:               d.tenant_name || '',
         tenant_code:               d.tenant_code || '',
-        timezone:                  d.timezone || 'UTC',
         voicemail_timeout:         d.voicemail_timeout ?? 120,
         max_channels:              d.max_channels ?? '',
         max_extensions:            d.max_extensions ?? '',
@@ -272,13 +252,6 @@ export default function Tenants() {
                 </Field>
                 <Field label="Tenant Code" hint="Used in SIP usernames">
                   <Input value={form.tenant_code} onChange={set('tenant_code')} className="font-mono" />
-                </Field>
-                <Field label="Timezone">
-                  <Select value={form.timezone} onChange={set('timezone')}>
-                    {TIMEZONES.map(tz => (
-                      <option key={tz} value={tz}>{tz}</option>
-                    ))}
-                  </Select>
                 </Field>
               </div>
             </Section>

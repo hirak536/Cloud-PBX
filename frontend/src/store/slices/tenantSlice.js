@@ -3,7 +3,9 @@ import { tenants as tenantsApi } from '@/api'
 
 export const fetchTenantsThunk = createAsyncThunk('tenant/fetchAll', async (_, { getState }) => {
   const { data } = await tenantsApi.list()
-  const list = data.results ?? data
+  const list = [...(data.results ?? data)].sort((a, b) =>
+    (a.tenant_name ?? '').localeCompare(b.tenant_name ?? '', undefined, { sensitivity: 'base' })
+  )
   const current = getState().tenant.currentTenant
   const fresh = current
     ? list.find((t) => t.tenant_uuid === current.tenant_uuid) ?? list[0] ?? null
