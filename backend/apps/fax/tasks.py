@@ -162,6 +162,9 @@ def poll_fax_result(self, fax_file_uuid: str, channel_uuid: str):
         ff.save(update_fields=update_fields)
         logger.info(f'poll_fax_result: FaxFile {fax_file_uuid} → {new_status}')
 
+        # Notify the fax box owner of the outcome (sent or failed).
+        send_fax_status_email.apply_async(args=[str(ff.fax_file_uuid)], countdown=5)
+
         if ff.tenant_id:
             from apps.client_api.tasks import fire_webhook_event
             event = 'fax.sent' if new_status == 'sent' else 'fax.failed'
@@ -191,6 +194,8 @@ def poll_fax_result(self, fax_file_uuid: str, channel_uuid: str):
             f'or carrier holding the line open. Check FreeSWITCH logs for this channel UUID.'
         )
 
+        send_fax_status_email.apply_async(args=[fax_file_uuid], countdown=5)
+
         try:
             ff_timeout = FaxFile.objects.get(fax_file_uuid=fax_file_uuid)
             if ff_timeout.tenant_id:
@@ -217,6 +222,164 @@ def poll_fax_result(self, fax_file_uuid: str, channel_uuid: str):
         raise
 
 
+def _smtp_connection():
+    """A direct SMTP connection.
+
+    DatabaseEmailBackend (the project default) has no attachment support and
+    defers delivery, so fax notifications talk to SMTP directly.
+    """
+    from django.core.mail import get_connection  # noqa: PLC0415
+
+    return get_connection(
+        backend='django.core.mail.backends.smtp.EmailBackend',
+        host=settings.EMAIL_HOST,
+        port=settings.EMAIL_PORT,
+        username=settings.EMAIL_HOST_USER,
+        password=settings.EMAIL_HOST_PASSWORD,
+        use_tls=settings.EMAIL_USE_TLS,
+        use_ssl=settings.EMAIL_USE_SSL,
+        fail_silently=False,
+    )
+
+
+def _fax_recipients(fax):
+    """Addresses configured on a fax box — fax_email holds one or more, comma/semicolon separated."""
+    if not fax:
+        return []
+    return [addr.strip() for addr in re.split(r'[,;]', fax.fax_email or '') if addr.strip()]
+
+
+def _last10(value):
+    """Last 10 digits of a number, for comparing E.164 against bare/extension forms."""
+    digits = re.sub(r'\D', '', value or '')
+    return digits[-10:] if len(digits) >= 10 else ''
+
+
+def _resolve_fax_box(fax_file):
+    """Find the fax box a FaxFile belongs to, falling back to the sending number.
+
+    Quick-send (FaxQuickSendView) creates FaxFile rows with fax=None, so the box
+    is unknown — but the caller ID it dialled out on is recorded. Match that
+    against the boxes' caller ID / extension on last-10 digits, since a box may
+    store either an E.164 number or a bare extension. Only boxes that actually
+    have an email configured are considered, and the match is scoped to the
+    file's tenant when one is known so numbers can't cross tenant boundaries.
+    """
+    from .models import Fax  # noqa: PLC0415
+
+    if fax_file.fax_id:
+        return fax_file.fax
+
+    number = _last10(fax_file.fax_file_caller_id_number)
+    if not number:
+        return None
+
+    candidates = Fax.objects.exclude(fax_email='')
+    if fax_file.tenant_id:
+        candidates = candidates.filter(tenant_id=fax_file.tenant_id)
+
+    # insert_date order makes a multi-box tie deterministic rather than arbitrary.
+    matches = [
+        f for f in candidates.order_by('insert_date')
+        if _last10(f.fax_caller_id_number) == number or _last10(f.fax_extension) == number
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        logger.warning(
+            '_resolve_fax_box: number %s matches %d fax boxes (%s) — using %r',
+            fax_file.fax_file_caller_id_number, len(matches),
+            ', '.join(f.fax_name for f in matches), matches[0].fax_name,
+        )
+    return matches[0]
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def send_fax_status_email(self, fax_file_uuid: str):
+    """Email the outbound result (sent or failed) to the fax box's configured address.
+
+    Queued once the fax reaches a terminal status. Quick-send faxes carry no fax
+    box, so the box is backtraced from the sending caller ID — see _resolve_fax_box.
+    """
+    from django.core.mail import EmailMultiAlternatives  # noqa: PLC0415
+    from .models import FaxFile  # noqa: PLC0415
+
+    try:
+        ff = FaxFile.objects.select_related('fax').get(fax_file_uuid=fax_file_uuid)
+    except FaxFile.DoesNotExist:
+        logger.warning('send_fax_status_email: FaxFile %s not found', fax_file_uuid)
+        return
+
+    # Quick-send rows have no fax box; fall back to the sending number.
+    fax = _resolve_fax_box(ff)
+    recipients = _fax_recipients(fax)
+    if not recipients:
+        logger.info(
+            'send_fax_status_email: no fax_email resolved (fax box %s, from %s) — skipping %s',
+            ff.fax_id, ff.fax_file_caller_id_number or '?', fax_file_uuid,
+        )
+        return
+
+    succeeded = ff.fax_file_status == 'sent'
+    destination = ff.fax_file_destination_number or 'Unknown'
+    pages = ff.fax_file_pages or 0
+    doc_name = ff.fax_file_name or ''
+    sent_at = ff.fax_file_date
+
+    outcome = 'delivered successfully' if succeeded else 'failed to send'
+    subject = (
+        f'Fax to {destination} {"sent" if succeeded else "FAILED"}'
+        + (f' — {pages} page(s)' if succeeded else '')
+    )
+
+    rows = [
+        ('To', destination),
+        ('From', ff.fax_file_caller_id_number or ''),
+        ('Document', doc_name),
+        ('Pages', str(pages)),
+        ('Submitted', sent_at.strftime('%Y-%m-%d %H:%M:%S %Z') if sent_at else ''),
+        ('Status', 'Sent' if succeeded else 'Failed'),
+    ]
+
+    text_body = f'Your fax {outcome}.\n\n' + ''.join(
+        f'{label}: {value}\n' for label, value in rows if value
+    )
+    if not succeeded:
+        text_body += '\nPlease verify the destination number and try again.\n'
+
+    html_rows = ''.join(
+        f'<tr><td style="padding:2px 10px 2px 0"><b>{label}:</b></td><td>{value}</td></tr>'
+        for label, value in rows if value
+    )
+    html_body = (
+        f'<html><body>'
+        f'<p>Your fax <b>{outcome}</b>.</p>'
+        f'<table>{html_rows}</table>'
+        + ('' if succeeded else '<p>Please verify the destination number and try again.</p>')
+        + f'</body></html>'
+    )
+
+    try:
+        reply_to = getattr(settings, 'EMAIL_REPLY_TO', None) or getattr(settings, 'DEFAULT_FROM_EMAIL', None)
+        email = EmailMultiAlternatives(
+            subject=subject,
+            body=text_body,
+            from_email=settings.EMAIL_HOST_USER,
+            to=recipients,
+            reply_to=[reply_to] if reply_to else None,
+            connection=_smtp_connection(),
+        )
+        email.attach_alternative(html_body, 'text/html')
+        email.send(fail_silently=False)
+        logger.info(
+            'send_fax_status_email: SENT (%s) to %s for FaxFile %s',
+            ff.fax_file_status, ', '.join(recipients), fax_file_uuid,
+        )
+    except Exception as exc:
+        logger.error('send_fax_status_email: failed for %s: %s', fax_file_uuid, exc)
+        raise self.retry(exc=exc, countdown=30)
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def send_fax_email(self, fax_file_uuid: str):
     """Email a received inbound fax to the fax box's configured email address.
@@ -224,7 +387,7 @@ def send_fax_email(self, fax_file_uuid: str):
     Attaches the fax file (PDF preferred over TIFF) directly via SMTP,
     bypassing DatabaseEmailBackend which has no attachment support.
     """
-    from django.core.mail import EmailMultiAlternatives, get_connection  # noqa: PLC0415
+    from django.core.mail import EmailMultiAlternatives  # noqa: PLC0415
     from .models import FaxFile  # noqa: PLC0415
 
     try:
@@ -234,12 +397,7 @@ def send_fax_email(self, fax_file_uuid: str):
         return
 
     fax = ff.fax
-    # fax_email may hold one or more comma/semicolon-separated addresses.
-    recipients = [
-        addr.strip()
-        for addr in re.split(r'[,;]', fax.fax_email or '')
-        if addr.strip()
-    ] if fax else []
+    recipients = _fax_recipients(fax)
     if not fax or not recipients:
         logger.info('send_fax_email: no fax_email configured for fax box — skipping %s', fax_file_uuid)
         return
@@ -282,16 +440,7 @@ def send_fax_email(self, fax_file_uuid: str):
     )
 
     try:
-        smtp_connection = get_connection(
-            backend='django.core.mail.backends.smtp.EmailBackend',
-            host=settings.EMAIL_HOST,
-            port=settings.EMAIL_PORT,
-            username=settings.EMAIL_HOST_USER,
-            password=settings.EMAIL_HOST_PASSWORD,
-            use_tls=settings.EMAIL_USE_TLS,
-            use_ssl=settings.EMAIL_USE_SSL,
-            fail_silently=False,
-        )
+        smtp_connection = _smtp_connection()
 
         reply_to = getattr(settings, 'EMAIL_REPLY_TO', None) or getattr(settings, 'DEFAULT_FROM_EMAIL', None)
         email = EmailMultiAlternatives(

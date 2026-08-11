@@ -1089,22 +1089,84 @@ def _outbound_route_to_xml(route):
     tenant_did = _tenant_default_did(route)
 
     if route.caller_id_number:
-        cid_number = route.caller_id_number
-        cid_name = route.caller_id_name or route.caller_id_number
+        # Route pins the CID explicitly — nothing to resolve at call time.
+        etree.SubElement(cond, 'action', application='set',
+                         data=f'effective_caller_id_number={route.caller_id_number}')
+        etree.SubElement(cond, 'action', application='set',
+                         data='effective_caller_id_name='
+                              f'{route.caller_id_name or route.caller_id_number}')
     else:
-        # Use the per-extension outbound DID if set, else the tenant DID. The
-        # ${cond(...)} is evaluated at call time so a per-extension CID still wins.
+        # Resolve at call time, cheapest-to-most-specific, each step overwriting
+        # the previous ONLY when it has a real value.
+        #
+        # Do NOT use ${cond(...)} here. It is an API function whose argument is
+        # expanded BEFORE the API runs, so an unset left side hands mod_dptools
+        # the unparseable "cond( != '' ? : )" and it returns the literal string
+        # '-ERR'. That lands in the From header (From: "-ERR" <sip:-ERR@...>) and
+        # the carrier answers 503 Service Unavailable. This bites every leg that
+        # inherits no directory variables — most visibly blind transfer, where
+        # the REFER spawns a brand-new channel that was never a directory user.
         safe_default = tenant_did or ''
-        cid_number = ("${cond(${outbound_caller_id_number} != '' ? "
-                      "${outbound_caller_id_number} : %s)}" % safe_default)
-        # Name follows the route name, else the same safe number, never the
-        # extension/user name.
         name_default = route.caller_id_name or safe_default
-        cid_name = ("${cond(${outbound_caller_id_name} != '' ? "
-                    "${outbound_caller_id_name} : %s)}" % name_default)
 
-    etree.SubElement(cond, 'action', application='set', data=f'effective_caller_id_number={cid_number}')
-    etree.SubElement(cond, 'action', application='set', data=f'effective_caller_id_name={cid_name}')
+        # 1. Baseline: tenant's first enabled DID. Never the extension number —
+        #    presenting that to the PSTN would leak the internal identity.
+        etree.SubElement(cond, 'action', application='set',
+                         data=f'effective_caller_id_number={safe_default}')
+        etree.SubElement(cond, 'action', application='set',
+                         data=f'effective_caller_id_name={name_default}')
+
+        # 2. Blind/attended transfer: the REFER-created channel carries no
+        #    directory vars, but the referring party is named in Referred-By
+        #    (e.g. <sip:1000-IHDT@fs1.ihs.host>). Pull that user's own outbound
+        #    DID out of the directory so the transferred call presents the
+        #    transferring extension's number rather than the tenant default.
+        #    user_data returns '-ERR ...' when the user or var is missing, so the
+        #    result is validated against an E.164-ish pattern before it is used.
+        #    These must be FLAT sibling <condition> elements, not nested — a
+        #    <condition> inside a <condition> is not evaluated by mod_dialplan,
+        #    it is silently ignored. Each sets break="never" so evaluation always
+        #    falls through to the next refinement and finally to the bridge.
+        cid_conds = []
+
+        refer_user = etree.SubElement(ext_el, 'condition',
+                                      field='${sip_h_Referred-By}',
+                                      expression=r'sip:([^@;>]+)@')
+        etree.SubElement(refer_user, 'action', application='set',
+                         data='ihs_referrer_user=$1')
+        etree.SubElement(refer_user, 'action', application='set',
+                         data='ihs_referrer_cid='
+                              '${user_data ${ihs_referrer_user}@${domain_name} '
+                              'var outbound_caller_id_number}')
+        cid_conds.append(refer_user)
+
+        refer_cid = etree.SubElement(ext_el, 'condition',
+                                     field='${ihs_referrer_cid}',
+                                     expression=r'^(\+?\d{7,15})$')
+        etree.SubElement(refer_cid, 'action', application='set',
+                         data='effective_caller_id_number=$1')
+        etree.SubElement(refer_cid, 'action', application='set',
+                         data='effective_caller_id_name=$1')
+        cid_conds.append(refer_cid)
+
+        # 3. Most specific: this channel's own per-extension outbound DID, when
+        #    it actually has one (normal outbound calls from a directory user).
+        ext_cid = etree.SubElement(ext_el, 'condition',
+                                   field='${outbound_caller_id_number}',
+                                   expression=r'^(\+?\d{7,15})$')
+        etree.SubElement(ext_cid, 'action', application='set',
+                         data='effective_caller_id_number=$1')
+        cid_conds.append(ext_cid)
+
+        ext_cid_name = etree.SubElement(ext_el, 'condition',
+                                        field='${outbound_caller_id_name}',
+                                        expression=r'^(.+)$')
+        etree.SubElement(ext_cid_name, 'action', application='set',
+                         data='effective_caller_id_name=$1')
+        cid_conds.append(ext_cid_name)
+
+        for c in cid_conds:
+            c.set('break', 'never')
     # Force PCMU on leg B (toward the gateway) — Bandwidth only accepts PCMU.
     # NOTE: do NOT set bridge_codec_string here. It constrains the codec the bridge
     # negotiates on BOTH legs, which forces PCMU onto the WebRTC A-leg. Browsers offer

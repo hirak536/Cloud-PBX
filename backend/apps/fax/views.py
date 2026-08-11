@@ -290,6 +290,11 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
                 args=[str(ff.fax_file_uuid), channel_uuid],
                 countdown=15,
             )
+        else:
+            # Originate never got off the ground, so poll_fax_result will never
+            # run — notify from here instead.
+            from .tasks import send_fax_status_email
+            send_fax_status_email.apply_async(args=[str(ff.fax_file_uuid)], countdown=5)
 
         resp_status = status.HTTP_200_OK if ff.fax_file_status == 'pending' else status.HTTP_400_BAD_REQUEST
         return Response({
@@ -554,6 +559,11 @@ class FaxQuickSendView(APIView):
                 args=[str(ff.fax_file_uuid), channel_uuid],
                 countdown=15,
             )
+        else:
+            # Originate never got off the ground, so poll_fax_result will never
+            # run — notify from here instead.
+            from .tasks import send_fax_status_email
+            send_fax_status_email.apply_async(args=[str(ff.fax_file_uuid)], countdown=5)
 
         resp_status = status.HTTP_200_OK if fax_status == 'pending' else status.HTTP_400_BAD_REQUEST
         return Response({

@@ -1,5 +1,6 @@
 import base64
 import io
+import logging
 import os
 import re
 import wave
@@ -18,6 +19,8 @@ from core.mixins import TenantScopedViewSetMixin
 from core.models import Domain
 from .models import Recording, CallRecording
 from .serializers import RecordingSerializer, CallRecordingSerializer
+
+logger = logging.getLogger(__name__)
 
 
 def _xaccel_response(internal_prefix, rel_path, content_type, as_attachment, filename):
@@ -76,9 +79,57 @@ def _wav_duration(path):
         return 0
 
 
-# Filename pattern: YYYY-MM-DD-HH-MM-SS_caller_destination.wav
+_UUID_RE = re.compile(
+    r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', re.IGNORECASE)
+
+
+def _extract_call_uuid(path):
+    """Pull the FreeSWITCH channel UUID out of a recording filename, or None."""
+    m = _UUID_RE.search(os.path.basename(path or ''))
+    return m.group(1) if m else None
+
+
+def _tenant_from_cdr(call_uuid):
+    """Resolve the owning Tenant for a recording via its call's CDR.
+
+    The CDR is the authoritative source: it stores the fully-qualified extension
+    (e.g. "101-DUA") and the tenant resolved at call time. Recording filenames
+    only carry the bare dialed number ("101"), which is ambiguous because every
+    tenant shares one FreeSWITCH domain and short extensions collide across
+    tenants — so the CDR is the only safe way to attribute inbound recordings.
+
+    The CDR table lives in a separate database whose tenant column is a plain
+    UUID (no FK), so look the Tenant up by that value. Returns None when no CDR
+    row exists (e.g. the recording predates the CDR, or CDR insert failed).
+    """
+    if not call_uuid:
+        return None
+    try:
+        from django.apps import apps as _apps
+        XmlCdr = _apps.get_model('xml_cdr', 'XmlCdr')
+        Tenant = _apps.get_model('core', 'Tenant')
+        row = (XmlCdr.objects.filter(call_uuid=call_uuid)
+               .exclude(tenant_uuid_val=None)
+               .values('tenant_uuid_val').first())
+        if not row:
+            return None
+        return Tenant.objects.filter(tenant_uuid=row['tenant_uuid_val']).first()
+    except Exception:
+        logger.exception('CDR tenant lookup failed for call_uuid=%s', call_uuid)
+        return None
+
+
+# Filename pattern: YYYY-MM-DD-HH-MM-SS_caller_destination_<call-uuid>.wav
+# The trailing channel UUID is matched explicitly so it does not get swallowed
+# into the destination group. Without the anchored UUID the non-greedy
+# (.+?)_(.+?) split parsed "101_9b6a08e5-...-707" as the destination, which both
+# corrupted destination_number and broke extension lookup during tenant
+# resolution. The UUID group is optional so pre-UUID legacy filenames still
+# import (their destination simply has no uuid to strip).
 _FNAME_RE = re.compile(
-    r'^(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})_(.+?)_(.+?)\.(wav|mp3|ogg)$',
+    r'^(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})_(.+?)_(.+?)'
+    r'(?:_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))?'
+    r'\.(wav|mp3|ogg)$',
     re.IGNORECASE,
 )
 
@@ -221,16 +272,17 @@ class CallRecordingViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewS
         domain_obj = Domain.objects.filter(domain_name=domain_name).first() if domain_name else None
 
         # Tenant resolution. The FreeSWITCH domain is shared across all tenants
-        # here, so domain->tenant is NOT reliable — the extension identity is.
-        # Prefer resolving from the extension that appears on either leg
-        # (caller for outbound, destination for inbound), matched by sip_username
-        # AND scoped to the domain so colliding short-numbers don't cross tenants.
-        # Only fall back to the domain's tenant when no extension matches.
-        tenant_obj = None
+        # here, so domain->tenant is NOT reliable — the call identity is.
+        # The CDR knows the fully-qualified extension and the tenant resolved at
+        # call time, so prefer it; the filename's trailing UUID is the channel
+        # UUID the CDR is keyed on. Failing that, fall back to matching a
+        # qualified sip_username on either leg (caller for outbound, destination
+        # for inbound), scoped to the domain, then to the domain's own tenant.
+        tenant_obj = _tenant_from_cdr(_extract_call_uuid(file_path))
         ext_scope = Ext.objects.exclude(tenant__isnull=True)
         if domain_obj is not None:
             ext_scope = ext_scope.filter(domain=domain_obj.domain_uuid)
-        for leg in (caller, destination):
+        for leg in (caller, destination) if tenant_obj is None else ():
             if not leg:
                 continue
             token = leg.split('_')[0]  # strip FreeSWITCH _<uuid> suffix
@@ -310,20 +362,38 @@ class CallRecordingViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewS
                     skipped += 1
                     continue
 
-                date_str, caller, destination, _ = m.groups()
+                date_str, caller, destination, _call_uuid, _ext_fmt = m.groups()
                 try:
                     start_stamp = datetime.strptime(date_str, '%Y-%m-%d-%H-%M-%S').replace(tzinfo=timezone.utc)
                 except ValueError:
                     start_stamp = None
 
-                # Resolve tenant from caller SIP username (e.g. "600-GMD") first,
-                # fall back to domain tenant for non-extension callers.
-                tenant_obj = None
-                if caller:
-                    from apps.extensions.models import Extension as _Ext
-                    ext = _Ext.objects.filter(sip_username=caller).select_related('tenant').first()
-                    if ext:
-                        tenant_obj = ext.tenant
+                # Resolve tenant from the CDR for this call UUID. The CDR records
+                # the fully-qualified extension ("101-DUA") and the tenant it
+                # resolved at call time, so it is authoritative.
+                #
+                # Do NOT infer the tenant from the bare number in the filename:
+                # every tenant shares one FreeSWITCH domain here and short
+                # extensions collide heavily (e.g. "101" is defined by 15
+                # different tenants), so a bare-number lookup silently
+                # misattributes recordings. Only the qualified sip_username
+                # ("101-DUA"), which appears on outbound legs, is safe to match.
+                from apps.extensions.models import Extension as _Ext
+                tenant_obj = _tenant_from_cdr(_call_uuid)
+
+                if tenant_obj is None:
+                    ext_scope = _Ext.objects.exclude(tenant__isnull=True)
+                    if domain_obj is not None:
+                        ext_scope = ext_scope.filter(domain=domain_obj.domain_uuid)
+                    for leg in (caller, destination):
+                        if not leg:
+                            continue
+                        # Qualified sip_username only — see the note above.
+                        ext = ext_scope.filter(
+                            sip_username=leg).select_related('tenant').first()
+                        if ext:
+                            tenant_obj = ext.tenant
+                            break
                 if tenant_obj is None and domain_obj:
                     tenant_obj = domain_obj.tenant
 

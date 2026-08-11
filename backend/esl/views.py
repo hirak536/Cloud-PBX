@@ -268,6 +268,184 @@ def _reg_belongs_to_tenant(row: dict, tenant_code: str) -> bool:
     return str(row.get('reg_user', '') or row.get('user', '')).endswith(suffix)
 
 
+# Matches the user part of a FreeSWITCH channel name, e.g.
+# "sofia/internal/101-DUA@23.189.208.80" or "sofia/webrtc/1000-IHDT@fs1.ihs.host".
+_CHAN_USER_RE = re.compile(r'^[^/]+/[^/]+/([^@/]+)')
+
+# WebRTC (SIP.js/JsSIP) clients register from a random per-session instance
+# domain ending in ".invalid", with an equally random user part.
+_WEBRTC_HOST_RE = re.compile(r'@[^@/;]*\.invalid\b', re.IGNORECASE)
+
+
+def _is_webrtc_token(value) -> bool:
+    """True if this identity is an opaque WebRTC instance token, not an extension."""
+    return bool(_WEBRTC_HOST_RE.search(str(value or '')))
+
+
+def _dedupe_call_legs(rows) -> list:
+    """Collapse a bridged call's two legs into a single row.
+
+    'show calls' reports one row per channel, so a bridged call appears twice —
+    once for the A-leg (dest = what the caller dialed, e.g. "1001") and once for
+    the B-leg (dest = the answering endpoint, e.g. "1000-IHDT"). Both describe
+    the same conversation, so the UI must show one row.
+
+    Legs are paired via b_uuid: one row's `uuid` is its partner's `b_uuid`. Note
+    the pairing is usually mutual (each row names the other), so "is some row's
+    b_uuid" alone cannot pick a winner — that would discard both. Instead each
+    pair is claimed once, preferring the leg that looks like the caller side so
+    cid_num stays the external caller; _connected_extension() then derives the
+    answering extension from that row's own B-leg fields.
+    """
+    rows = list(rows or [])
+    by_uuid = {}
+    for r in rows:
+        u = str(r.get('uuid') or '').strip()
+        if u:
+            by_uuid.setdefault(u, r)
+
+    def _is_caller_leg(row):
+        """Prefer the leg whose destination is what was dialed, not an identity.
+
+        The callee-side row's `dest` is the answering endpoint itself, which
+        equals its own channel identity; the caller-side row's `dest` is the
+        dialed number. Inbound direction is the tiebreaker.
+        """
+        dest = str(row.get('dest') or '').strip()
+        name_user = ''
+        m = _CHAN_USER_RE.match(str(row.get('name') or ''))
+        if m:
+            name_user = m.group(1).split('@')[0]
+        if dest and name_user and dest == name_user:
+            return False
+        return str(row.get('direction') or '') == 'inbound'
+
+    deduped, claimed = [], set()
+    for r in rows:
+        u = str(r.get('uuid') or '').strip()
+        b = str(r.get('b_uuid') or '').strip()
+
+        if u and u in claimed:
+            continue
+
+        partner = by_uuid.get(b) if b else None
+        if partner is not None and str(partner.get('uuid') or '') != u:
+            # A bridged pair: emit exactly one row for it.
+            keep = r if _is_caller_leg(r) else (
+                partner if _is_caller_leg(partner) else r)
+            keep_uuid = str(keep.get('uuid') or '').strip()
+            if keep_uuid in claimed:
+                continue
+            claimed.update({x for x in (u, b) if x})
+            deduped.append(keep)
+            continue
+
+        if u:
+            claimed.add(u)
+        deduped.append(r)
+    return deduped
+
+
+def _webrtc_token_map_for(esl, rows) -> dict:
+    """Build the WebRTC token map only if some call actually has a WebRTC leg.
+
+    Avoids an extra ESL round-trip (show registrations) on the common case where
+    every leg is a plain SIP endpoint.
+    """
+    if not any(_is_webrtc_token(r.get('b_name')) or _is_webrtc_token(r.get('name'))
+               for r in rows):
+        return {}
+    try:
+        return _webrtc_token_map(_normalize_json_rows(esl.show_registrations()))
+    except Exception:
+        logger.exception('WebRTC token map build failed')
+        return {}
+
+
+def _webrtc_token_map(reg_rows) -> dict:
+    """Map WebRTC instance tokens -> registered extension, from registration rows.
+
+    WebRTC legs identify themselves as "<token>@<random>.invalid" on the channel,
+    so the only way back to the SIP username is the registration whose contact
+    carries that token.
+    """
+    mapping = {}
+    for row in reg_rows or []:
+        user = str(row.get('reg_user') or row.get('user') or '').split('@')[0].strip()
+        contact = str(row.get('full_contact') or row.get('contact') or row.get('url') or '')
+        if not user or not contact:
+            continue
+        m = re.search(r'sip:([^@;>]+)@[^@/;>]*\.invalid', contact, re.IGNORECASE)
+        if m:
+            mapping[m.group(1)] = user
+    return mapping
+
+
+def _connected_extension(row: dict, webrtc_map: dict = None) -> str:
+    """Return the extension the call is actually connected to.
+
+    `dest` is what the caller originally dialed — a DID, an IVR entry, a ring
+    group number — so it does not say who ultimately answered. Once the call is
+    bridged, FreeSWITCH exposes the answering party on the B-leg, so prefer that
+    and fall back to `dest` while the call is still ringing (no B-leg yet).
+
+    Preference order:
+      1. b_presence_id / presence_id user part — the directory identity of the
+         answering endpoint ("101-DUA"), set for registered extensions.
+      2. B-leg channel name user part — same identity for internal legs.
+      3. callee_num / b_dest — covers external transfer targets.
+      4. dest — original dialed number (call not yet bridged).
+
+    WebRTC endpoints register under an opaque per-session instance token
+    ("8cau5n53@ji6jb5vt147c.invalid") instead of their SIP username, so the
+    B-leg identity is meaningless on its own. `webrtc_map` (built by
+    _webrtc_token_map()) translates such a token back to its real extension;
+    without it, a WebRTC leg falls through to the dialed number rather than
+    displaying a token.
+    """
+    def _user_part(value):
+        value = str(value or '').strip()
+        if not value:
+            return ''
+        # presence_id is "user@domain"; channel names are "sofia/profile/user@domain".
+        if '/' in value:
+            m = _CHAN_USER_RE.match(value)
+            value = m.group(1) if m else value.rsplit('/', 1)[-1]
+        return value.split('@')[0].strip()
+
+    webrtc_map = webrtc_map or {}
+    # Bare identity fields (b_dest, callee_num) carry the token without the
+    # ".invalid" host, so detect a WebRTC answering leg from the channel name
+    # and treat this row's identities as tokens throughout.
+    b_is_webrtc = _is_webrtc_token(row.get('b_name')) or _is_webrtc_token(row.get('name'))
+
+    def _resolve(value):
+        """Map an opaque WebRTC instance token back to its real extension."""
+        user = _user_part(value)
+        if not user:
+            return ''
+        if user in webrtc_map:
+            return webrtc_map[user]
+        # An unresolvable token must not be shown as if it were an extension.
+        if b_is_webrtc or _is_webrtc_token(value):
+            return ''
+        return user
+
+    for key in ('b_presence_id', 'b_name'):
+        user = _resolve(row.get(key))
+        if user:
+            return user
+
+    # A bridged single-leg view (show channels) reports the far end here.
+    for key in ('callee_num', 'b_dest', 'sent_callee_num'):
+        if str(row.get(key) or '').strip():
+            user = _resolve(row.get(key))
+            if user:
+                return user
+
+    return str(row.get('dest', '') or '')
+
+
 class FSCallsView(APIView):
     """
     GET /api/v1/freeswitch/calls/
@@ -280,18 +458,22 @@ class FSCallsView(APIView):
         try:
             esl = get_esl_client()
             raw = esl.show_calls()
-            rows = _normalize_json_rows(raw)
+            rows = _dedupe_call_legs(_normalize_json_rows(raw))
             tenant_code = _tenant_code_for_request(request)
             if tenant_code is _TENANT_DENY:
                 return Response({'calls': []})
             if tenant_code:
                 rows = [r for r in rows if _call_belongs_to_tenant(r, tenant_code)]
+            webrtc_map = _webrtc_token_map_for(esl, rows)
             calls = [
                 {
                     'uuid':     row.get('uuid', ''),
                     'cid_name': row.get('cid_name', ''),
                     'cid_num':  row.get('cid_num', ''),
-                    'dest':     row.get('dest', ''),
+                    # Final connected party, not the originally dialed
+                    # DID/IVR/ring-group number. See _connected_extension().
+                    'dest':     _connected_extension(row, webrtc_map),
+                    'dialed':   row.get('dest', ''),
                     'state':    row.get('callstate') or row.get('state', ''),
                     'answered': row.get('callstate') == 'ACTIVE',
                     'duration': _parse_elapsed(row.get('elapsed_time', 0)),

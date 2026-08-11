@@ -52,16 +52,20 @@ class ActiveCallsConsumer(AsyncWebsocketConsumer):
         """Send current active calls snapshot."""
         try:
             from .client import get_esl_client
-            from .views import _normalize_json_rows
+            from .views import (_normalize_json_rows, _connected_extension,
+                                _webrtc_token_map_for, _dedupe_call_legs)
             esl = get_esl_client()
             raw = await database_sync_to_async(esl.show_calls)()
-            rows = _normalize_json_rows(raw)
+            rows = _dedupe_call_legs(_normalize_json_rows(raw))
+            webrtc_map = await database_sync_to_async(_webrtc_token_map_for)(esl, rows)
             calls = [
                 {
                     'uuid':     row.get('uuid', ''),
                     'cid_name': row.get('cid_name', ''),
                     'cid_num':  row.get('cid_num', ''),
-                    'dest':     row.get('dest', ''),
+                    # Final connected party, not the dialed DID/IVR/ring-group.
+                    'dest':     _connected_extension(row, webrtc_map),
+                    'dialed':   row.get('dest', ''),
                     'state':    row.get('callstate') or row.get('state', ''),
                     'answered': row.get('callstate') == 'ACTIVE',
                     'duration': row.get('elapsed_time', 0),
@@ -295,11 +299,16 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
             return calls
         suffix = f'-{tenant_code}'
         rg_exts = rg_extensions or set()
+        # 'dest' is the connected extension and 'dialed' the originally dialed
+        # number; check both so a call still matches whether it is already
+        # bridged to an extension or still sitting in an IVR/ring group.
         return [
             c for c in calls
             if str(c.get('cid_num', '')).endswith(suffix) or
                str(c.get('dest', '')).endswith(suffix) or
-               str(c.get('dest', '')) in rg_exts
+               str(c.get('dialed', '')).endswith(suffix) or
+               str(c.get('dest', '')) in rg_exts or
+               str(c.get('dialed', '')) in rg_exts
         ]
 
     async def _get_tenant_ring_group_extensions(self, tenant_code):
@@ -416,16 +425,20 @@ class OperatorPanelConsumer(AsyncWebsocketConsumer):
     async def send_calls_snapshot(self):
         try:
             from .client import get_esl_client
-            from .views import _normalize_json_rows
+            from .views import (_normalize_json_rows, _connected_extension,
+                                _webrtc_token_map_for, _dedupe_call_legs)
             esl = get_esl_client()
             raw = await database_sync_to_async(esl.show_calls)()
-            rows = _normalize_json_rows(raw)
+            rows = _dedupe_call_legs(_normalize_json_rows(raw))
+            webrtc_map = await database_sync_to_async(_webrtc_token_map_for)(esl, rows)
             calls = [
                 {
                     'uuid':     row.get('uuid', ''),
                     'cid_name': row.get('cid_name', ''),
                     'cid_num':  row.get('cid_num', ''),
-                    'dest':     row.get('dest', ''),
+                    # Final connected party, not the dialed DID/IVR/ring-group.
+                    'dest':     _connected_extension(row, webrtc_map),
+                    'dialed':   row.get('dest', ''),
                     'state':    row.get('callstate') or row.get('state', ''),
                     'answered': row.get('callstate') == 'ACTIVE',
                     'duration': row.get('elapsed_time', 0),

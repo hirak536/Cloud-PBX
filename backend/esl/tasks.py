@@ -102,16 +102,20 @@ def push_active_calls_update():
     """Fetch current active calls and broadcast to WebSocket consumers."""
     try:
         from .client import get_esl_client
-        from .views import _normalize_json_rows
+        from .views import (_normalize_json_rows, _connected_extension,
+                            _webrtc_token_map_for, _dedupe_call_legs)
         esl = get_esl_client()
         raw = esl.show_calls()
-        rows = _normalize_json_rows(raw)
+        rows = _dedupe_call_legs(_normalize_json_rows(raw))
+        webrtc_map = _webrtc_token_map_for(esl, rows)
         calls = [
             {
                 'uuid':     row.get('uuid', ''),
                 'cid_name': row.get('cid_name', ''),
                 'cid_num':  row.get('cid_num', ''),
-                'dest':     row.get('dest', ''),
+                # Final connected party, not the dialed DID/IVR/ring-group.
+                'dest':     _connected_extension(row, webrtc_map),
+                'dialed':   row.get('dest', ''),
                 'state':    row.get('callstate') or row.get('state', ''),
                 'answered': row.get('callstate') == 'ACTIVE',
                 'duration': row.get('elapsed_time', 0),
