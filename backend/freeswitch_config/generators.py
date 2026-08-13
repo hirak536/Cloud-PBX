@@ -98,10 +98,199 @@ def not_found_xml():
 </document>'''
 
 
-def _add_recording_actions(cond, domain_name):
+ON_DEMAND_RECORDING_KEY = 'on_demand_recording'
+ON_DEMAND_RECORDING_DEFAULT = '*2'
+
+# Stock Callie prompts. call_monitoring_blurb is the same notice the always-on
+# recording path plays; ivr-recording_stopped announces the stop.
+_REC_START_PROMPT = ('/usr/share/freeswitch/sounds/en/us/callie/misc/8000/'
+                     'call_monitoring_blurb.wav')
+_REC_STOP_PROMPT = ('/usr/share/freeswitch/sounds/en/us/callie/ivr/8000/'
+                    'ivr-recording_stopped.wav')
+
+
+def _ingest_url(file_var='${record_file}', dest_var='${destination_number}',
+                duration_var='${duration}', billsec_var='${billsec}'):
+    """Build the recording-ingest URL for a given file channel-variable.
+
+    Shared by the always-on path (api_hangup_hook, one call per call) and the
+    on-demand toggle (one call per segment, fired at each stop).
+
+    dest_var/duration_var are overridable because inside the toggle handler
+    ${destination_number} is the handler name, not the dialed number, and
+    ${duration} is not yet populated (the call is still up).
+    """
+    return (
+        'http://127.0.0.1:8000/api/v1/recordings/call-recordings/ingest/'
+        f'?file={file_var}'
+        '&caller=${caller_id_number}'
+        '&caller_name=${caller_id_name}'
+        f'&destination={dest_var}'
+        '&domain=${domain_name}'
+        f'&duration={duration_var}'
+        f'&billsec={billsec_var}'
+    )
+
+
+def _on_demand_recording_code(tenant):
+    """Resolve the on-demand recording feature code for a tenant.
+
+    Looks up v_feature_codes by the stable feature_code_key, preferring a
+    tenant-specific row over the global (tenant_uuid NULL) one. Returns None
+    when the matching row is explicitly disabled, so a tenant can turn the
+    feature off by unchecking it rather than needing a code change. Falls back
+    to the default when no row exists at all (fresh DB / migration not yet run).
+    """
+    from apps.feature_codes.models import FeatureCode
+    try:
+        rows = list(
+            FeatureCode.objects
+            .filter(feature_code_key=ON_DEMAND_RECORDING_KEY)
+            .filter(models.Q(tenant=tenant) | models.Q(tenant__isnull=True))
+        )
+    except Exception:
+        # Never let a feature-code lookup failure break dialplan generation.
+        return ON_DEMAND_RECORDING_DEFAULT
+    if not rows:
+        return ON_DEMAND_RECORDING_DEFAULT
+    # Tenant-specific row wins over the global fallback.
+    row = next((r for r in rows if r.tenant_id is not None), rows[0])
+    if not row.feature_code_enabled:
+        return None
+    return (row.feature_code_number or '').strip() or ON_DEMAND_RECORDING_DEFAULT
+
+
+def _add_on_demand_recording_binding(cond, tenant):
+    """Bind the on-demand recording toggle to a DTMF sequence on this leg.
+
+    Mid-call digits cannot be caught by a dialplan extension the way *97 is —
+    the channel is already bridged — so this uses bind_meta_app, which listens
+    for the bind key (*) followed by a single digit.
+
+    Only the internal party's leg is bound (bind_meta_app without 'nolocal:'
+    export applies to this channel only), so an outside caller pressing the
+    code does nothing.
+    """
+    code = _on_demand_recording_code(tenant)
+    if not code:
+        return
+    # bind_meta_app reserves '*' as the bind key and matches ONE digit after it,
+    # so only a '*<digit>' code can be expressed here.
+    m = re.fullmatch(r'\*(\d)', code)
+    if not m:
+        return
+    digit = m.group(1)
+    # Stash the real dialed number NOW. Inside the toggle handler,
+    # ${destination_number} has been rewritten to 'ihs_record_toggle' by
+    # execute_extension, so using it there puts the literal handler name into the
+    # recording filename and the ingested destination field.
+    dest = etree.SubElement(cond, 'action', application='set',
+                            data='ihs_rec_dest=${destination_number}')
+    dest.set('inline', 'true')
+    # 'a' = listen on the a-leg (the party who pressed it) only.
+    # 's' = execute the app on the same leg; the app itself broadcasts to both.
+    etree.SubElement(cond, 'action', application='bind_meta_app',
+                     data=f'{digit} a s execute_extension::ihs_record_toggle XML ${{context}}')
+
+
+def _add_on_demand_recording_extension(ctx, domain_name, tenant=None):
+    """The extension bind_meta_app dispatches to when the code is pressed.
+
+    Toggles on ${ihs_rec_active}: starts uuid_record and announces to both
+    parties, or stops it and announces the stop to both parties. record_file /
+    api_hangup_hook are already set on the channel by _add_recording_actions,
+    so the finished file is ingested by the existing hangup hook either way.
+
+    NB: match BOTH the extension name and the raw code. execute_extension sets
+    destination_number to the target name ('ihs_record_toggle'), which is how the
+    meta binding normally arrives here. But the same digits can also reach the
+    dialplan as a literal destination ('*2') — e.g. dialed pre-bridge rather than
+    pressed mid-call. Matching only one of the two silently never fires for the
+    other, which is exactly how this broke twice.
+    """
+    code = _on_demand_recording_code(tenant)
+    if not code:
+        return
+    ext = etree.SubElement(ctx, 'extension', name='ihs_record_toggle')
+    cond = etree.SubElement(ext, 'condition',
+                            field='destination_number',
+                            expression=f'^(ihs_record_toggle|{re.escape(code)})$')
+
+    # Each start/stop cycle gets its OWN file. ${record_file} is computed once
+    # per call (before the bridge), so reusing it made every cycle overwrite the
+    # previous one — only the last segment survived, and ingest's filename dedup
+    # meant later segments never got a row. ihs_rec_seg counts cycles and is
+    # appended to the path, so N cycles produce N distinct recordings.
+    stop = etree.SubElement(cond, 'condition', field='${ihs_rec_active}',
+                            expression='^true$')
+
+    # ── Already recording -> stop this segment, ingest it, announce the stop ──
+    etree.SubElement(stop, 'action', application='set',
+                     data='api_result=${uuid_record(${uuid} stop ${ihs_rec_seg_file})}')
+    etree.SubElement(stop, 'action', application='set', data='ihs_rec_active=false')
+    # Ingest THIS segment now rather than at hangup: api_hangup_hook fires once,
+    # so it can only ever register a single file per call.
+    # Segment length = now - the epoch stamped when this segment started.
+    # ${duration}/${billsec} are only populated after hangup, so at this point
+    # they are empty and would ingest as 0.
+    seg_dur = etree.SubElement(
+        stop, 'action', application='set',
+        data='ihs_rec_seg_dur=${expr(${strepoch()} - 0${ihs_rec_seg_start})}')
+    seg_dur.set('inline', 'true')
+    etree.SubElement(
+        stop, 'action', application='system',
+        data='curl -k -s -o /dev/null "%s" &' % _ingest_url(
+            '${ihs_rec_seg_file}',
+            dest_var='${ihs_rec_dest}',
+            duration_var='${ihs_rec_seg_dur}',
+            billsec_var='${ihs_rec_seg_dur}',
+        ))
+    etree.SubElement(stop, 'action', application='set',
+                     data=f'api_result=${{uuid_broadcast(${{uuid}} {_REC_STOP_PROMPT} both)}}')
+
+    # ── Not recording -> next segment number, announce, then start ────────────
+    etree.SubElement(stop, 'anti-action', application='set',
+                     data='ihs_rec_active=true')
+    # ${ihs_rec_seg} starts empty -> 0 + 1 = 1 for the first segment.
+    seg = etree.SubElement(stop, 'anti-action', application='set',
+                           data='ihs_rec_seg=${expr(0${ihs_rec_seg} + 1)}')
+    seg.set('inline', 'true')
+    # Derive this segment's path from record_file by inserting the segment
+    # number before the .wav suffix. inline so it is expanded before use.
+    # ${ihs_rec_dest} is the real dialed number, captured before the binding —
+    # ${destination_number} here would be the literal 'ihs_record_toggle'.
+    segf = etree.SubElement(
+        stop, 'anti-action', application='set',
+        data='ihs_rec_seg_file=${recordings_dir}/${domain_name}/'
+             '${strftime(%Y-%m-%d-%H-%M-%S)}_${caller_id_number}_'
+             '${ihs_rec_dest}_${uuid}_seg${ihs_rec_seg}.wav')
+    segf.set('inline', 'true')
+    # Epoch stamp so the stop branch can compute this segment's true length.
+    segst = etree.SubElement(stop, 'anti-action', application='set',
+                             data='ihs_rec_seg_start=${strepoch()}')
+    segst.set('inline', 'true')
+    etree.SubElement(stop, 'anti-action', application='system',
+                     data='mkdir -p ${recordings_dir}/${domain_name}')
+    etree.SubElement(stop, 'anti-action', application='set',
+                     data=f'api_result=${{uuid_broadcast(${{uuid}} {_REC_START_PROMPT} both)}}')
+    etree.SubElement(stop, 'anti-action', application='set',
+                     data='api_result=${uuid_record(${uuid} start ${ihs_rec_seg_file})}')
+
+
+def _add_recording_actions(cond, domain_name, start_on_answer=True, tag='action'):
     """
     Add FreeSWITCH recording actions to a dialplan condition.
     Must be executed BEFORE bridge.
+
+    start_on_answer=False sets up the record_file path and the ingest hangup
+    hook but does NOT begin recording — used by the on-demand (*2) path, where
+    uuid_record is fired later by the feature code. The ingest plumbing is
+    identical either way, so an on-demand recording lands in the UI exactly
+    like an always-on one.
+
+    tag='anti-action' emits the same steps as anti-actions, so a caller can
+    attach them to the FALSE branch of a condition it already has (used by the
+    outbound route, which stages on-demand plumbing when ${ihs_record} != 1).
     """
 
     record_path = (
@@ -112,35 +301,45 @@ def _add_recording_actions(cond, domain_name):
         '${uuid}.wav'
     )
 
-    ingest_url = (
-        'http://127.0.0.1:8000/api/v1/recordings/call-recordings/ingest/'
-        '?file=${record_file}'
-        '&caller=${caller_id_number}'
-        '&caller_name=${caller_id_name}'
-        '&destination=${destination_number}'
-        '&domain=${domain_name}'
-        '&duration=${duration}'
-        '&billsec=${billsec}'
-    )
+    ingest_url = _ingest_url()
 
-    etree.SubElement(cond, 'action', application='set', data='RECORD_STEREO=true')
-    etree.SubElement(cond, 'action', application='set', data='recording_follow_transfer=true')
-    etree.SubElement(cond, 'action', application='set', data=f'record_file={record_path}', inline='true')
+    etree.SubElement(cond, tag, application='set', data='RECORD_STEREO=true')
+    etree.SubElement(cond, tag, application='set', data='recording_follow_transfer=true')
+    etree.SubElement(cond, tag, application='set', data=f'record_file={record_path}', inline='true')
 
     # Ensure recording directory exists on disk
-    etree.SubElement(cond, 'action', application='system', data='mkdir -p ${recordings_dir}/${domain_name}')
+    etree.SubElement(cond, tag, application='system', data='mkdir -p ${recordings_dir}/${domain_name}')
 
     # Properly quote the ingest URL and use system:curl for reliable delivery
-    etree.SubElement(cond, 'action', application='set',
+    etree.SubElement(cond, tag, application='set',
                      data=f'api_hangup_hook=system curl -k "{ingest_url}"')
+
+    # Tracks whether recording is currently running, so the on-demand feature
+    # code knows which way to toggle. Set even on the always-on path: pressing
+    # the code on an already-recording call must stop it, not start a second one.
+    etree.SubElement(cond, tag, application='set',
+                     data=f'ihs_rec_active={"true" if start_on_answer else "false"}')
+
+    if start_on_answer:
+        # The toggle stops ${ihs_rec_seg_file}. On the always-on path the running
+        # recording IS ${record_file}, so point the segment var at it — otherwise
+        # the first *2 press would try to stop a file that was never started and
+        # the always-on recording would keep running.
+        etree.SubElement(cond, tag, application='set',
+                         data='ihs_rec_seg_file=${record_file}')
+
+    if not start_on_answer:
+        # On-demand: record_file and the ingest hook are staged, but nothing
+        # starts until the feature code fires uuid_record.
+        return
 
     # Play "this call may be recorded" announcement to both legs after answer, then start
     # recording. export nolocal: ensures the playback runs on the b-leg too.
     # uuid_record starts after the announcement finishes (api_on_answer_2 runs sequentially).
-    etree.SubElement(cond, 'action', application='set',
+    etree.SubElement(cond, tag, application='set',
                      data='api_on_answer_1=uuid_broadcast ${uuid} '
-                          '/usr/share/freeswitch/sounds/en/us/callie/misc/8000/call_monitoring_blurb.wav both')
-    etree.SubElement(cond, 'action', application='set',
+                          f'{_REC_START_PROMPT} both')
+    etree.SubElement(cond, tag, application='set',
                      data='api_on_answer_2=uuid_record ${uuid} start ${record_file}')
 
 
@@ -1199,6 +1398,23 @@ def _outbound_route_to_xml(route):
     rec_cond.set('break', 'never')
     _add_recording_actions(rec_cond, '${domain_name}')
 
+    # On-demand recording (feature code pressed mid-call) for outbound calls.
+    # When ${ihs_record} is 0 the block above never ran, so record_file and the
+    # ingest hangup hook are unset and there would be nothing for the feature
+    # code to start. Stage them here (without auto-starting) so the toggle works
+    # on outbound calls that are not already being recorded. break="never" so
+    # this never short-circuits the bridge below.
+    ondemand_cond = etree.SubElement(ext_el, 'condition',
+                                     field='${ihs_record}', expression='^1$')
+    ondemand_cond.set('break', 'never')
+    _add_recording_actions(ondemand_cond, '${domain_name}',
+                           start_on_answer=False, tag='anti-action')
+
+    # Bind the toggle on every outbound call, recorded or not.
+    bind_cond = etree.SubElement(ext_el, 'condition')
+    bind_cond.set('break', 'never')
+    _add_on_demand_recording_binding(bind_cond, getattr(route, 'tenant', None))
+
     # Final condition always matches — bridge using saved digits var, not $1.
     bridge_cond = etree.SubElement(ext_el, 'condition')
     gateways = [g for g in [route.gateway, route.gateway_2, route.gateway_3] if g]
@@ -1518,8 +1734,12 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
         _record_enabled = True
     else:
         _record_enabled = bool(getattr(ext.tenant, 'recording_enabled', True)) if ext.tenant else True
-    if _record_enabled:
-        _add_recording_actions(bridge_cond, domain_name)
+    # Always stage the recording plumbing (record_file + ingest hangup hook);
+    # _record_enabled only decides whether it auto-starts on answer. Staging it
+    # unconditionally is what lets the on-demand feature code start a recording
+    # on a call that would not otherwise have been recorded.
+    _add_recording_actions(bridge_cond, domain_name, start_on_answer=_record_enabled)
+    _add_on_demand_recording_binding(bridge_cond, ext.tenant)
     # Present the ACTUAL caller's ID on the leg toward the phone. Without this,
     # the B-leg to the registered device could fall back to the dialed
     # extension's own directory caller-id, so an inbound DID redirected to this
@@ -1868,6 +2088,18 @@ def _toggle_custom_dest_to_dialplan_xml(cd, domain_name, ctx_name, preload=None)
     probe = (f"Event-Name=PRESENCE_PROBE,proto=flow,event_type=presence,"
              f"expires=3600,from={presence_id},to={presence_id}")
     exec_el = etree.Element('extension', name=f'toggle_exec_{uid}')
+    # Guard on the dispatch name FIRST. Without this the extension's only
+    # condition was the mod_db state, which does not depend on the dialled
+    # number at all — so ANY channel that walked this far down the context with
+    # an unmatched destination silently flipped the call flow and played the
+    # confirmation beep. That is how a mid-call feature-code press whose own
+    # handler failed to match ended up toggling *800. execute_extension sets
+    # destination_number to this extension's name, so matching it is both
+    # correct for the intended caller and a hard stop for everyone else.
+    name_cond = etree.SubElement(exec_el, 'condition',
+                                 field='destination_number',
+                                 expression=f'^toggle_exec_{re.escape(uid)}$')
+    name_cond.set('break', 'on-false')
     # Currently ON (true) → turn OFF (RED).
     exec_cond = etree.SubElement(exec_el, 'condition',
                                  field=state_expr,
@@ -2534,6 +2766,11 @@ def generate_dialplan_xml(domain_name, destination_number, caller_id_number='', 
                          data='voicemail_id=')
         etree.SubElement(vm_any_cond, 'action', application='voicemail',
                          data=f'check default {domain_name}')
+
+        # On-demand recording toggle target. Not dialable — bind_meta_app
+        # dispatches here via execute_extension when the feature code is pressed
+        # mid-call, so the name is matched instead of a digit string.
+        _add_on_demand_recording_extension(ctx, domain_name, tenant=ext.tenant)
 
         # *95 — record own voicemail name greeting
         vm_rec = etree.SubElement(ctx, 'extension', name='voicemail_record_name')
