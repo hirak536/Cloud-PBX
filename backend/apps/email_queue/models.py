@@ -35,3 +35,9 @@ class EmailQueue(models.Model):
 
     def __str__(self):
         return f'{self.email_queue_to}: {self.email_queue_subject}'
+
+
+# EmailDelivery is the audit trail that spans both the queued senders above and
+# the direct-SMTP senders in apps.fax / apps.voicemails. Re-exported here so
+# Django's app loader picks it up.
+from .delivery_log import EmailDelivery  # noqa: E402,F401

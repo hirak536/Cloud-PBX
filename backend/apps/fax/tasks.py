@@ -10,6 +10,8 @@ from celery import shared_task
 from django.db import models
 from django.conf import settings
 
+from apps.email_queue.logging_utils import send_and_log
+
 logger = logging.getLogger(__name__)
 
 # How long to wait between polls (seconds), and how many attempts before giving up
@@ -399,7 +401,8 @@ def send_fax_status_email(self, fax_file_uuid: str):
             connection=_smtp_connection(),
         )
         email.attach_alternative(html_body, 'text/html')
-        email.send(fail_silently=False)
+        send_and_log(email, category='fax_status', related_uuid=fax_file_uuid,
+                     tenant=getattr(ff, 'tenant', None), fail_silently=False)
         logger.info(
             'send_fax_status_email: SENT (%s) to %s for FaxFile %s',
             ff.fax_file_status, ', '.join(recipients), fax_file_uuid,
@@ -493,7 +496,8 @@ def send_fax_email(self, fax_file_uuid: str):
             'send_fax_email: sending to %s for FaxFile %s — file=%s attachments=%d bytes=%d',
             ', '.join(recipients), fax_file_uuid, file_path, len(email.attachments), attach_size,
         )
-        email.send(fail_silently=False)
+        send_and_log(email, category='fax_inbound', related_uuid=fax_file_uuid,
+                     tenant=getattr(ff, 'tenant', None), fail_silently=False)
         logger.info('send_fax_email: SENT to %s for FaxFile %s', ', '.join(recipients), fax_file_uuid)
 
     except Exception as exc:

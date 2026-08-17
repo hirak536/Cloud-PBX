@@ -4,7 +4,40 @@ from django.core.mail import get_connection, EmailMultiAlternatives
 from django.conf import settings
 from django.utils import timezone
 
+from .logging_utils import send_and_log
+
 logger = logging.getLogger(__name__)
+
+
+@shared_task(name='email_queue.purge_delivery_log')
+def purge_delivery_log(days: int = 60):
+    """Prune EmailDelivery rows older than ``days`` days (60-day retention).
+
+    Deleted in batches: voicemail and fax notifications make this the busiest
+    table in the app, and a single unbounded DELETE would hold locks long enough
+    to stall concurrent sends.
+    """
+    from datetime import timedelta  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415
+    from .delivery_log import EmailDelivery  # noqa: PLC0415
+
+    cutoff = timezone.now() - timedelta(days=days)
+    total = 0
+    while True:
+        batch = list(
+            EmailDelivery.objects.filter(created_at__lt=cutoff)
+            .values_list('pk', flat=True)[:1000]
+        )
+        if not batch:
+            break
+        deleted, _ = EmailDelivery.objects.filter(pk__in=batch).delete()
+        total += deleted
+        if deleted == 0:  # guard against a non-shrinking queryset
+            break
+
+    if total:
+        logger.info('purge_delivery_log: deleted %d rows older than %d days', total, days)
+    return total
 
 
 @shared_task(name='email_queue.send_pending')
@@ -44,7 +77,8 @@ def send_pending_emails():
                 )
                 if is_html:
                     msg.attach_alternative(body, 'text/html')
-                msg.send()
+                send_and_log(msg, category='queue', related_uuid=str(item.pk),
+                             tenant=item.tenant)
                 item.email_queue_status = 'sent'
                 item.email_queue_date = timezone.now()
                 item.save(update_fields=['email_queue_status', 'email_queue_date'])

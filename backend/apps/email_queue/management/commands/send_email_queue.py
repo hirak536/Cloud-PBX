@@ -3,6 +3,7 @@ from django.core.management.base import BaseCommand
 from django.conf import settings
 from django.utils import timezone
 from apps.email_queue.models import EmailQueue
+from apps.email_queue.logging_utils import send_and_log
 import logging
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,8 @@ class Command(BaseCommand):
                         cc=[c.strip() for c in item.email_queue_cc.split(',') if c.strip()],
                         connection=connection,
                     )
-                    msg.send()
+                    send_and_log(msg, category='queue', related_uuid=str(item.pk),
+                                 tenant=item.tenant)
                     item.email_queue_status = 'sent'
                     item.email_queue_date = timezone.now()
                     item.save(update_fields=['email_queue_status', 'email_queue_date'])

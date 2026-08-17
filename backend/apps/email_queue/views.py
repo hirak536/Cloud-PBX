@@ -8,8 +8,9 @@ from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
 from core.mixins import TenantScopedViewSetMixin
 from core.permissions import IsSuperAdmin
-from .models import EmailQueue
-from .serializers import EmailQueueSerializer
+from .models import EmailQueue, EmailDelivery
+from .logging_utils import send_and_log
+from .serializers import EmailQueueSerializer, EmailDeliverySerializer
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,8 @@ class EmailQueueViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
                     )
                     if is_html:
                         msg.attach_alternative(body, 'text/html')
-                    msg.send()
+                    send_and_log(msg, category='queue', related_uuid=str(item.pk),
+                                 tenant=item.tenant)
                     item.email_queue_status = 'sent'
                     item.email_queue_date = timezone.now()
                     item.save(update_fields=['email_queue_status', 'email_queue_date'])
@@ -73,3 +75,28 @@ class EmailQueueViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
             connection.close()
 
         return Response({'sent': sent, 'failed': failed})
+
+
+class EmailDeliveryViewSet(viewsets.ReadOnlyModelViewSet):
+    """History of every outbound email — fax, voicemail and account mail alike.
+
+    Read-only by design: this is an audit trail, so there is no create/update
+    path. Tenant scoping is done here rather than via TenantScopedViewSetMixin
+    because that mixin falls back to a `domain` FK this model does not have.
+    """
+    serializer_class = EmailDeliverySerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['status', 'category', 'related_uuid']
+    search_fields = ['email_to', 'subject', 'related_uuid']
+    ordering_fields = ['created_at', 'status', 'category']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        qs = EmailDelivery.objects.select_related('tenant')
+        user = self.request.user
+        if user.is_superuser:
+            tenant_id = self.request.query_params.get('tenant')
+            return qs.filter(tenant_id=tenant_id) if tenant_id else qs
+        tenant_id = getattr(user, 'tenant_id', None)
+        return qs.filter(tenant_id=tenant_id) if tenant_id else qs.none()

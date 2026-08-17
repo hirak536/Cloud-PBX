@@ -291,6 +291,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'esl.tasks.cleanup_peer_state_history',
         'schedule': crontab(hour=3, minute=15),
     },
+    # 60-day retention on the outbound email audit trail. Offset from the 03:15
+    # peer-state cleanup so the two purges do not overlap.
+    'purge-email-delivery-log-daily': {
+        'task': 'email_queue.purge_delivery_log',
+        'schedule': crontab(hour=3, minute=30),
+        'kwargs': {'days': 60},
+    },
     # Pre-slice recently-ended calls' SIP pcap off the ingest path, so the
     # SIP/PCAP viewer reads a tiny per-call file instead of scanning the large
     # rolling capture on every open. Runs every minute; never touches ingest.

@@ -7,6 +7,8 @@ import wave
 from celery import shared_task
 from django.conf import settings
 
+from apps.email_queue.logging_utils import send_and_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -175,7 +177,8 @@ def _send_voicemail_email(vm, message_uuid: str, file_path: str, cid_name: str, 
     attach_size = sum(len(a[1]) for a in email.attachments if isinstance(a[1], (bytes, bytearray)))
     logger.info('[VM-EMAIL] _send_voicemail_email: sending to %s — attachments=%d total_bytes=%d',
                 vm.voicemail_mail_to, attach_count, attach_size)
-    email.send(fail_silently=False)
+    send_and_log(email, category='voicemail', related_uuid=message_uuid,
+                 tenant=getattr(vm, 'tenant', None), fail_silently=False)
     logger.info('[VM-EMAIL] _send_voicemail_email: SENT to %s for message %s', vm.voicemail_mail_to, message_uuid)
 
 
@@ -655,7 +658,8 @@ def send_voicemail_notification(
                 logger.warning('send_voicemail_notification: file not ready yet, retrying: %s', file_path)
                 raise self.retry(countdown=20)
 
-        email.send(fail_silently=False)
+        send_and_log(email, category='voicemail', related_uuid=str(uuid_val),
+                     tenant=getattr(vm, 'tenant', None), fail_silently=False)
         logger.info('send_voicemail_notification: sent to %s for %s', vm.voicemail_mail_to, uuid_val)
     except Exception as exc:
         logger.error('send_voicemail_notification: failed for %s: %s', uuid_val, exc)
