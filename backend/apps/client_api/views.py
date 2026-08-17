@@ -674,7 +674,7 @@ class ClientFaxFileView(APIView):
     def get(self, request, tenant_uuid):
         from rest_framework.pagination import PageNumberPagination
         tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
-        qs = FaxFile.objects.filter(tenant=tenant).order_by('-fax_file_date')
+        qs = FaxFile.objects.filter(tenant=tenant).select_related('fax').order_by('-fax_file_date')
         # Filter to one or more fax boxes (?fax=<fax_uuid>[,<fax_uuid>...]).
         fax_filter = request.query_params.get('fax')
         fax_ids = [f.strip() for f in fax_filter.split(',') if f.strip()] if fax_filter else []
@@ -694,9 +694,11 @@ class ClientFaxFileView(APIView):
         search = request.query_params.get('search')
         if search:
             qs = qs.filter(
+                Q(fax_file_caller_id_name__icontains=search) |
                 Q(fax_file_caller_id_number__icontains=search) |
                 Q(fax_file_destination_number__icontains=search) |
-                Q(fax_file_name__icontains=search)
+                Q(fax_file_name__icontains=search) |
+                Q(fax__fax_name__icontains=search)
             )
         # Summary counts respect the fax box + direction filter and — when a status
         # filter is applied — the status filter too, so the whole summary agrees with
@@ -751,8 +753,10 @@ class ClientFaxQuickSendView(APIView):
         """
         import os, re as _re
         from django.utils import timezone as dj_tz
-        from apps.fax.utils import pdf_to_tiff
-        from apps.fax.views import _resolve_gateway, _normalize_destination
+        from apps.fax.utils import ensure_fax_ready
+        from apps.fax.views import (
+            _resolve_gateway, _normalize_destination, _safe_fax_basename, _esl_var,
+        )
 
         tenant = _require_tenant(request, tenant_uuid, _tenant_from_request(request))
         fax_uuid = request.data.get('fax_uuid', '').strip()
@@ -794,7 +798,9 @@ class ClientFaxQuickSendView(APIView):
         file_ext = os.path.splitext(orig_name)[1].lower()
         if file_ext not in ('.tif', '.tiff', '.pdf'):
             file_ext = '.tif'
-        base = os.path.splitext(orig_name)[0].replace(' ', '_')
+        # Strip ESL-hostile characters — ')' truncates the &txfax(<path>)
+        # argument and the leg dies with DESTINATION_OUT_OF_ORDER.
+        base = _safe_fax_basename(orig_name)
         file_name = f'{int(dj_tz.now().timestamp())}_{base}{file_ext}'
         file_path = os.path.join(outbound_dir, file_name)
 
@@ -805,12 +811,18 @@ class ClientFaxQuickSendView(APIView):
         except OSError as e:
             return Response({'error': f'Cannot save file on server: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # Convert PDF to TIFF if needed
-        if file_ext == '.pdf':
-            try:
-                file_path = pdf_to_tiff(file_path)
-            except RuntimeError as e:
-                return Response({'error': f'PDF conversion failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # txfax only sends bi-level G3/G4 TIFF/F. Convert PDFs, and re-encode
+        # TIFFs that aren't already compliant — a .tiff extension does not mean
+        # the contents are transmittable (an 8-bit RGB scan fails at send time
+        # with "result (41) TIFF/F file cannot be opened" after connecting).
+        try:
+            file_path = ensure_fax_ready(file_path)
+        except ValueError as e:
+            # Not a PDF or TIFF at all — caller's input, not a server fault.
+            raise ValidationError({'file': str(e)})
+        except RuntimeError as e:
+            logger.error(f'ClientAPI fax send: file conversion failed: {e}')
+            return Response({'error': f'File conversion failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         cid_name = fax.fax_caller_id_name or fax.fax_name
         cid_number = sender_number or fax.fax_caller_id_number or fax.fax_extension
@@ -819,7 +831,9 @@ class ClientFaxQuickSendView(APIView):
             fax=fax,
             tenant=tenant,
             domain=fax.domain,
-            fax_file_type=file_ext.lstrip('.'),
+            # Reflect what was actually sent, not what was uploaded — a PDF or a
+            # non-compliant TIFF becomes a G3 .tif above.
+            fax_file_type=os.path.splitext(file_path)[1].lstrip('.').lower(),
             fax_file_name=orig_name,
             fax_file_path=file_path,
             fax_file_status='pending',
@@ -830,11 +844,19 @@ class ClientFaxQuickSendView(APIView):
         )
 
         originate_vars = (
-            f'origination_caller_id_name={cid_name},'
-            f'origination_caller_id_number={cid_number},'
-            f'fax_ident={cid_name},'
-            f'fax_header={cid_name},'
-            f'absolute_codec_string=PCMU,'
+            # Quote every interpolated value — an unquoted space in a fax box's
+            # caller-id name ('IHS Test') splits the {k=v,k=v} var list and
+            # FreeSWITCH rejects the whole originate with "Parse Error!" /
+            # DESTINATION_OUT_OF_ORDER before any channel is created.
+            f'origination_caller_id_name={_esl_var(cid_name)},'
+            f'origination_caller_id_number={_esl_var(cid_number)},'
+            f'fax_ident={_esl_var(cid_name)},'
+            f'fax_header={_esl_var(cid_name)},'
+            # Soft codec preference (not absolute): pinning absolute_codec_string
+            # blocks SpanDSP from re-arming onto the T.38 image path when the
+            # carrier sends the T.38 re-INVITE, causing a negotiated-but-dead
+            # T.38 and a 60s "waiting for initial communication" timeout.
+            f'codec_string=PCMU,'
             f'fax_enable_t38=true,'
             f'fax_enable_t38_request=true,'
             f'fax_disable_v17=false,'
@@ -991,20 +1013,21 @@ class ClientFaxFileDownloadView(APIView):
         except FaxFile.DoesNotExist:
             raise NotFound('Fax file not found.')
 
-        file_path = ff.fax_file_path
-        # Prefer original PDF over converted TIFF
-        if file_path and file_path.endswith('.tif'):
-            pdf_path = os.path.splitext(file_path)[0] + '.pdf'
-            if os.path.isfile(pdf_path):
-                file_path = pdf_path
-
+        file_path = ff.fax_file_path or ''
         if not file_path or not os.path.isfile(file_path):
             raise NotFound('Fax file not found on disk.')
+
+        if file_path.lower().endswith(('.tif', '.tiff')):
+            from apps.fax.utils import tiff_to_pdf
+            try:
+                file_path = tiff_to_pdf(file_path)
+            except Exception as conv_err:
+                logger.warning('TIFF→PDF conversion failed for %s: %s — serving raw TIFF', file_path, conv_err)
 
         ext = os.path.splitext(file_path)[1].lower()
         content_type = 'application/pdf' if ext == '.pdf' else 'image/tiff'
         disposition = 'attachment' if request.query_params.get('attachment') else 'inline'
-        filename = os.path.basename(file_path)
+        filename = os.path.basename(os.path.splitext(ff.fax_file_path or file_path)[0] + '.pdf')
 
         response = FileResponse(open(file_path, 'rb'), content_type=content_type)
         response['Content-Disposition'] = f'{disposition}; filename="{filename}"'

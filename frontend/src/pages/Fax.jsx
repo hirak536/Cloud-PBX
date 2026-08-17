@@ -1,5 +1,7 @@
 import { useDebounce } from '@/hooks/useDebounce'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useInfiniteList } from '@/hooks/useInfiniteList'
+import { InfiniteScroll, PageSizeSelector, DEFAULT_PAGE_SIZE } from '@/components/InfiniteScroll'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { fax as faxApi, destinations as destApi } from '@/api'
 import { useSelector } from 'react-redux'
@@ -455,28 +457,34 @@ function PreviewDialog({ open, onClose, file, token }) {
 function FaxHistory() {
   const token = useSelector(selectAuth).accessToken
 
-  const [files, setFiles]     = useState([])
   const [summary, setSummary] = useState(null)
-  const [loading, setLoading] = useState(true)
   const [search, setSearch]   = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [pageSize, setPageSize]         = useState(DEFAULT_PAGE_SIZE)
   const [showSend, setShowSend]         = useState(false)
   const [previewOpen, setPreviewOpen]   = useState(false)
   const [previewFile, setPreviewFile]   = useState(null)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const params = {}
-      if (search) params.search = search
-      if (statusFilter !== 'all') params.fax_file_status = statusFilter
-      const { data } = await faxApi.files(params)
-      setFiles(Array.isArray(data) ? data : data.results || [])
-      if (data.summary) setSummary(data.summary)
-    } finally { setLoading(false) }
-  }, [search, statusFilter])
+  // Debounced so typing doesn't reset the list to page 1 on every keystroke.
+  const debouncedSearch = useDebounce(search, 350)
 
-  useEffect(() => { load() }, [load])
+  // Memoised — its identity is what drives the hook's reset to page 1.
+  const listParams = useMemo(() => {
+    const params = { ordering: '-fax_file_date' }
+    if (debouncedSearch) params.search = debouncedSearch
+    if (statusFilter !== 'all') params.fax_file_status = statusFilter
+    return params
+  }, [debouncedSearch, statusFilter])
+
+  const {
+    rows: files,
+    total,
+    loading,
+    loadingMore,
+    hasMore,
+    loadMore,
+    reload: load,
+  } = useInfiniteList(faxApi.files, { params: listParams, pageSize })
 
   const [cancelling, setCancelling] = useState(null)
   const handleCancel = async (f) => {
@@ -516,6 +524,7 @@ function FaxHistory() {
             <RefreshCw className="h-4 w-4" />
           </Button>
         </div>
+        <PageSizeSelector value={pageSize} onChange={setPageSize} />
         <Button size="sm" onClick={() => setShowSend(true)}>
           <Plus className="h-4 w-4" />Send Fax
         </Button>
@@ -634,6 +643,17 @@ function FaxHistory() {
               }
             </TableBody>
           </Table>
+
+          {/* Infinite scroll — sentinel + footer */}
+          {!loading && files.length > 0 && (
+            <InfiniteScroll
+              hasMore={hasMore}
+              loadingMore={loadingMore}
+              onLoadMore={loadMore}
+              loaded={files.length}
+              total={total}
+            />
+          )}
         </CardContent>
       </Card>
 

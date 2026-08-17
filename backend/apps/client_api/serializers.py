@@ -181,13 +181,15 @@ class ClientFaxFileSerializer(serializers.ModelSerializer):
     fax_caller_id_number = serializers.CharField(source='fax_file_caller_id_number', read_only=True)
     fax_destination_number = serializers.CharField(source='fax_file_destination_number', read_only=True)
     fax_station_id = serializers.CharField(source='fax_file_station_id', read_only=True)
+    # Label of the owning fax box. Nullable — orphaned files have no box.
+    fax_box_name = serializers.CharField(source='fax.fax_name', read_only=True, default=None)
     direction = serializers.CharField(read_only=True)
     download_url = serializers.SerializerMethodField()
 
     class Meta:
         model = FaxFile
         fields = [
-            'fax_file_uuid', 'fax', 'fax_file_status', 'direction', 'fax_file_pages',
+            'fax_file_uuid', 'fax', 'fax_box_name', 'fax_file_status', 'direction', 'fax_file_pages',
             'fax_file_name', 'fax_caller_id_name', 'fax_caller_id_number',
             'fax_destination_number', 'fax_station_id',
             'retry_count', 'insert_date', 'file_size_bytes', 'download_url',

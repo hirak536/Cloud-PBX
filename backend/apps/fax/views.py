@@ -13,7 +13,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from core.mixins import TenantScopedViewSetMixin
 from .models import Fax, FaxFile
 from .serializers import FaxSerializer, FaxListSerializer, FaxFileSerializer
-from .utils import pdf_to_tiff, tiff_to_pdf
+from .utils import pdf_to_tiff, tiff_to_pdf, ensure_fax_ready
 
 logger = logging.getLogger(__name__)
 
@@ -200,13 +200,17 @@ class FaxViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
             logger.error(f'FaxSendView: cannot write file: {e}')
             return Response({'error': f'Cannot save file on server: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # txfax only supports TIFF — convert PDF if needed
-        if file_ext == '.pdf':
-            try:
-                file_path = pdf_to_tiff(file_path)
-            except RuntimeError as e:
-                logger.error(f'FaxSendView: PDF conversion failed: {e}')
-                return Response({'error': f'PDF conversion failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # txfax only sends bi-level G3/G4 TIFF/F. Convert PDFs, and re-encode
+        # TIFFs that aren't already compliant — a .tif extension does not mean
+        # the contents are transmittable (an 8-bit RGB scan fails at send time
+        # with "result (41) TIFF/F file cannot be opened" after connecting).
+        try:
+            file_path = ensure_fax_ready(file_path)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            logger.error(f'FaxSendView: fax file conversion failed: {e}')
+            return Response({'error': f'File conversion failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         # Caller ID for this fax box — used for the originate and stored on the file.
         cid_name = fax.fax_caller_id_name or fax.fax_name
@@ -472,13 +476,14 @@ class FaxQuickSendView(APIView):
             logger.error(f'FaxQuickSendView: cannot write file: {e}')
             return Response({'error': f'Cannot save file on server: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # txfax only supports TIFF — convert PDF if needed
-        if ext == '.pdf':
-            try:
-                file_path = pdf_to_tiff(file_path)
-            except RuntimeError as e:
-                logger.error(f'FaxQuickSendView: PDF conversion failed: {e}')
-                return Response({'error': f'PDF conversion failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # See FaxSendView: normalise on contents, not extension.
+        try:
+            file_path = ensure_fax_ready(file_path)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            logger.error(f'FaxQuickSendView: fax file conversion failed: {e}')
+            return Response({'error': f'File conversion failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         originate_vars = (
             f'origination_caller_id_name={_esl_var(caller_id_name)},'
@@ -610,6 +615,24 @@ class FaxReceiveWebhookView(View):
             f'file={fax_file} success={fax_success} pages={fax_pages_raw} '
             f'did={fax_did_number} mailbox={fax_mailbox}'
         )
+
+        # Log WHY a receive failed. spandsp's reason lives only in
+        # ${fax_result_text} (e.g. "Timed out waiting for the first message",
+        # "Unexpected DCN"), and without this it was recoverable only by digging
+        # the raw curl out of the CDR's last_arg — and only until the FreeSWITCH
+        # log rotated. Logged at ERROR so failures surface without trawling.
+        if fax_success != '1':
+            logger.error(
+                'Fax RECEIVE FAILED: reason=%r code=%s from=%s did=%s mailbox=%s '
+                'pages=%s ecm=%s rate=%s remote_station_id=%s file=%s',
+                fax_result_text or 'unknown (no fax_result_text reported)',
+                request.POST.get('fax_result_code', '') or '?',
+                caller_id_number or '?', fax_did_number or '?', fax_mailbox or '?',
+                fax_pages_raw,
+                request.POST.get('fax_ecm_used', '') or '?',
+                request.POST.get('fax_transfer_rate', '') or '?',
+                fax_remote_station_id or '?', fax_file or '?',
+            )
 
         try:
             fax = Fax.objects.get(fax_uuid=fax_uuid_str)

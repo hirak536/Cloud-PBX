@@ -732,6 +732,22 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                     ff.save(update_fields=update_fields)
                     logger.info(f"CDR ingest: updated FaxFile {ff.fax_file_uuid} → {new_status}")
 
+                    # Record WHY an outbound fax failed. This path frequently wins
+                    # the race against poll_fax_result (which logs its own reason),
+                    # so without this the failure reason is lost whenever CDR
+                    # ingest gets there first.
+                    if new_status == 'failed':
+                        logger.error(
+                            'Fax SEND FAILED: reason=%r code=%r to=%s from=%s '
+                            'pages=%s hangup=%s fax_file_uuid=%s uuid=%s',
+                            var('fax_result_text', '') or 'unknown (no fax_result_text reported)',
+                            var('fax_result_code', '') or '?',
+                            ff.fax_file_destination_number or '?',
+                            ff.fax_file_caller_id_number or '?',
+                            fax_pages, var('hangup_cause', '') or '?',
+                            ff.fax_file_uuid, call_uuid,
+                        )
+
                     # Notify the fax box owner from here too. This path RACES
                     # poll_fax_result: whichever sees the terminal status first
                     # wins, and poll_fax_result bails out early ("already sent —

@@ -745,6 +745,16 @@ def generate_directory_xml(domain_name, user=None, action=None):
     return etree.tostring(root, pretty_print=True, xml_declaration=True, encoding='UTF-8').decode()
 
 
+# Fax boxes that INITIATE a T.38 re-INVITE on inbound faxes (with ECM on),
+# instead of receiving over G.711 pass-through. See _fax_receive_extension_xml
+# for the full rationale. Start narrow: add an extension here, verify inbound
+# faxes report "T38 status negotiated" and pages > 0, then widen. Removing an
+# extension from this set restores the pass-through behaviour on next reloadxml.
+T38_REQUEST_TEST_EXTENSIONS = {
+    '+13468310766',   # Hirak, tenant IHS Dev Testing — validation box
+}
+
+
 def _fax_receive_extension_xml(fax, domain_name):
     """Generate a rxfax_<ext> dialplan extension that receives an incoming fax."""
     from django.conf import settings
@@ -770,7 +780,21 @@ def _fax_receive_extension_xml(fax, domain_name):
     #       T.38 with V.17+ECM). spandsp terminates it into the TIFF.
     # Both branches covered: G.711-only senders receive via pass-through; T.38
     # senders get their re-INVITE accepted.
-    etree.SubElement(cond, 'action', application='set', data='fax_enable_t38_request=false')
+    #
+    # EXCEPTION — T38_REQUEST_TEST_EXTENSIONS (below): inbound faxes that stay on
+    # G.711 pass-through fail at the T.30 handshake often enough to be the main
+    # inbound failure mode (result 35 "Unexpected DCN", result 49 "call dropped
+    # prematurely", result 13 "Unexpected message"). Outbound legs to the SAME
+    # carrier negotiate T.38 successfully with ECM on, so the carrier does support
+    # it — inbound simply never asks. For the extensions listed here we DO initiate
+    # the re-INVITE (and re-enable ECM, which is only fragile over pass-through).
+    # Scoped to a test allowlist because an initiated re-INVITE previously caused
+    # T38_NEG_ERROR on this carrier; every other fax box keeps the proven
+    # pass-through behaviour until this is validated in production.
+    request_t38 = fax.fax_extension in T38_REQUEST_TEST_EXTENSIONS
+
+    etree.SubElement(cond, 'action', application='set',
+                     data=f'fax_enable_t38_request={"true" if request_t38 else "false"}')
     etree.SubElement(cond, 'action', application='set', data='fax_enable_t38=true')
     # Disable ECM and cap speed. Over G.711 pass-through (this carrier delivers
     # inbound fax as PCMU, not T.38), ECM at V.17 14400 is fragile — the fax
@@ -778,8 +802,12 @@ def _fax_receive_extension_xml(fax, domain_name):
     # and the call drops mid-transfer ("result 49: call dropped prematurely",
     # observed after page 1 at 14400/V17/ECM). Turning ECM off and disabling V.17
     # forces a slower, more robust G.III transfer (≤9600) that survives pass-through.
-    etree.SubElement(cond, 'action', application='set', data='fax_use_ecm=false')
-    etree.SubElement(cond, 'action', application='set', data='fax_disable_v17=true')
+    # Over T.38 that fragility does not apply — the modem tones are demodulated by
+    # the gateway — so ECM/V.17 stay ON when we successfully request T.38.
+    etree.SubElement(cond, 'action', application='set',
+                     data=f'fax_use_ecm={"true" if request_t38 else "false"}')
+    if not request_t38:
+        etree.SubElement(cond, 'action', application='set', data='fax_disable_v17=true')
     etree.SubElement(cond, 'action', application='answer')
     # Let the read codec settle before spandsp starts (otherwise mod_spandsp can
     # fail with "Cannot Enable fax detection (null)"). 1000ms is proven working —
@@ -813,6 +841,12 @@ def _fax_receive_extension_xml(fax, domain_name):
         f' -F "fax_success=${{fax_success}}"'
         f' -F "fax_pages=${{fax_document_transferred_pages}}"'
         f' -F "fax_result_text=${{fax_result_text}}"'
+        # Numeric spandsp result code — more precise than the text for triage
+        # (e.g. 49 "call dropped prematurely" vs 35 "Unexpected DCN") and stable
+        # across spandsp wording changes.
+        f' -F "fax_result_code=${{fax_result_code}}"'
+        f' -F "fax_ecm_used=${{fax_ecm_used}}"'
+        f' -F "fax_transfer_rate=${{fax_transfer_rate}}"'
         f' -F "fax_remote_station_id=\'${{fax_remote_station_id}}\'"'
         f' -F "caller_id_number=\'${{caller_id_number}}\'"'
         f' -F "caller_id_name=\'${{caller_id_name}}\'"'
@@ -1095,10 +1129,10 @@ def _destination_to_extension_xml(dest, domain_name, caller_id_number='', preloa
         # Caveat: relies on the sender emitting CNG; a silent sender still won't
         # detect. Voice callers wait FAX_DETECT_WINDOW_MS before the phone rings.
         FAX_DETECT_WINDOW_MS = 7000
-        etree.SubElement(
-            cond, 'action', application='set',
-            data=f'fax_offline_fallback=rxfax_{fax_box.fax_extension} XML {fax_ctx}',
-        )
+        # NOTE: fax_offline_fallback used to be set here and consumed by an
+        # ext_<n>_offline_fax extension, which re-entered rxfax on an already-
+        # failed fax channel. That consumer was removed (see "Offline fax
+        # fallback — REMOVED" below), so the var is no longer set at all.
         etree.SubElement(cond, 'action', application='answer')
         # Let media settle so tone_detect has a live read codec to sample.
         etree.SubElement(cond, 'action', application='sleep', data='1000')
@@ -1611,28 +1645,16 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
         _apply_fwd_dest(eval_cond, ext.forward_on_condition_destination)
         elements.append(cond_el)
 
-    # ── 2a. Offline fax fallback ──────────────────────────────────────────
-    # If this extension is unregistered AND the DID that routed here is
-    # fax-enabled (it set fax_offline_fallback = "rxfax_<ext> XML <ctx>"),
-    # receive the fax instead of hanging up. A fax to a number whose office
-    # phone is merely offline must still be delivered. Appended BEFORE the
-    # offline-hangup extension so it wins the destination match; when the var is
-    # unset (non-fax DID) the fax_fb condition fails and control falls through to
-    # the normal offline-hangup extension below. No change to non-fax routing.
-    faxfb_el = etree.Element('extension', name=f'ext_{ext.extension}_offline_fax')
-    faxfb_dest_cond = etree.SubElement(faxfb_el, 'condition',
-                                       field='destination_number', expression=dest_expr)
-    faxfb_dest_cond.set('break', 'on-false')
-    faxfb_reg_cond = etree.SubElement(faxfb_el, 'condition',
-                                      field=f'${{sofia_contact(*/{sip_id}@{domain_name})}}',
-                                      expression=r'^(error|$)')
-    faxfb_reg_cond.set('break', 'on-false')
-    faxfb_var_cond = etree.SubElement(faxfb_el, 'condition',
-                                      field='${fax_offline_fallback}', expression=r'^.+$')
-    faxfb_var_cond.set('break', 'on-false')
-    etree.SubElement(faxfb_var_cond, 'action', application='transfer',
-                     data='${fax_offline_fallback}')
-    elements.append(faxfb_el)
+    # ── 2a. Offline fax fallback — REMOVED ────────────────────────────────
+    # This block used to transfer unregistered extensions back into
+    # rxfax_<ext> via ${fax_offline_fallback}. It re-entered rxfax on a
+    # channel where fax negotiation had ALREADY started and failed, so a
+    # single inbound fax ran rxfax twice and logged two spandsp results
+    # (e.g. result 49 "call dropped prematurely" then result 13 "unexpected
+    # message received"). The fax DID path already reaches rxfax directly via
+    # faxwrap_<did>, so this fallback added no delivery coverage — only the
+    # duplicate re-entry. Deliberately not replaced; do not reintroduce a
+    # transfer to ${fax_offline_fallback} here.
 
     # ── 2. Offline detection ──────────────────────────────────────────────
     # sofia_contact returns 'error/no-such-user' when extension is not registered.
