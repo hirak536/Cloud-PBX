@@ -747,9 +747,13 @@ def generate_directory_xml(domain_name, user=None, action=None):
 
 # Fax boxes that INITIATE a T.38 re-INVITE on inbound faxes (with ECM on),
 # instead of receiving over G.711 pass-through. See _fax_receive_extension_xml
-# for the full rationale. Start narrow: add an extension here, verify inbound
-# faxes report "T38 status negotiated" and pages > 0, then widen. Removing an
-# extension from this set restores the pass-through behaviour on next reloadxml.
+# for the full rationale.
+#
+# This began as a narrow allowlist (only the validation extension below) and is
+# now rolled out to every fax box via settings.FAX_INBOUND_T38_REQUEST. Set that
+# setting to False and regenerate the dialplan to put ALL boxes back on
+# pass-through; the extensions listed here still get T.38 requested either way,
+# so the original validation box keeps its behaviour during a rollback.
 T38_REQUEST_TEST_EXTENSIONS = {
     '+13468310766',   # Hirak, tenant IHS Dev Testing — validation box
 }
@@ -781,17 +785,22 @@ def _fax_receive_extension_xml(fax, domain_name):
     # Both branches covered: G.711-only senders receive via pass-through; T.38
     # senders get their re-INVITE accepted.
     #
-    # EXCEPTION — T38_REQUEST_TEST_EXTENSIONS (below): inbound faxes that stay on
-    # G.711 pass-through fail at the T.30 handshake often enough to be the main
-    # inbound failure mode (result 35 "Unexpected DCN", result 49 "call dropped
-    # prematurely", result 13 "Unexpected message"). Outbound legs to the SAME
-    # carrier negotiate T.38 successfully with ECM on, so the carrier does support
-    # it — inbound simply never asks. For the extensions listed here we DO initiate
-    # the re-INVITE (and re-enable ECM, which is only fragile over pass-through).
-    # Scoped to a test allowlist because an initiated re-INVITE previously caused
-    # T38_NEG_ERROR on this carrier; every other fax box keeps the proven
-    # pass-through behaviour until this is validated in production.
-    request_t38 = fax.fax_extension in T38_REQUEST_TEST_EXTENSIONS
+    # OVERRIDE — settings.FAX_INBOUND_T38_REQUEST (default True): inbound faxes
+    # that stay on G.711 pass-through fail at the T.30 handshake often enough to
+    # be the main inbound failure mode (result 35 "Unexpected DCN", result 49
+    # "call dropped prematurely", result 13 "Unexpected message"). Outbound legs
+    # to the SAME carrier negotiate T.38 successfully with ECM on, so the carrier
+    # does support it — inbound simply never asks. So we now DO initiate the
+    # re-INVITE on every box (and re-enable ECM/V.17, which are only fragile over
+    # pass-through).
+    #
+    # ROLLBACK: an initiated re-INVITE has previously caused T38_NEG_ERROR on this
+    # carrier. If inbound faxes start failing that way — or dropping mid-transfer,
+    # which would mean the re-INVITE is failing and leaving us on pass-through with
+    # ECM on — set FAX_INBOUND_T38_REQUEST=False and regenerate the dialplan to put
+    # every box back on the proven pass-through settings.
+    request_t38 = (getattr(settings, 'FAX_INBOUND_T38_REQUEST', True)
+                   or fax.fax_extension in T38_REQUEST_TEST_EXTENSIONS)
 
     etree.SubElement(cond, 'action', application='set',
                      data=f'fax_enable_t38_request={"true" if request_t38 else "false"}')

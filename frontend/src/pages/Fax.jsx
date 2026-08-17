@@ -609,9 +609,20 @@ function FaxHistory() {
                         <TableCell className="text-sm text-muted-foreground">{name}</TableCell>
                         <TableCell className="text-sm">{f.fax_file_pages || '—'}</TableCell>
                         <TableCell>
-                          <Badge variant={STATUS_VARIANT[f.fax_file_status] || 'secondary'}>
+                          <Badge
+                            variant={STATUS_VARIANT[f.fax_file_status] || 'secondary'}
+                            title={f.fax_file_status === 'failed' && f.fax_result_text
+                              ? `${f.fax_result_text}${f.fax_result_code ? ` (code ${f.fax_result_code})` : ''}`
+                              : undefined}
+                          >
                             {f.fax_file_status}
                           </Badge>
+                          {f.fax_file_status === 'failed' && f.fax_result_text && (
+                            <div className="mt-1 text-xs text-muted-foreground max-w-[220px] truncate"
+                                 title={f.fax_result_text}>
+                              {f.fax_result_text}
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell>
                           <div className="flex justify-end gap-1">

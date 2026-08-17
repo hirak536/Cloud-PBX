@@ -599,6 +599,9 @@ class FaxReceiveWebhookView(View):
         # Fall back to fax_total_pages for any old-style callbacks.
         fax_pages_raw        = request.POST.get('fax_pages') or request.POST.get('fax_total_pages', '0')
         fax_result_text      = request.POST.get('fax_result_text', '')
+        fax_result_code      = request.POST.get('fax_result_code', '')
+        fax_ecm_used         = request.POST.get('fax_ecm_used', '')
+        fax_transfer_rate    = request.POST.get('fax_transfer_rate', '')
         caller_id_number     = request.POST.get('caller_id_number', '')
         caller_id_name       = request.POST.get('caller_id_name', '')
         domain_name          = request.POST.get('domain_name', '')
@@ -621,16 +624,18 @@ class FaxReceiveWebhookView(View):
         # "Unexpected DCN"), and without this it was recoverable only by digging
         # the raw curl out of the CDR's last_arg — and only until the FreeSWITCH
         # log rotated. Logged at ERROR so failures surface without trawling.
+        # These are also persisted onto the FaxFile row below, so the reason
+        # survives log rotation and is filterable in the admin.
         if fax_success != '1':
             logger.error(
                 'Fax RECEIVE FAILED: reason=%r code=%s from=%s did=%s mailbox=%s '
                 'pages=%s ecm=%s rate=%s remote_station_id=%s file=%s',
                 fax_result_text or 'unknown (no fax_result_text reported)',
-                request.POST.get('fax_result_code', '') or '?',
+                fax_result_code or '?',
                 caller_id_number or '?', fax_did_number or '?', fax_mailbox or '?',
                 fax_pages_raw,
-                request.POST.get('fax_ecm_used', '') or '?',
-                request.POST.get('fax_transfer_rate', '') or '?',
+                fax_ecm_used or '?',
+                fax_transfer_rate or '?',
                 fax_remote_station_id or '?', fax_file or '?',
             )
 
@@ -668,6 +673,11 @@ class FaxReceiveWebhookView(View):
             fax_file_station_id=(caller_id_number or fax_remote_station_id
                                  or fax_did_number or fax_mailbox),
             fax_file_date=timezone.now(),
+            # spandsp result — why this transfer succeeded or failed.
+            fax_result_code=fax_result_code[:16],
+            fax_result_text=fax_result_text[:255],
+            fax_ecm_used=fax_ecm_used[:16],
+            fax_transfer_rate=fax_transfer_rate[:16],
         )
 
         if fax.tenant_id:

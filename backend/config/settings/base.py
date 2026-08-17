@@ -373,6 +373,16 @@ FREESWITCH_GATEWAY_DIR = config('FREESWITCH_GATEWAY_DIR')
 FREESWITCH_RECORDINGS_DIR = config('FREESWITCH_RECORDINGS_DIR')
 FREESWITCH_VOICEMAIL_DIR = config('FREESWITCH_VOICEMAIL_DIR')
 
+# Inbound fax T.38 policy.
+# True  — every fax box INITIATES a T.38 re-INVITE on inbound faxes, with ECM
+#         and V.17 enabled (the settings that are safe once T.38 is negotiated).
+# False — revert to G.711 pass-through: never initiate, ECM off, V.17 disabled.
+#         This was the behaviour for all boxes except the validation extension.
+# Flip this to False and regenerate the dialplan (+ reloadxml) to roll back if
+# inbound faxes start reporting T38_NEG_ERROR or dropping mid-transfer.
+# See _fax_receive_extension_xml in freeswitch_config/generators.py.
+FAX_INBOUND_T38_REQUEST = config('FAX_INBOUND_T38_REQUEST', default=True, cast=bool)
+
 # Logging
 LOGGING = {
     'version': 1,

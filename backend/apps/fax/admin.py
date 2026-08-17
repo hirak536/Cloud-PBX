@@ -58,11 +58,25 @@ class FaxFileAdmin(admin.ModelAdmin):
     list_display = [
         'fax', 'fax_file_status', 'fax_file_name', 'fax_file_pages',
         'fax_file_caller_id_number', 'fax_file_destination_number', 'fax_file_date',
+        'failure_reason', 'fax_ecm_used', 'fax_transfer_rate',
     ]
-    list_filter = ['fax_file_status', 'fax_file_type', 'domain']
-    search_fields = ['fax_file_name', 'fax_file_caller_id_number', 'fax_file_destination_number']
-    readonly_fields = ['fax_file_uuid', 'insert_date', 'fax_file_path']
+    list_filter = ['fax_file_status', 'fax_file_type', 'domain',
+                   'fax_result_code', 'fax_ecm_used']
+    search_fields = ['fax_file_name', 'fax_file_caller_id_number',
+                     'fax_file_destination_number', 'fax_result_text']
+    readonly_fields = ['fax_file_uuid', 'insert_date', 'fax_file_path',
+                       'fax_result_code', 'fax_result_text', 'fax_ecm_used',
+                       'fax_transfer_rate']
     ordering = ['-fax_file_date']
+
+    def failure_reason(self, obj):
+        """spandsp reason + numeric code, shown only for non-successful transfers."""
+        if obj.fax_file_status not in ('failed', 'pending'):
+            return ''
+        text = obj.fax_result_text or '(no reason reported)'
+        code = f' [{obj.fax_result_code}]' if obj.fax_result_code else ''
+        return format_html('<span style="color:red;">{}{}</span>', text, code)
+    failure_reason.short_description = 'Failure Reason'
 
 
 @admin.register(FaxFtpDelivery)

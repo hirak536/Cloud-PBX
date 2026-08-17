@@ -76,6 +76,16 @@ class FaxFile(models.Model):
     retry_count = models.IntegerField(default=0)
     insert_date = models.DateTimeField(auto_now_add=True)
 
+    # spandsp transfer result, captured from the FreeSWITCH webhook. Previously
+    # these were logged and discarded, so a 'failed' row recorded no reason and
+    # triage meant trawling journalctl before the logs rotated. Needed to tell
+    # apart the T.38 failure modes: T38_NEG_ERROR (re-INVITE rejected) vs a
+    # mid-transfer drop on G.711 pass-through (result 49/35/13 with ECM on).
+    fax_result_code = models.CharField(max_length=16, blank=True)
+    fax_result_text = models.CharField(max_length=255, blank=True)
+    fax_ecm_used = models.CharField(max_length=16, blank=True)
+    fax_transfer_rate = models.CharField(max_length=16, blank=True)
+
     @property
     def file_size_bytes(self):
         import os
