@@ -300,14 +300,32 @@ def send_fax_status_email(self, fax_file_uuid: str):
 
     Queued once the fax reaches a terminal status. Quick-send faxes carry no fax
     box, so the box is backtraced from the sending caller ID — see _resolve_fax_box.
+
+    Two independent paths reach a terminal status (poll_fax_result and the CDR
+    ingest in freeswitch_config.views) and either may queue this task, so it
+    guards against sending twice for the same FaxFile.
     """
     from django.core.mail import EmailMultiAlternatives  # noqa: PLC0415
+    from django.core.cache import cache  # noqa: PLC0415
     from .models import FaxFile  # noqa: PLC0415
 
     try:
         ff = FaxFile.objects.select_related('fax').get(fax_file_uuid=fax_file_uuid)
     except FaxFile.DoesNotExist:
         logger.warning('send_fax_status_email: FaxFile %s not found', fax_file_uuid)
+        return
+
+    # One notification per FaxFile. cache.add is atomic, so whichever caller gets
+    # here first wins and the other becomes a no-op. There is no email_sent column
+    # on FaxFile to key this on, and a 24h TTL far outstrips the seconds-wide race
+    # window. Claimed AFTER the existence check so a bad UUID cannot burn the key,
+    # and released on failure below so the retry can still send.
+    claim_key = f'fax:status_email:{fax_file_uuid}'
+    if not cache.add(claim_key, '1', 86400):
+        logger.info(
+            'send_fax_status_email: already notified for %s — skipping duplicate',
+            fax_file_uuid,
+        )
         return
 
     # Quick-send rows have no fax box; fall back to the sending number.
@@ -332,7 +350,13 @@ def send_fax_status_email(self, fax_file_uuid: str):
         + (f' — {pages} page(s)' if succeeded else '')
     )
 
+    # Which box this went out on. Useful when one address receives notifications
+    # for several boxes, and when a quick-send fax was backtraced by caller ID
+    # (_resolve_fax_box) — it shows which box the match landed on.
+    box_label = (getattr(fax, 'fax_name', '') or '').strip()
+
     rows = [
+        ('Fax box', box_label),
         ('To', destination),
         ('From', ff.fax_file_caller_id_number or ''),
         ('Document', doc_name),
@@ -347,8 +371,13 @@ def send_fax_status_email(self, fax_file_uuid: str):
     if not succeeded:
         text_body += '\nPlease verify the destination number and try again.\n'
 
+    # Escape values: fax box names and document filenames are user-supplied and
+    # can contain & or <, which would otherwise corrupt the table markup.
+    from html import escape as _esc  # noqa: PLC0415
+
     html_rows = ''.join(
-        f'<tr><td style="padding:2px 10px 2px 0"><b>{label}:</b></td><td>{value}</td></tr>'
+        f'<tr><td style="padding:2px 10px 2px 0"><b>{label}:</b></td>'
+        f'<td>{_esc(str(value))}</td></tr>'
         for label, value in rows if value
     )
     html_body = (
@@ -376,6 +405,9 @@ def send_fax_status_email(self, fax_file_uuid: str):
             ff.fax_file_status, ', '.join(recipients), fax_file_uuid,
         )
     except Exception as exc:
+        # Drop the claim so the retry (or the other path) can still deliver —
+        # otherwise a single SMTP blip would permanently suppress the notification.
+        cache.delete(claim_key)
         logger.error('send_fax_status_email: failed for %s: %s', fax_file_uuid, exc)
         raise self.retry(exc=exc, countdown=30)
 

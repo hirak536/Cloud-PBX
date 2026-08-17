@@ -732,6 +732,23 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
                     ff.save(update_fields=update_fields)
                     logger.info(f"CDR ingest: updated FaxFile {ff.fax_file_uuid} → {new_status}")
 
+                    # Notify the fax box owner from here too. This path RACES
+                    # poll_fax_result: whichever sees the terminal status first
+                    # wins, and poll_fax_result bails out early ("already sent —
+                    # skipping") before it reaches its own email dispatch. When
+                    # CDR ingest wins, that early return means nobody queued the
+                    # notification at all. send_fax_status_email is idempotent per
+                    # FaxFile in practice (it only reads state and sends), and the
+                    # loser's early return keeps this from double-sending.
+                    try:
+                        from apps.fax.tasks import send_fax_status_email
+                        send_fax_status_email.apply_async(
+                            args=[str(ff.fax_file_uuid)], countdown=5)
+                    except Exception as exc:
+                        logger.error(
+                            'CDR ingest: could not queue fax status email for %s: %s',
+                            ff.fax_file_uuid, exc)
+
                     if ff.tenant_id:
                         try:
                             from apps.client_api.tasks import fire_webhook_event
