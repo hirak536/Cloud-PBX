@@ -208,11 +208,11 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
     """Shared CDR processing logic used by both XML and Lua CDR ingest views."""
     from apps.xml_cdr.models import XmlCdr
 
-    # Toggle (BLF switch) flips are tagged ihs_toggle_flip=true in the dialplan.
+    # Toggle (BLF switch) flips are tagged pbx_toggle_flip=true in the dialplan.
     # They are NOT real calls, so they must never land in the CDR. Record them in
     # the separate ToggleEvent log instead (so phone-key flips show on the custom
     # destination page) and return early.
-    if (var('variable_ihs_toggle_flip') or var('ihs_toggle_flip')) == 'true':
+    if (var('variable_pbx_toggle_flip') or var('pbx_toggle_flip')) == 'true':
         try:
             _log_toggle_flip_from_cdr(var)
         except Exception as exc:  # never let logging break CDR ingest
@@ -397,12 +397,12 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         head = val.split('-', 1)[0]
         return head.isdigit() and 1 <= len(head) <= 6
 
-    # Authoritative signal: the dialplan exports ihs_dialed_ext (the suffixed
-    # sip_username, e.g. "901-IHDT") onto every leg of an inbound call to an
+    # Authoritative signal: the dialplan exports pbx_dialed_ext (the suffixed
+    # sip_username, e.g. "901-DEMO") onto every leg of an inbound call to an
     # extension — including bridge B-legs and immediate USER_BUSY/NO_ANSWER legs
     # whose destination_number is only a WebRTC session token. When present it
     # wins over every heuristic below. See generators.py ext_*_bridge/_offline.
-    ihs_dialed_ext = var('ihs_dialed_ext')
+    pbx_dialed_ext = var('pbx_dialed_ext')
 
     if direction == 'outbound':
         # Outbound A-leg: the dialing extension is sip_from_user. When the call
@@ -412,8 +412,8 @@ def _process_cdr(var, int_var, stamp, call_uuid_fallback=None):
         extension_number = sip_username_raw or sip_from_user
         if not _looks_like_internal_ext(extension_number) and caller_name_ext:
             extension_number = caller_name_ext
-    elif ihs_dialed_ext:
-        extension_number = ihs_dialed_ext
+    elif pbx_dialed_ext:
+        extension_number = pbx_dialed_ext
     else:
         # For B-legs of inbound calls (forked ring group dial), each B-leg's
         # `username` is the SIP username of the specific device that rang —

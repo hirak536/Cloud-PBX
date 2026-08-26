@@ -124,7 +124,7 @@ const KIND_REGISTRY = {
     renderBody: ({ form, setForm, destData, destLoading, destSearchLoading, searchDestData, editId, currentTenant }) => {
       const inUse = blfNumberConflict(form.toggle_extension, destData, editId)
       const tc = currentTenant?.tenant_code
-      // Dialable form FreeSWITCH matches inside the tenant context (e.g. 801-IHS),
+      // Dialable form FreeSWITCH matches inside the tenant context (e.g. 801-DEMO),
       // mirroring how extensions are dialed. Subscribe the phone's BLF key to the
       // bare number; the lamp follows presence at <number>@domain.
       const dialForm = (n) => (n && tc ? `${n}-${tc}` : n || '')

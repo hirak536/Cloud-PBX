@@ -181,28 +181,28 @@ def _add_on_demand_recording_binding(cond, tenant):
         return
     digit = m.group(1)
     # Stash the real dialed number NOW. Inside the toggle handler,
-    # ${destination_number} has been rewritten to 'ihs_record_toggle' by
+    # ${destination_number} has been rewritten to 'pbx_record_toggle' by
     # execute_extension, so using it there puts the literal handler name into the
     # recording filename and the ingested destination field.
     dest = etree.SubElement(cond, 'action', application='set',
-                            data='ihs_rec_dest=${destination_number}')
+                            data='pbx_rec_dest=${destination_number}')
     dest.set('inline', 'true')
     # 'a' = listen on the a-leg (the party who pressed it) only.
     # 's' = execute the app on the same leg; the app itself broadcasts to both.
     etree.SubElement(cond, 'action', application='bind_meta_app',
-                     data=f'{digit} a s execute_extension::ihs_record_toggle XML ${{context}}')
+                     data=f'{digit} a s execute_extension::pbx_record_toggle XML ${{context}}')
 
 
 def _add_on_demand_recording_extension(ctx, domain_name, tenant=None):
     """The extension bind_meta_app dispatches to when the code is pressed.
 
-    Toggles on ${ihs_rec_active}: starts uuid_record and announces to both
+    Toggles on ${pbx_rec_active}: starts uuid_record and announces to both
     parties, or stops it and announces the stop to both parties. record_file /
     api_hangup_hook are already set on the channel by _add_recording_actions,
     so the finished file is ingested by the existing hangup hook either way.
 
     NB: match BOTH the extension name and the raw code. execute_extension sets
-    destination_number to the target name ('ihs_record_toggle'), which is how the
+    destination_number to the target name ('pbx_record_toggle'), which is how the
     meta binding normally arrives here. But the same digits can also reach the
     dialplan as a literal destination ('*2') — e.g. dialed pre-bridge rather than
     pressed mid-call. Matching only one of the two silently never fires for the
@@ -211,23 +211,23 @@ def _add_on_demand_recording_extension(ctx, domain_name, tenant=None):
     code = _on_demand_recording_code(tenant)
     if not code:
         return
-    ext = etree.SubElement(ctx, 'extension', name='ihs_record_toggle')
+    ext = etree.SubElement(ctx, 'extension', name='pbx_record_toggle')
     cond = etree.SubElement(ext, 'condition',
                             field='destination_number',
-                            expression=f'^(ihs_record_toggle|{re.escape(code)})$')
+                            expression=f'^(pbx_record_toggle|{re.escape(code)})$')
 
     # Each start/stop cycle gets its OWN file. ${record_file} is computed once
     # per call (before the bridge), so reusing it made every cycle overwrite the
     # previous one — only the last segment survived, and ingest's filename dedup
-    # meant later segments never got a row. ihs_rec_seg counts cycles and is
+    # meant later segments never got a row. pbx_rec_seg counts cycles and is
     # appended to the path, so N cycles produce N distinct recordings.
-    stop = etree.SubElement(cond, 'condition', field='${ihs_rec_active}',
+    stop = etree.SubElement(cond, 'condition', field='${pbx_rec_active}',
                             expression='^true$')
 
     # ── Already recording -> stop this segment, ingest it, announce the stop ──
     etree.SubElement(stop, 'action', application='set',
-                     data='api_result=${uuid_record(${uuid} stop ${ihs_rec_seg_file})}')
-    etree.SubElement(stop, 'action', application='set', data='ihs_rec_active=false')
+                     data='api_result=${uuid_record(${uuid} stop ${pbx_rec_seg_file})}')
+    etree.SubElement(stop, 'action', application='set', data='pbx_rec_active=false')
     # Ingest THIS segment now rather than at hangup: api_hangup_hook fires once,
     # so it can only ever register a single file per call.
     # Segment length = now - the epoch stamped when this segment started.
@@ -235,46 +235,46 @@ def _add_on_demand_recording_extension(ctx, domain_name, tenant=None):
     # they are empty and would ingest as 0.
     seg_dur = etree.SubElement(
         stop, 'action', application='set',
-        data='ihs_rec_seg_dur=${expr(${strepoch()} - 0${ihs_rec_seg_start})}')
+        data='pbx_rec_seg_dur=${expr(${strepoch()} - 0${pbx_rec_seg_start})}')
     seg_dur.set('inline', 'true')
     etree.SubElement(
         stop, 'action', application='system',
         data='curl -k -s -o /dev/null "%s" &' % _ingest_url(
-            '${ihs_rec_seg_file}',
-            dest_var='${ihs_rec_dest}',
-            duration_var='${ihs_rec_seg_dur}',
-            billsec_var='${ihs_rec_seg_dur}',
+            '${pbx_rec_seg_file}',
+            dest_var='${pbx_rec_dest}',
+            duration_var='${pbx_rec_seg_dur}',
+            billsec_var='${pbx_rec_seg_dur}',
         ))
     etree.SubElement(stop, 'action', application='set',
                      data=f'api_result=${{uuid_broadcast(${{uuid}} {_REC_STOP_PROMPT} both)}}')
 
     # ── Not recording -> next segment number, announce, then start ────────────
     etree.SubElement(stop, 'anti-action', application='set',
-                     data='ihs_rec_active=true')
-    # ${ihs_rec_seg} starts empty -> 0 + 1 = 1 for the first segment.
+                     data='pbx_rec_active=true')
+    # ${pbx_rec_seg} starts empty -> 0 + 1 = 1 for the first segment.
     seg = etree.SubElement(stop, 'anti-action', application='set',
-                           data='ihs_rec_seg=${expr(0${ihs_rec_seg} + 1)}')
+                           data='pbx_rec_seg=${expr(0${pbx_rec_seg} + 1)}')
     seg.set('inline', 'true')
     # Derive this segment's path from record_file by inserting the segment
     # number before the .wav suffix. inline so it is expanded before use.
-    # ${ihs_rec_dest} is the real dialed number, captured before the binding —
-    # ${destination_number} here would be the literal 'ihs_record_toggle'.
+    # ${pbx_rec_dest} is the real dialed number, captured before the binding —
+    # ${destination_number} here would be the literal 'pbx_record_toggle'.
     segf = etree.SubElement(
         stop, 'anti-action', application='set',
-        data='ihs_rec_seg_file=${recordings_dir}/${domain_name}/'
+        data='pbx_rec_seg_file=${recordings_dir}/${domain_name}/'
              '${strftime(%Y-%m-%d-%H-%M-%S)}_${caller_id_number}_'
-             '${ihs_rec_dest}_${uuid}_seg${ihs_rec_seg}.wav')
+             '${pbx_rec_dest}_${uuid}_seg${pbx_rec_seg}.wav')
     segf.set('inline', 'true')
     # Epoch stamp so the stop branch can compute this segment's true length.
     segst = etree.SubElement(stop, 'anti-action', application='set',
-                             data='ihs_rec_seg_start=${strepoch()}')
+                             data='pbx_rec_seg_start=${strepoch()}')
     segst.set('inline', 'true')
     etree.SubElement(stop, 'anti-action', application='system',
                      data='mkdir -p ${recordings_dir}/${domain_name}')
     etree.SubElement(stop, 'anti-action', application='set',
                      data=f'api_result=${{uuid_broadcast(${{uuid}} {_REC_START_PROMPT} both)}}')
     etree.SubElement(stop, 'anti-action', application='set',
-                     data='api_result=${uuid_record(${uuid} start ${ihs_rec_seg_file})}')
+                     data='api_result=${uuid_record(${uuid} start ${pbx_rec_seg_file})}')
 
 
 def _add_recording_actions(cond, domain_name, start_on_answer=True, tag='action'):
@@ -290,7 +290,7 @@ def _add_recording_actions(cond, domain_name, start_on_answer=True, tag='action'
 
     tag='anti-action' emits the same steps as anti-actions, so a caller can
     attach them to the FALSE branch of a condition it already has (used by the
-    outbound route, which stages on-demand plumbing when ${ihs_record} != 1).
+    outbound route, which stages on-demand plumbing when ${pbx_record} != 1).
     """
 
     record_path = (
@@ -318,15 +318,15 @@ def _add_recording_actions(cond, domain_name, start_on_answer=True, tag='action'
     # code knows which way to toggle. Set even on the always-on path: pressing
     # the code on an already-recording call must stop it, not start a second one.
     etree.SubElement(cond, tag, application='set',
-                     data=f'ihs_rec_active={"true" if start_on_answer else "false"}')
+                     data=f'pbx_rec_active={"true" if start_on_answer else "false"}')
 
     if start_on_answer:
-        # The toggle stops ${ihs_rec_seg_file}. On the always-on path the running
+        # The toggle stops ${pbx_rec_seg_file}. On the always-on path the running
         # recording IS ${record_file}, so point the segment var at it — otherwise
         # the first *2 press would try to stop a file that was never started and
         # the always-on recording would keep running.
         etree.SubElement(cond, tag, application='set',
-                         data='ihs_rec_seg_file=${record_file}')
+                         data='pbx_rec_seg_file=${record_file}')
 
     if not start_on_answer:
         # On-demand: record_file and the ingest hook are staged, but nothing
@@ -551,7 +551,7 @@ def generate_directory_xml(domain_name, user=None, action=None):
         # are shared per-tenant and don't know the dialing extension at gen time).
         # Same logic as the inbound bridge path: explicit user_record wins, else
         # fall back to the tenant's recording_enabled. The outbound dialplan gates
-        # _add_recording_actions on ${ihs_record}.
+        # _add_recording_actions on ${pbx_record}.
         # Tenant disable is authoritative — see the inbound bridge path. A stale
         # per-extension user_record='all' must not override recording_enabled=False.
         if ext.tenant and not getattr(ext.tenant, 'recording_enabled', True):
@@ -560,7 +560,7 @@ def generate_directory_xml(domain_name, user=None, action=None):
             _ext_record = '1'
         else:
             _ext_record = '1' if (ext.tenant and getattr(ext.tenant, 'recording_enabled', True)) else '0'
-        etree.SubElement(variables_u, 'variable', name='ihs_record', value=_ext_record)
+        etree.SubElement(variables_u, 'variable', name='pbx_record', value=_ext_record)
         # Use a per-tenant context so extensions from different tenants
         # cannot call each other (tenant isolation).
         tenant_code = ext.tenant.tenant_code if ext.tenant else None
@@ -823,7 +823,7 @@ def _fax_receive_extension_xml(fax, domain_name):
     # multiple faxes received OK on this leg.
     etree.SubElement(cond, 'action', application='sleep', data='1000')
     
-    fax_ident_val = fax.fax_caller_id_name or fax.fax_name or 'IHS PBX'
+    fax_ident_val = fax.fax_caller_id_name or fax.fax_name or 'Cloud PBX'
     etree.SubElement(cond, 'action', application='set', data=f'fax_ident={fax_ident_val}')
     etree.SubElement(cond, 'action', application='set', data=f'fax_header={fax_ident_val}')
 
@@ -1309,17 +1309,17 @@ def _outbound_route_to_xml(route):
     etree.SubElement(cond, 'action', application='set', data='outbound_digits=$1')
     etree.SubElement(cond, 'action', application='set', data='hangup_after_bridge=true')
     # Stamp the call direction durably onto the channel BEFORE the recording
-    # announcement / bridge runs. The CDR ingest trusts ${ihs_direction} over
+    # announcement / bridge runs. The CDR ingest trusts ${pbx_direction} over
     # FreeSWITCH's intrinsic `direction` (which labels these PSTN-bound A-legs
     # 'inbound'). This way a call that hangs up during the "may be recorded"
     # playback — before reaching the gateway bridge — is still recorded as
     # outbound. We `set` it locally on the A-leg FIRST so the A-leg's own CDR
-    # carries it (export alone was leaving the A-leg as 'inbound' — var('ihs_direction')
+    # carries it (export alone was leaving the A-leg as 'inbound' — var('pbx_direction')
     # read empty on the originating leg), THEN export so the bridged B-leg
     # (gateway leg) inherits it too. Both CDR legs then classify as outbound
     # even if the B-leg CDR arrives before the A-leg is committed.
-    etree.SubElement(cond, 'action', application='set', data='ihs_direction=outbound')
-    etree.SubElement(cond, 'action', application='export', data='ihs_direction=outbound')
+    etree.SubElement(cond, 'action', application='set', data='pbx_direction=outbound')
+    etree.SubElement(cond, 'action', application='export', data='pbx_direction=outbound')
 
     # ── Outbound caller ID — privacy-safe resolution ──────────────────────────
     # Precedence (number): route.caller_id_number → per-extension
@@ -1360,7 +1360,7 @@ def _outbound_route_to_xml(route):
 
         # 2. Blind/attended transfer: the REFER-created channel carries no
         #    directory vars, but the referring party is named in Referred-By
-        #    (e.g. <sip:1000-IHDT@fs1.ihs.host>). Pull that user's own outbound
+        #    (e.g. <sip:1000-DEMO@fs.pbxservice.com>). Pull that user's own outbound
         #    DID out of the directory so the transferred call presents the
         #    transferring extension's number rather than the tenant default.
         #    user_data returns '-ERR ...' when the user or var is missing, so the
@@ -1375,15 +1375,15 @@ def _outbound_route_to_xml(route):
                                       field='${sip_h_Referred-By}',
                                       expression=r'sip:([^@;>]+)@')
         etree.SubElement(refer_user, 'action', application='set',
-                         data='ihs_referrer_user=$1')
+                         data='pbx_referrer_user=$1')
         etree.SubElement(refer_user, 'action', application='set',
-                         data='ihs_referrer_cid='
-                              '${user_data ${ihs_referrer_user}@${domain_name} '
+                         data='pbx_referrer_cid='
+                              '${user_data ${pbx_referrer_user}@${domain_name} '
                               'var outbound_caller_id_number}')
         cid_conds.append(refer_user)
 
         refer_cid = etree.SubElement(ext_el, 'condition',
-                                     field='${ihs_referrer_cid}',
+                                     field='${pbx_referrer_cid}',
                                      expression=r'^(\+?\d{7,15})$')
         etree.SubElement(refer_cid, 'action', application='set',
                          data='effective_caller_id_number=$1')
@@ -1431,24 +1431,24 @@ def _outbound_route_to_xml(route):
                      data='effective_caller_id_name=${sip_h_X-OverrideCID}')
 
     # Recording — only when the dialing extension's effective record flag is on.
-    # ${ihs_record} is set per-extension in the directory (1=record, 0=don't),
+    # ${pbx_record} is set per-extension in the directory (1=record, 0=don't),
     # so this respects the per-extension toggle and the per-tenant fallback.
     # Previously recording ran unconditionally here, so outbound calls played the
     # "may be recorded" tone and recorded even when the extension/tenant had
     # recording turned off. break="never" so we always fall through to the bridge.
     rec_cond = etree.SubElement(ext_el, 'condition',
-                                field='${ihs_record}', expression='^1$')
+                                field='${pbx_record}', expression='^1$')
     rec_cond.set('break', 'never')
     _add_recording_actions(rec_cond, '${domain_name}')
 
     # On-demand recording (feature code pressed mid-call) for outbound calls.
-    # When ${ihs_record} is 0 the block above never ran, so record_file and the
+    # When ${pbx_record} is 0 the block above never ran, so record_file and the
     # ingest hangup hook are unset and there would be nothing for the feature
     # code to start. Stage them here (without auto-starting) so the toggle works
     # on outbound calls that are not already being recorded. break="never" so
     # this never short-circuits the bridge below.
     ondemand_cond = etree.SubElement(ext_el, 'condition',
-                                     field='${ihs_record}', expression='^1$')
+                                     field='${pbx_record}', expression='^1$')
     ondemand_cond.set('break', 'never')
     _add_recording_actions(ondemand_cond, '${domain_name}',
                            start_on_answer=False, tag='anti-action')
@@ -1678,7 +1678,7 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
     etree.SubElement(offline_reg_cond, 'action', application='set',
                      data=f'dialed_extension={ext.extension}')
     etree.SubElement(offline_reg_cond, 'action', application='export',
-                     data=f'ihs_dialed_ext={ext.sip_username or ext.extension}')
+                     data=f'pbx_dialed_ext={ext.sip_username or ext.extension}')
     # If tenant has push notifications enabled or extension has mobile push enabled,
     # park the call so the ESL listener can send a push webhook and poll for the extension to register.
     # The ESL listener will handle forwarding/hangup after the poll timeout.
@@ -1719,10 +1719,10 @@ def _extension_to_dialplan_xml(ext, domain_name, vm=None):
     # destination_number is just a WebRTC session token (e.g. "pn1tnrgv") and
     # dialed_extension/transfer_source aren't present in the posted CDR variables.
     # `export` (no nolocal:) sets it on the current channel AND all originated
-    # legs, so CDR ingest can always read var('ihs_dialed_ext'). See _process_cdr.
-    ihs_dialed_ext = ext.sip_username or ext.extension
+    # legs, so CDR ingest can always read var('pbx_dialed_ext'). See _process_cdr.
+    pbx_dialed_ext = ext.sip_username or ext.extension
     etree.SubElement(bridge_cond, 'action', application='export',
-                     data=f'ihs_dialed_ext={ihs_dialed_ext}')
+                     data=f'pbx_dialed_ext={pbx_dialed_ext}')
     if ext.call_timeout:
         etree.SubElement(bridge_cond, 'action', application='set',
                          data=f'call_timeout={ext.call_timeout}')
@@ -2072,7 +2072,7 @@ def _toggle_custom_dest_to_dialplan_xml(cd, domain_name, ctx_name, preload=None)
     # ── 2. BLF extension (the dialable number + lamp) ────────────────────────
     # hint=presence_id drives the lamp; dialing the number flips the toggle.
     # Inside a tenant context the dialled number is suffixed with the tenant
-    # code (e.g. 801-IHS), exactly like extensions and parking slots — see
+    # code (e.g. 801-DEMO), exactly like extensions and parking slots — see
     # member_dialed_ext / slot_ext. Without this the toggle never matches in a
     # multi-tenant setup. We accept both forms so a phone configured with the
     # bare number still works.
@@ -2098,7 +2098,7 @@ def _toggle_custom_dest_to_dialplan_xml(cd, domain_name, ctx_name, preload=None)
                                 expression=f'^({"|".join(blf_dial_exprs)})$')
     # Mark this leg so CDR ingest skips it — a toggle flip is not a real call.
     etree.SubElement(blf_cond, 'action', application='set',
-                     data='ihs_toggle_flip=true')
+                     data='pbx_toggle_flip=true')
     etree.SubElement(blf_cond, 'action', application='answer')
     etree.SubElement(blf_cond, 'action', application='sleep', data='200')
     etree.SubElement(blf_cond, 'action', application='execute_extension',
@@ -2225,12 +2225,12 @@ def _ring_group_to_dialplan_xml(rg, domain_name, ctx, preload=None):
 
             # Per-leg dialed-extension stamp. Unlike `export` (one value across all
             # legs), the [...] block scopes this to THIS fork only, so each member's
-            # B-leg CDR carries its own extension. CDR ingest prefers ihs_dialed_ext
+            # B-leg CDR carries its own extension. CDR ingest prefers pbx_dialed_ext
             # (see _process_cdr), so this is what makes the per-member log show
             # "» 101 / » 115" instead of "?". Only for internal numeric members.
             if re.match(r'^\d{2,10}$', number):
                 member_dialed_ext = f'{number}-{tenant_code}' if tenant_code else number
-                leg_vars.append(f'ihs_dialed_ext={member_dialed_ext}')
+                leg_vars.append(f'pbx_dialed_ext={member_dialed_ext}')
 
             leg_prefix = f"[{','.join(leg_vars)}]" if leg_vars else ""
 
@@ -2269,7 +2269,7 @@ def _ring_group_to_dialplan_xml(rg, domain_name, ctx, preload=None):
                 sip_user = f'{number}-{tenant_code}' if tenant_code else number
                 # Per-leg dialed-ext stamp (see simultaneous path) so each
                 # sequentially-dialed member's CDR carries its own extension.
-                member_prefix = f'[ihs_dialed_ext={sip_user}]'
+                member_prefix = f'[pbx_dialed_ext={sip_user}]'
                 if rg.ring_group_allow_fmfm:
                     ctx_name = f'default-{tenant_code}' if tenant_code else 'default'
                     leg = f'{member_prefix}loopback/{number}/{ctx_name}'

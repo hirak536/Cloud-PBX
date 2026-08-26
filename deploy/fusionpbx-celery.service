@@ -1,31 +1,31 @@
 [Unit]
-Description=IHS PBX Celery Worker
+Description=Cloud PBX Celery Worker
 After=network.target redis.service postgresql.service
 Requires=redis.service
 
 [Service]
 Type=forking
-User=ihspbx
-Group=ihspbx
-WorkingDirectory=/opt/ihspbx-django/backend
-EnvironmentFile=/opt/ihspbx-django/.env
+User=cloudpbx
+Group=cloudpbx
+WorkingDirectory=/opt/cloudpbx/backend
+EnvironmentFile=/opt/cloudpbx/.env
 Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
-PIDFile=/var/run/ihspbx/celery.pid
-ExecStart=/opt/ihspbx-django/venv/bin/celery \
+PIDFile=/var/run/cloudpbx/celery.pid
+ExecStart=/opt/cloudpbx/venv/bin/celery \
     -A config \
     multi start worker \
-    --pidfile=/var/run/ihspbx/celery.pid \
-    --logfile=/var/log/ihspbx/celery.log \
+    --pidfile=/var/run/cloudpbx/celery.pid \
+    --logfile=/var/log/cloudpbx/celery.log \
     --loglevel=INFO \
     --concurrency=4 \
     --queues=default,esl,email
-ExecStop=/opt/ihspbx-django/venv/bin/celery \
+ExecStop=/opt/cloudpbx/venv/bin/celery \
     -A config multi stopwait worker \
-    --pidfile=/var/run/ihspbx/celery.pid
-ExecReload=/opt/ihspbx-django/venv/bin/celery \
+    --pidfile=/var/run/cloudpbx/celery.pid
+ExecReload=/opt/cloudpbx/venv/bin/celery \
     -A config multi restart worker \
-    --pidfile=/var/run/ihspbx/celery.pid \
-    --logfile=/var/log/ihspbx/celery.log \
+    --pidfile=/var/run/cloudpbx/celery.pid \
+    --logfile=/var/log/cloudpbx/celery.log \
     --loglevel=INFO
 Restart=on-failure
 RestartSec=10

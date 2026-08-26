@@ -269,7 +269,7 @@ def _reg_belongs_to_tenant(row: dict, tenant_code: str) -> bool:
 
 
 # Matches the user part of a FreeSWITCH channel name, e.g.
-# "sofia/internal/101-DUA@23.189.208.80" or "sofia/webrtc/1000-IHDT@fs1.ihs.host".
+# "sofia/internal/101-DUA@23.189.208.80" or "sofia/webrtc/1000-IHDT@sip.pbxservice.com".
 _CHAN_USER_RE = re.compile(r'^[^/]+/[^/]+/([^@/]+)')
 
 # WebRTC (SIP.js/JsSIP) clients register from a random per-session instance
@@ -689,7 +689,7 @@ class FSExtensionStatusView(APIView):
     """
     GET /api/v1/freeswitch/extension-status/
     Returns the current extension status map keyed by sip_username
-    ("1001-IHS" → "online" | "ringing" | "in_use"). Extensions absent from the
+    ("1001-DEMO" → "online" | "ringing" | "in_use"). Extensions absent from the
     map are idle/offline. Fetched on demand by the Extensions page on load —
     there is no live push for this list.
     Superusers/staff are scoped via the ?tenant=<uuid> query param.

@@ -88,7 +88,7 @@ def _deliver_webhook(self, delivery_id):
 
     headers = {
         'Content-Type': 'application/json',
-        'User-Agent': 'IHSPBX-Webhook/1.0',
+        'User-Agent': 'CloudPBX-Webhook/1.0',
     }
     if api_key.webhook_secret:
         sig = hmac.new(

@@ -1,16 +1,16 @@
 [Unit]
-Description=IHS PBX (Gunicorn/Uvicorn ASGI)
+Description=Cloud PBX (Gunicorn/Uvicorn ASGI)
 After=network.target postgresql.service redis.service
 Requires=postgresql.service redis.service
 
 [Service]
 Type=simple
-User=ihspbx
-Group=ihspbx
-WorkingDirectory=/opt/IHS-PBX/backend
-EnvironmentFile=/opt/IHS-PBX/.env
+User=cloudpbx
+Group=cloudpbx
+WorkingDirectory=/opt/Cloud-PBX/backend
+EnvironmentFile=/opt/Cloud-PBX/.env
 Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
-ExecStart=/opt/IHS-PBX/backend/venv/bin/gunicorn config.asgi:application \
+ExecStart=/opt/Cloud-PBX/backend/venv/bin/gunicorn config.asgi:application \
     --bind 0.0.0.0:8000 \
     --workers 4 \
     --worker-class uvicorn.workers.UvicornWorker \
@@ -19,8 +19,8 @@ ExecStart=/opt/IHS-PBX/backend/venv/bin/gunicorn config.asgi:application \
     --max-requests 1000 \
     --max-requests-jitter 100 \
     --log-level info \
-    --access-logfile /var/log/ihspbx/access.log \
-    --error-logfile /var/log/ihspbx/error.log
+    --access-logfile /var/log/cloudpbx/access.log \
+    --error-logfile /var/log/cloudpbx/error.log
 ExecReload=/bin/kill -s HUP $MAINPID
 KillMode=mixed
 TimeoutStopSec=5
@@ -30,3 +30,4 @@ RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
+

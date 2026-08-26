@@ -106,7 +106,7 @@ function isVoicemailCall(last_app, last_arg) {
 }
 
 // ─── Call flow timeline ───────────────────────────────────────────────────────
-// Strip the tenant suffix ("115-IHS" -> "115") for display.
+// Strip the tenant suffix ("115-DEMO" -> "115") for display.
 function memberLabel(b) {
   const raw = b.extension_number || b.destination_number || ''
   return raw.replace(/-[^-]+$/, '') || '?'

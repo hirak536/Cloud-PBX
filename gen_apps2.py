@@ -1,7 +1,7 @@
 """Generate SIP profiles, call centers, conferences, CDR, devices, ring groups, and more apps."""
 import os
 
-BASE = "D:/ihspbx-django/backend"
+BASE = "D:/cloudpbx-django/backend"
 
 
 def write(path, content):

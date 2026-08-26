@@ -1658,7 +1658,7 @@ export default function Extensions() {
   const [ringGroupList, setRingGroupList] = useState([])
   const [rgLoading, setRgLoading] = useState(false)
   // Extension live status is fetched once on load (no live WS push). Keyed by
-  // sip_username ("1001-IHS"). `extStatusLoaded` distinguishes "not fetched yet"
+  // sip_username ("1001-DEMO"). `extStatusLoaded` distinguishes "not fetched yet"
   // (show Connecting…) from "fetched, this ext idle" (show Offline).
   const [extStatuses, setExtStatuses] = useState({})
   const [extStatusLoaded, setExtStatusLoaded] = useState(false)

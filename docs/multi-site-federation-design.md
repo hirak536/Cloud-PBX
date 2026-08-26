@@ -55,7 +55,7 @@ Confirmed schema facts (from current models):
 
 | Data | Model / table | PK | Notes |
 |---|---|---|---|
-| CDR | `xml_cdr` (in `cdr` DB) | uuid | already a separate DB (`ihspbx_cdr`) |
+| CDR | `xml_cdr` (in `cdr` DB) | uuid | already a separate DB (`cloudpbx_cdr`) |
 | Call recording | `recordings.CallRecording` | `call_recording_uuid` (UUID) | metadata only; file on disk |
 | Media/greeting recording | `recordings.Recording` | `recording_uuid` (UUID) | " |
 | Fax | `fax.Fax` / `fax.FaxFile` | UUID | `fax_file_path` → disk |

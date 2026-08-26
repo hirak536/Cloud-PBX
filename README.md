@@ -1,6 +1,6 @@
-# IHS PBX
+# Cloud PBX
 
-A modern, multi-tenant PBX management system built on FreeSWITCH — developed by **Infotech Houston Solutions**.
+A modern, multi-tenant PBX management system built on FreeSWITCH — developed by **Cloud Communications Solutions**.
 
 ---
 
@@ -48,7 +48,7 @@ A modern, multi-tenant PBX management system built on FreeSWITCH — developed b
 ```bash
 # 1. Clone
 git clone <repo-url>
-cd ihspbx-django
+cd cloudpbx
 
 # 2. Backend setup
 cd backend
@@ -95,20 +95,20 @@ bash deploy/install.sh
 ### Update Existing Server
 
 ```bash
-cd /opt/ihspbx-django && git pull
+cd /opt/cloudpbx && git pull
 source venv/bin/activate
 pip install -r backend/requirements.txt
 python backend/manage.py migrate
-systemctl restart ihspbx ihspbx-celery ihspbx-celerybeat
+systemctl restart cloudpbx cloudpbx-celery cloudpbx-celerybeat
 ```
 
 ### Required Directory Permissions
 
-These directories must exist and be owned by the service user (`ihspbx` or `ihspbx`):
+These directories must exist and be owned by the service user (`cloudpbx`):
 
 ```bash
-mkdir -p /var/log/ihspbx /var/run/ihspbx /var/run/ihspbx
-chown -R ihspbx:ihspbx /var/log/ihspbx /var/run/ihspbx /var/run/ihspbx
+mkdir -p /var/log/cloudpbx /var/run/cloudpbx
+chown -R cloudpbx:cloudpbx /var/log/cloudpbx /var/run/cloudpbx
 ```
 
 > **Note:** `ALLOWED_HOSTS` must contain plain hostnames/IPs only — no `http://` prefix or port numbers.
@@ -117,9 +117,9 @@ chown -R ihspbx:ihspbx /var/log/ihspbx /var/run/ihspbx /var/run/ihspbx
 ### Services
 
 ```bash
-systemctl status ihspbx ihspbx-celery ihspbx-celerybeat
-journalctl -u ihspbx -f
-tail -f /var/log/ihspbx/error.log
+systemctl status cloudpbx cloudpbx-celery cloudpbx-celerybeat
+journalctl -u cloudpbx -f
+tail -f /var/log/cloudpbx/error.log
 ```
 
 ---
@@ -127,7 +127,7 @@ tail -f /var/log/ihspbx/error.log
 ## Project Structure
 
 ```
-ihspbx-django/
+cloudpbx/
 ├── backend/
 │   ├── config/               # Django settings, URLs, Celery, ASGI
 │   ├── core/                 # Auth, Users, Tenants, Domains, Groups
@@ -157,9 +157,9 @@ ihspbx-django/
 │       └── lib/              # Utilities (formatDate, formatDuration, cn)
 └── deploy/
     ├── install.sh
-    ├── ihspbx-django.service   # ihspbx systemd service
-    ├── ihspbx-celery.service   # ihspbx-celery systemd service
-    ├── ihspbx-celerybeat.service
+    ├── cloudpbx-django.service   # cloudpbx systemd service
+    ├── cloudpbx-celery.service   # cloudpbx-celery systemd service
+    ├── cloudpbx-celerybeat.service
     ├── nginx.conf                 # HTTPS (with domain)
     ├── nginx-ip.conf              # HTTP (IP only, no domain)
     └── freeswitch/                # xml_curl.conf.xml, event_socket.conf.xml
@@ -256,4 +256,5 @@ All variables are required — no defaults. Copy `.env.example` to `.env` and fi
 
 ---
 
-© 2026 Infotech Houston Solutions. All rights reserved.
+© 2026 Cloud Communications Solutions. All rights reserved.
+

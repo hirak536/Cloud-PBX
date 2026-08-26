@@ -1,10 +1,10 @@
 {
-  "id": "ihspbx-client-api",
-  "name": "IHSPBX Client API",
+  "id": "cloudpbx-client-api",
+  "name": "CloudPBX Client API",
   "values": [
     {
       "key": "base_url",
-      "value": "https://fs.ihsclients.com/api/v1/client",
+      "value": "https://api.pbxservice.com/api/v1/client",
       "type": "default",
       "enabled": true
     },

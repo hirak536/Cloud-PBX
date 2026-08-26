@@ -262,7 +262,7 @@ function VoipBackground({ light = false }) {
         {/* Scanner line overlay */}
         <rect x="530" y="240" width="120" height="10" fill={c.scan} opacity="0.2" className="bscan" clipPath="url(#srv-clip)" filter="url(#glowPkt)" />
       </g>
-      <text x="590" y="405" textAnchor="middle" fontSize="13" fill={c.text} fontWeight="900" letterSpacing="2">IHS ENGINE</text>
+      <text x="590" y="405" textAnchor="middle" fontSize="13" fill={c.text} fontWeight="900" letterSpacing="2">PBX ENGINE</text>
 
       {/* ── NODE 3: HEADSET ── */}
       <g className="bfloat1" filter="url(#nodeShadow)">
@@ -451,7 +451,7 @@ export default function Login() {
             <div className="flex flex-col items-center gap-2">
               <img 
                 src={logoLight} 
-                alt="IHS PBX" 
+                alt="Cloud PBX" 
                 className="h-16 w-auto object-contain animate-logo-bounce" 
               />
               <div className="text-center">
@@ -572,7 +572,7 @@ export default function Login() {
 
       {/* Footer */}
       <p className="mt-6 text-center text-xs font-medium text-muted-foreground/80 dark:text-muted-foreground/50">
-        © {new Date().getFullYear()} IHS PBX. All rights reserved.
+        © {new Date().getFullYear()} Cloud PBX. All rights reserved.
       </p>
 
     </div>{/* end right panel */}

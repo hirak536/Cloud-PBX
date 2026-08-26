@@ -7,10 +7,10 @@ Requires=postgresql.service redis.service
 Type=simple
 User=cloudpbx
 Group=cloudpbx
-WorkingDirectory=/opt/cloudpbx/backend
-EnvironmentFile=/opt/cloudpbx/.env
+WorkingDirectory=/opt/Cloud-PBX/backend
+EnvironmentFile=/opt/Cloud-PBX/.env
 Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
-ExecStart=/opt/cloudpbx/venv/bin/gunicorn config.asgi:application \
+ExecStart=/opt/Cloud-PBX/backend/venv/bin/gunicorn config.asgi:application \
     --bind 0.0.0.0:8000 \
     --workers 4 \
     --worker-class uvicorn.workers.UvicornWorker \

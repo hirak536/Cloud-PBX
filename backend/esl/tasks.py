@@ -222,7 +222,7 @@ def _normalize_sip_username(value: str):
     Normalize a FreeSWITCH reg_user / channel identity to the ``extension-tenantcode``
     sip_username form, so statuses never collapse across tenants.
 
-    Handles: "1001-IHS", "1001-IHS@domain.com", "1001@domain.com", "1001".
+    Handles: "1001-DEMO", "1001-DEMO@domain.com", "1001@domain.com", "1001".
     Returns the local part (everything before the first '@'), or None if it doesn't
     look like an extension/sip_username.
     """
@@ -245,7 +245,7 @@ def _build_extension_status_map() -> dict:
 
     The map is keyed by the full ``extension-tenantcode`` sip_username (NOT the bare
     extension number) so the same extension number in different tenants — e.g.
-    "1001-IHS" vs "1001-ACME" — keeps independent statuses and never bleeds across
+    "1001-DEMO" vs "1001-ACME" — keeps independent statuses and never bleeds across
     tenants.
 
     Status priority: ringing > in_use > online

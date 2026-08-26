@@ -1,5 +1,5 @@
 """
-Shared HTML email templates for IHS PBX.
+Shared HTML email templates for Cloud PBX.
 """
 
 from datetime import date
@@ -16,7 +16,7 @@ def _base_template(title, preheader, body_html, login_url=None):
               <a href="{login_url}" target="_blank"
                  class="cta-btn"
                  style="display:inline-block;background-color:#2563eb;background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%);color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;padding:14px 36px;border-radius:8px;letter-spacing:0.3px;box-shadow:0 4px 12px rgba(37,99,235,0.35);transition:transform 0.2s ease,box-shadow 0.2s ease;border:2px solid #1d4ed8;">
-                Log In to IHS PBX &rarr;
+                Log In to Cloud PBX &rarr;
               </a>
             </td>
           </tr>
@@ -57,8 +57,8 @@ def _base_template(title, preheader, body_html, login_url=None):
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td style="text-align:center;">
-                    <span style="display:inline-block;background-color:#1e3a5f;background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);color:#ffffff;font-size:18px;font-weight:800;letter-spacing:1px;padding:10px 22px;border-radius:8px;border:2px solid #1e3a5f;">IHS PBX</span>
-                    <p style="margin:8px 0 0;color:#6b7280;font-size:12px;letter-spacing:0.5px;text-transform:uppercase;">Infotech Houston Solutions</p>
+                    <span style="display:inline-block;background-color:#1e3a5f;background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);color:#ffffff;font-size:18px;font-weight:800;letter-spacing:1px;padding:10px 22px;border-radius:8px;border:2px solid #1e3a5f;">Cloud PBX</span>
+                    <p style="margin:8px 0 0;color:#6b7280;font-size:12px;letter-spacing:0.5px;text-transform:uppercase;">Cloud Communications Solutions</p>
                   </td>
                 </tr>
               </table>
@@ -92,10 +92,10 @@ def _base_template(title, preheader, body_html, login_url=None):
           <tr>
             <td style="padding:28px 0 0;text-align:center;">
               <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.8;">
-                This is an automated message from IHS PBX. Please do not reply to this email.
+                This is an automated message from Cloud PBX. Please do not reply to this email.
               </p>
               <p style="margin:4px 0 0;color:#9ca3af;font-size:12px;">
-                &copy; {year} Infotech Houston Solutions. All rights reserved.
+                &copy; {year} Cloud Communications Solutions. All rights reserved.
               </p>
             </td>
           </tr>
@@ -142,8 +142,8 @@ def password_reset_email(name, temp_password, login_url=None):
       </table>
     """
     return _base_template(
-        title='Password Reset — IHS PBX',
-        preheader='Your IHS PBX password has been reset. Use the temporary password to log in.',
+        title='Password Reset — Cloud PBX',
+        preheader='Your Cloud PBX password has been reset. Use the temporary password to log in.',
         body_html=body,
         login_url=login_url,
     )
@@ -153,7 +153,7 @@ def forgot_password_email(name, temp_password, login_url=None):
     """HTML email for self-service forgot password."""
     body = f"""
       <h2 style="margin:0 0 6px;color:#111827;font-size:24px;font-weight:700;letter-spacing:-0.5px;">Password Reset Request</h2>
-      <p style="margin:0 0 28px;color:#6b7280;font-size:14px;border-bottom:1px solid #f3f4f6;padding-bottom:28px;">We received a request to reset your IHS PBX password.</p>
+      <p style="margin:0 0 28px;color:#6b7280;font-size:14px;border-bottom:1px solid #f3f4f6;padding-bottom:28px;">We received a request to reset your Cloud PBX password.</p>
 
       <p style="margin:0 0 14px;color:#374151;font-size:15px;">Hello <strong style="color:#111827;">{name}</strong>,</p>
       <p style="margin:0 0 28px;color:#4b5563;font-size:15px;line-height:1.7;">
@@ -185,8 +185,8 @@ def forgot_password_email(name, temp_password, login_url=None):
       <p style="margin:16px 0 0;color:#9ca3af;font-size:13px;">If you did not request a password reset, you can safely ignore this email &mdash; your password will not change.</p>
     """
     return _base_template(
-        title='Password Reset Request — IHS PBX',
-        preheader='Use the temporary password below to access your IHS PBX account.',
+        title='Password Reset Request — Cloud PBX',
+        preheader='Use the temporary password below to access your Cloud PBX account.',
         body_html=body,
         login_url=login_url,
     )
@@ -202,12 +202,12 @@ def welcome_email(name, username, temp_password, login_url=None, email=None):
         '</td></tr>'
     ) if email else ''
     body = f"""
-      <h2 style="margin:0 0 6px;color:#111827;font-size:24px;font-weight:700;letter-spacing:-0.5px;">Welcome to IHS PBX</h2>
+      <h2 style="margin:0 0 6px;color:#111827;font-size:24px;font-weight:700;letter-spacing:-0.5px;">Welcome to Cloud PBX</h2>
       <p style="margin:0 0 28px;color:#6b7280;font-size:14px;border-bottom:1px solid #f3f4f6;padding-bottom:28px;">Your account has been created successfully.</p>
 
       <p style="margin:0 0 14px;color:#374151;font-size:15px;">Hello <strong style="color:#111827;">{name}</strong>,</p>
       <p style="margin:0 0 28px;color:#4b5563;font-size:15px;line-height:1.7;">
-        An account has been created for you on IHS PBX. Use the credentials below to sign in for the first time.
+        An account has been created for you on Cloud PBX. Use the credentials below to sign in for the first time.
         You will be asked to set a new password on your first login.
       </p>
 
@@ -254,8 +254,8 @@ def welcome_email(name, username, temp_password, login_url=None, email=None):
       <p style="margin:16px 0 0;color:#9ca3af;font-size:13px;">If you have any questions, please contact your administrator.</p>
     """
     return _base_template(
-        title='Welcome to IHS PBX',
-        preheader='Your IHS PBX account is ready. Log in with your temporary credentials.',
+        title='Welcome to Cloud PBX',
+        preheader='Your Cloud PBX account is ready. Log in with your temporary credentials.',
         body_html=body,
         login_url=login_url,
     )

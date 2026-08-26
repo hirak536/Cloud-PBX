@@ -1,21 +1,21 @@
 [Unit]
-Description=IHS PBX Celery Beat Scheduler
+Description=Cloud PBX Celery Beat Scheduler
 After=network.target redis.service
 Requires=redis.service
 
 [Service]
 Type=simple
-User=ihspbx
-Group=ihspbx
-WorkingDirectory=/opt/ihspbx-django/backend
-EnvironmentFile=/opt/ihspbx-django/.env
+User=cloudpbx
+Group=cloudpbx
+WorkingDirectory=/opt/cloudpbx/backend
+EnvironmentFile=/opt/cloudpbx/.env
 Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
-ExecStart=/opt/ihspbx-django/venv/bin/celery \
+ExecStart=/opt/cloudpbx/venv/bin/celery \
     -A config beat \
     --loglevel=INFO \
     --scheduler django_celery_beat.schedulers:DatabaseScheduler \
-    --logfile=/var/log/ihspbx/celerybeat.log \
-    --pidfile=/var/run/ihspbx/celerybeat.pid
+    --logfile=/var/log/cloudpbx/celerybeat.log \
+    --pidfile=/var/run/cloudpbx/celerybeat.pid
 Restart=on-failure
 RestartSec=10
 

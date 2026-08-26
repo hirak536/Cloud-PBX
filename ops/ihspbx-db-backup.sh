@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
 #
-# ihspbx-db-backup.sh — Daily PostgreSQL backup for IHS-PBX (Linux port of the
-# Windows GitHub Actions "Daily PostgreSQL Backup" workflow).
+# cloudpbx-db-backup.sh — Daily PostgreSQL backup for Cloud PBX
 #
 # Dumps both databases with pg_dump -F c --create --clean, timestamped
 # MM-DD-YYYY_HH-MM-SS.dump, to the Windows SMB share, and prunes dumps older
 # than 30 days. The share is mounted at backup time and unmounted at the end.
 #
-#   main DB (ihspbx)     -> \\172.30.109.52\IHSBackups\IHSDevDBBackup\fs1\main
-#   cdr  DB (ihspbx_cdr) -> \\172.30.109.52\IHSBackups\IHSDevDBBackup\fs1\cdr
+#   main DB (cloudpbx)     -> \\172.30.109.52\PBXBackups\PBXDevDBBackup\fs1\main
+#   cdr  DB (cloudpbx_cdr) -> \\172.30.109.52\PBXBackups\PBXDevDBBackup\fs1\cdr
 #
-# Scheduled twice daily by ihspbx-db-backup.timer (11:00 & 04:00 UTC).
+# Scheduled twice daily by cloudpbx-db-backup.timer (11:00 & 04:00 UTC).
 set -euo pipefail
 
 # ---- configuration ---------------------------------------------------------
-SMB_SHARE='//172.30.109.52/IHSBackups'
-SMB_CREDS='/etc/ihspbx-backup.smbcreds'
-MOUNT_POINT='/mnt/ihsbackups'
-BACKUP_SUBDIR='IHSDevDBBackup/fs1'          # main/ and cdr/ live under here
+SMB_SHARE='//172.30.109.52/PBXBackups'
+SMB_CREDS='/etc/cloudpbx-backup.smbcreds'
+MOUNT_POINT='/mnt/pbxbackups'
+BACKUP_SUBDIR='PBXDevDBBackup/fs1'          # main/ and cdr/ live under here
 RETENTION_DAYS=30
 
-ENV_FILE='/opt/IHS-PBX/.env'
+ENV_FILE='/opt/Cloud-PBX/.env'
 # Force IPv4: DB_HOST=localhost resolves to ::1 first, which pg_hba often
 # rejects even when 127.0.0.1 is trusted.
 PGHOST='127.0.0.1'
@@ -28,8 +27,8 @@ PGPORT='5432'
 
 # Databases to back up: "<dbname>:<subdir-under-fs1>"
 DATABASES=(
-  "ihspbx:main"
-  "ihspbx_cdr:cdr"
+  "cloudpbx:main"
+  "cloudpbx_cdr:cdr"
 )
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }

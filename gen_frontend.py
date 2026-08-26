@@ -14,7 +14,7 @@ def write(path, content):
 
 # ── package.json ────────────────────────────────────────────────────────────
 pkg = {
-  "name": "ihspbx-frontend",
+  "name": "cloudpbx-frontend",
   "version": "1.0.0",
   "private": True,
   "type": "module",
@@ -82,7 +82,7 @@ write(os.path.join(ROOT, 'index.html'), """
       <meta charset="UTF-8" />
       <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>ihspbx</title>
+      <title>Cloud PBX</title>
       <link rel="stylesheet" href="https://unpkg.com/primeflex@3.3.1/primeflex.css" />
       <link rel="stylesheet" href="https://unpkg.com/primeicons/primeicons.css" />
     </head>
@@ -434,7 +434,7 @@ write(os.path.join(src, 'components', 'AppLayout.vue'), """
         <!-- Sidebar -->
         <aside class="layout-sidebar" :class="{ collapsed: sidebarCollapsed }">
           <div class="sidebar-header">
-            <img src="/logo.svg" alt="ihspbx" class="logo" v-if="!sidebarCollapsed" />
+            <img src="/logo.svg" alt="Cloud PBX" class="logo" v-if="!sidebarCollapsed" />
             <Button icon="pi pi-bars" text rounded @click="toggleSidebar" />
           </div>
           <nav>
@@ -558,7 +558,7 @@ write(os.path.join(views, 'LoginView.vue'), """
         <Card class="login-card">
           <template #header>
             <div class="login-header">
-              <h2>ihspbx</h2>
+              <h2>Cloud PBX</h2>
               <p>Sign in to your account</p>
             </div>
           </template>

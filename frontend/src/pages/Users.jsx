@@ -84,7 +84,7 @@ function buildUsername(first, last) {
 
 // ── Organization Settings tab ─────────────────────────────────────────────────
 // Superadmin-only. Searchable, paginated list of organizations sourced from the
-// external IHS Phone company directory (organizations.list).
+// external company directory (organizations.list).
 const ORG_PAGE_SIZE = 10
 
 function OrganizationSettingsTab({ userEmail }) {
@@ -242,7 +242,7 @@ function OrganizationSettingsTab({ userEmail }) {
 
 // ── UC Users tab ──────────────────────────────────────────────────────────────
 // Superadmin-only. Searchable, filterable (status + company), paginated list of
-// UC users sourced from the external IHS Phone directory (ucUsers.list).
+// UC users sourced from the external directory (ucUsers.list).
 const UC_PAGE_SIZE = 20
 const UC_USER_TYPE_OPTIONS = [
   { value: 'superadmin', label: 'Super Admin' },
@@ -1113,7 +1113,7 @@ function UcPasswordResetDialog({ user, onClose, onDone }) {
 }
 
 // Pull the most useful human-readable message out of an axios error from the
-// external IHS Phone API, whose error shape varies (message / error / detail /
+// external directory API, whose error shape varies (message / error / detail /
 // field-keyed arrays / plain string).
 function apiErrorMessage(e, fallback = 'Request failed.') {
   const d = e?.response?.data
@@ -2274,7 +2274,7 @@ export default function Users() {
         <div className="flex items-center gap-1 border-b">
           {[
             { key: 'organization', label: 'Organization Settings' },
-            { key: 'uc',           label: 'IHSPhone Users' },
+            { key: 'uc',           label: 'Directory Users' },
             { key: 'pbx',          label: 'PBX Users' },
           ].map(tab => (
             <button

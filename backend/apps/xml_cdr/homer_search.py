@@ -10,7 +10,7 @@ caller is allowed to see:
   - tenant user: only calls attributed to their tenant. Never sees
     unattributed traffic.
 
-This is the backend the IHS-PBX React "SIP / PCAP" search talks to. HOMER stays
+This is the backend the Cloud PBX React "SIP / PCAP" search talks to. HOMER stays
 the capture engine; tenant isolation is enforced here, where the DID↔tenant
 map and per-user scoping live.
 """

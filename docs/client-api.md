@@ -59,8 +59,8 @@ Response:
 [
   {
     "tenant_id": "92b3e21f-b14b-49b0-8b4c-fd40c928dfca",
-    "tenant_code": "IHS",
-    "tenant_name": "Infotech Houston Solution"
+    "tenant_code": "DEMO",
+    "tenant_name": "Cloud Communications Solutions"
   }
 ]
 ```
@@ -77,8 +77,8 @@ Response:
 ```json
 {
   "tenant_id": "92b3e21f-b14b-49b0-8b4c-fd40c928dfca",
-  "tenant_code": "IHS",
-  "tenant_name": "Infotech Houston Solution"
+  "tenant_code": "DEMO",
+  "tenant_name": "Cloud Communications Solutions"
 }
 ```
 Use the returned `tenant_id` as the `{tenant_uuid}` in all subsequent URLs.
@@ -102,7 +102,7 @@ Response:
   {
     "extension_uuid": "uuid",
     "extension": "901",
-    "sip_username": "901-IHS",
+    "sip_username": "901-DEMO",
     "effective_caller_id_name": "John Smith",
     "effective_caller_id_number": "901",
     "outbound_caller_id_name": "John Smith",
@@ -365,7 +365,7 @@ Webhook events are fired to the `webhook_url` configured on the API key.
 ```json
 {
   "event": "extension.updated",
-  "tenant_code": "IHS",
+  "tenant_code": "DEMO",
   "tenant_id": "uuid",
   "object_id": "uuid-of-changed-object",
   "timestamp": "2026-03-27T10:00:00Z"
@@ -377,7 +377,7 @@ The `key.generated` event includes the plaintext API key — store it securely, 
 ```json
 {
   "event": "key.generated",
-  "tenant_code": "IHS",
+  "tenant_code": "DEMO",
   "tenant_id": "uuid",
   "object_id": "uuid-of-api-key",
   "timestamp": "2026-03-27T10:00:00Z",
@@ -394,7 +394,7 @@ The `key.revoked` event has no `data` field — stop using the key immediately.
 ```json
 {
   "event": "call.incoming",
-  "tenant_code": "IHS",
+  "tenant_code": "DEMO",
   "tenant_id": "uuid",
   "object_id": "call-uuid",
   "timestamp": "2026-03-27T10:00:00Z",
@@ -412,7 +412,7 @@ The `key.revoked` event has no `data` field — stop using the key immediately.
 ```json
 {
   "event": "voicemail.received",
-  "tenant_code": "IHS",
+  "tenant_code": "DEMO",
   "tenant_id": "uuid",
   "object_id": "message-uuid",
   "timestamp": "2026-03-27T10:00:00Z",

@@ -17,11 +17,11 @@ import { Plus, Pencil, Trash2, Search, Loader2 } from 'lucide-react'
 
 // Known webhook URL presets
 const WEBHOOK_PRESETS = [
-  { label: 'IHSPhone', value: 'https://api.ihsphone.com/company/webhook' },
+  { label: 'UC Directory API', value: 'https://api.pbxservice.com/company/webhook' },
   { label: 'Other (custom URL)', value: '__other__' },
 ]
 
-const DEFAULT_WEBHOOK_URL = 'https://fsapi.ihsclients.com/company/webhook'
+const DEFAULT_WEBHOOK_URL = 'https://api.pbxservice.com/company/webhook'
 
 const EMPTY = {
   tenant_name: '',

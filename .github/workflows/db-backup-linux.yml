@@ -8,14 +8,14 @@ on:
 
 jobs:
   backup:
-    # Self-hosted Linux runner on the IHS-PBX box. Register the runner with
-    # the labels [self-hosted, linux, ihspbx] so this job lands on it.
-    runs-on: [self-hosted, linux, ihspbx]
+    # Self-hosted Linux runner on the Cloud-PBX box. Register the runner with
+    # the labels [self-hosted, linux, pbx] so this job lands on it.
+    runs-on: [self-hosted, linux, pbx]
 
     env:
-      SMB_SHARE: '//172.30.109.52/IHSBackups'
-      MOUNT_POINT: '/mnt/ihsbackups-ci'
-      BACKUP_SUBDIR: 'IHSDevDBBackup/diverseai'
+      SMB_SHARE: '//172.30.109.52/PBXBackups'
+      MOUNT_POINT: '/mnt/pbxbackups-ci'
+      BACKUP_SUBDIR: 'PBXDevDBBackup/diverseai'
       RETENTION_DAYS: '30'
 
     steps:
@@ -23,7 +23,7 @@ jobs:
         run: |
           set -euo pipefail
           # Share is defined in /etc/fstab with noauto,user + a root-only
-          # credentials file (/etc/ihspbx-backup.smbcreds), so no sudo or
+          # credentials file (/etc/cloudpbx-backup.smbcreds), so no sudo or
           # secrets are needed here.
           echo "Mounting $MOUNT_POINT ..."
           if mountpoint -q "$MOUNT_POINT"; then
@@ -47,7 +47,7 @@ jobs:
 
           timestamp="$(date +%m-%d-%Y_%H-%M-%S)"
 
-          db="ihspbx"
+          db="cloudpbx"
           dest="$MOUNT_POINT/$BACKUP_SUBDIR"
           mkdir -p "$dest"
           out="$dest/${db}_backup_${timestamp}.dump"

@@ -10,7 +10,7 @@
   </domains>
 
   <settings>
-    <param name="user-agent-string" value="IHS-PBX-WebRTC"/>
+    <param name="user-agent-string" value="CloudPBX-WebRTC"/>
     <param name="debug" value="0"/>
     <param name="sip-trace" value="no"/>
     <param name="sip-capture" value="no"/>

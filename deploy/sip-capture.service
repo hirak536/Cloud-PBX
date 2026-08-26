@@ -1,5 +1,5 @@
 [Unit]
-Description=IHSPBX rolling SIP packet capture (per-leg PCAP source)
+Description=CloudPBX rolling SIP packet capture (per-leg PCAP source)
 After=network.target freeswitch.service
 
 [Service]
@@ -16,9 +16,9 @@ Group=root
 # external :5060 traffic only to/from our carrier gateways — dropping the open-
 # internet scanner flood. ExecStartPre regenerates it from live FS gateways on
 # every (re)start, so adding a carrier + restarting picks it up automatically.
-EnvironmentFile=/opt/IHS-PBX/.env
+EnvironmentFile=/opt/Cloud-PBX/.env
 ExecStartPre=/usr/bin/install -d -m 0755 -o root -g root /var/spool/sip
-ExecStartPre=/opt/IHS-PBX/deploy/gen-sip-capture-filter.sh /etc/sip-capture.bpf
+ExecStartPre=/opt/Cloud-PBX/deploy/gen-sip-capture-filter.sh /etc/sip-capture.bpf
 ExecStart=/bin/sh -c '/usr/bin/tcpdump -i any -s 0 -n -U -Z root \
   -w /var/spool/sip/sip-%%Y%%m%%d-%%H%%M%%S.pcap -G 300 \
   "$(cat /etc/sip-capture.bpf)"'

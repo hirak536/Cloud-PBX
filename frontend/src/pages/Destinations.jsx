@@ -668,7 +668,7 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearc
           </div>
         </Field>
         <Field label="Friendly Name" required>
-          <Input placeholder="e.g. IHS Main" value={form.destination_name} onChange={set('destination_name')} />
+          <Input placeholder="e.g. Main Line" value={form.destination_name} onChange={set('destination_name')} />
         </Field>
       </Row>
       <div className="space-y-1.5">
@@ -757,7 +757,7 @@ function DIDFormBody({ tab, form, set, setForm, destData, destLoading, destSearc
       <SectionTitle>Caller ID Manipulation</SectionTitle>
       <Row>
         <Field label="CID Number Prefix">
-          <Input placeholder="IHS-" value={form.destination_cid_number_prefix} onChange={set('destination_cid_number_prefix')} />
+          <Input placeholder="DEMO-" value={form.destination_cid_number_prefix} onChange={set('destination_cid_number_prefix')} />
         </Field>
         <Field label="CID Name Prefix">
           <Input placeholder="Sales: " value={form.destination_cid_name_prefix} onChange={set('destination_cid_name_prefix')} />

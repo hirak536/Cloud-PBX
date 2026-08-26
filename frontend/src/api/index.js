@@ -327,7 +327,7 @@ export const users = {
   delete: (id) => api.delete(`/users/${id}/`, { params: { tenant: null } }),
 }
 
-const ORG_API_BASE_URL = import.meta.env.VITE_ORG_API_BASE_URL || 'https://api.ihsphone.com'
+const ORG_API_BASE_URL = import.meta.env.VITE_ORG_API_BASE_URL || 'https://api.pbxservice.com'
 const ORG_API_TOKEN = 'django-secure-p=bnajkpqq2_(l3)1$$vaf($jq#uw7qdysxi3$one3p$=55_'
 
 const orgAxios = axios.create({
@@ -348,7 +348,7 @@ export const organizations = {
   update: (data) => orgAxios.post('/company/companyEditPBX', data),
 }
 
-// ── UC Users (external IHS Phone user directory) ──────────────────────────────
+// ── UC Users (external UC user directory) ──────────────────────────────
 export const ucUsers = {
   // GET /user/listpbx?search=&page=&page_size=&is_active=&code=
   // `code` scopes to a company; omit it (undefined) for all companies.

@@ -86,7 +86,7 @@ class ExtensionViewSet(TenantScopedViewSetMixin, viewsets.ModelViewSet):
         import xlrd
         from xlutils.copy import copy as xl_copy
 
-        SIP_SERVER = 'fs1.ihs.host:5080'
+        SIP_SERVER = 'sip.pbxservice.com:5080'
         DATA_START_ROW = 2
         template_path = Path(__file__).resolve().parent / 'resources' / 'SipAccount_Template.xls'
 

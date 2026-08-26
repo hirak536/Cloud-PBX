@@ -363,7 +363,7 @@ class ClientCDRView(APIView):
 
         extension = p.get('extension')
         if extension:
-            # Match plain extension (inbound: "1001") or SIP username (outbound: "1001-IHS")
+            # Match plain extension (inbound: "1001") or SIP username (outbound: "1001-DEMO")
             # Strip tenant suffix if caller passed the full SIP username
             plain_ext = extension.split('-')[0]
             qs = qs.filter(
@@ -845,7 +845,7 @@ class ClientFaxQuickSendView(APIView):
 
         originate_vars = (
             # Quote every interpolated value — an unquoted space in a fax box's
-            # caller-id name ('IHS Test') splits the {k=v,k=v} var list and
+            # caller-id name ('Test Office') splits the {k=v,k=v} var list and
             # FreeSWITCH rejects the whole originate with "Parse Error!" /
             # DESTINATION_OUT_OF_ORDER before any channel is created.
             f'origination_caller_id_name={_esl_var(cid_name)},'
@@ -1602,7 +1602,7 @@ class APIKeyDetailView(APIView):
 
 class SystemLogView(APIView):
     """
-    Superuser-only endpoint that returns recent ihspbx service log lines
+    Superuser-only endpoint that returns recent pbx service log lines
     by running journalctl on demand.
 
     GET /api/v1/client/system-log/?lines=200&level=ERROR
@@ -1624,7 +1624,7 @@ class SystemLogView(APIView):
         import subprocess  # noqa: PLC0415
         try:
             result = subprocess.run(
-                ['journalctl', '-u', 'ihspbx', f'-n', str(lines), '--no-pager', '--output=short-iso'],
+                ['journalctl', '-u', 'cloudpbx', f'-n', str(lines), '--no-pager', '--output=short-iso'],
                 capture_output=True, text=True, timeout=10,
             )
             raw_lines = result.stdout.splitlines()
@@ -2058,7 +2058,7 @@ class ClientExtensionCallSummaryView(APIView):
 
     Body:
         {
-            "extension": "901-IHS",
+            "extension": "901-DEMO",
             "start": "2026-04-01T00:00:00+05:30",
             "end":   "2026-04-06T23:59:59+05:30"
         }

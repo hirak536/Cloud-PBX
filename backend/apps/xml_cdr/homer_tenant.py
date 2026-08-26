@@ -4,7 +4,7 @@ HOMER stores every tenant's SIP in one shared homer_data store with no tenant
 tag (all tenants share the SIP domain 23.189.208.80, so the SIP messages carry
 nothing that identifies a tenant). To filter captured calls per tenant we
 attribute each message at query time by matching its numbers against the
-IHS-PBX DID (Destination) and Extension tables.
+Cloud PBX DID (Destination) and Extension tables.
 
 Attribution rules for one captured SIP message (from_user / to_user / ruri_user):
   - Inbound  carrier→PBX: the DID is in to_user / ruri_user.

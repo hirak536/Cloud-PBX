@@ -135,7 +135,7 @@ def _resolve_tenant(headers: dict):
     """
     Resolve tenant from in-memory cache (no DB queries).
 
-    Strategy 1: Caller-Username suffix — e.g. "1001-IHS" → code "IHS"
+    Strategy 1: Caller-Username suffix — e.g. "1001-DEMO" → code "DEMO"
     Strategy 2: variable_domain_name header
     Strategy 3: Caller-Destination-Number matched against DID cache
     """
@@ -413,7 +413,7 @@ def _deliver_webhook(key_id, webhook_url: str, webhook_secret: str, payload: dic
     """POST one webhook and audit-log the delivery via raw psycopg2."""
     http_headers = {
         'Content-Type': 'application/json',
-        'User-Agent': 'IHSPBX-Webhook/1.0',
+        'User-Agent': 'CloudPBX-Webhook/1.0',
     }
     if webhook_secret:
         sig = hmac.new(webhook_secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
@@ -758,7 +758,7 @@ def _handle_event(event):
             # Auto-start AI audio stream for extension 999
             if event_name == 'CHANNEL_ANSWER':
                 dest = headers.get('Caller-Destination-Number', '')
-                if dest in ('999', '999-IHS'):
+                if dest in ('999', '999-DEMO'):
                     ai_ws_base = getattr(settings, 'AI_BRIDGE_WS', 'ws://127.0.0.1:5001/audio')
                     ai_ws = f'{ai_ws_base}/{call_uuid}'
                     try:

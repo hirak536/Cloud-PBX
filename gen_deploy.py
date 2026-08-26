@@ -17,9 +17,9 @@ def write(path, content):
 # ── nginx.conf ───────────────────────────────────────────────────────────────
 write(os.path.join(DEPLOY, 'nginx.conf'), r"""
     ##############################################################################
-    # Nginx configuration for ihspbx Django
-    # Place at: /etc/nginx/sites-available/ihspbx
-    # Enable:   ln -s /etc/nginx/sites-available/ihspbx /etc/nginx/sites-enabled/
+    # Nginx configuration for cloudpbx Django
+    # Place at: /etc/nginx/sites-available/cloudpbx
+    # Enable:   ln -s /etc/nginx/sites-available/cloudpbx /etc/nginx/sites-enabled/
     ##############################################################################
 
     upstream django_backend {
@@ -56,18 +56,18 @@ write(os.path.join(DEPLOY, 'nginx.conf'), r"""
 
         # Static / Media
         location /static/ {
-            alias /opt/ihspbx-django/backend/staticfiles/;
+            alias /opt/cloudpbx/backend/staticfiles/;
             expires 30d;
             add_header Cache-Control "public, immutable";
         }
         location /media/ {
-            alias /opt/ihspbx-django/backend/media/;
+            alias /opt/cloudpbx/backend/media/;
             expires 7d;
         }
 
         # Frontend SPA (built)
         location / {
-            root /opt/ihspbx-django/frontend/dist;
+            root /opt/cloudpbx/frontend/dist;
             try_files $uri $uri/ /index.html;
             expires 1h;
         }
@@ -103,20 +103,20 @@ write(os.path.join(DEPLOY, 'nginx.conf'), r"""
 """)
 
 # ── systemd: gunicorn / uvicorn ──────────────────────────────────────────────
-write(os.path.join(DEPLOY, 'ihspbx-django.service'), """
+write(os.path.join(DEPLOY, 'cloudpbx-django.service'), """
     [Unit]
-    Description=ihspbx Django (Gunicorn/Uvicorn ASGI)
+    Description=cloudpbx Django (Gunicorn/Uvicorn ASGI)
     After=network.target postgresql.service redis.service
     Requires=postgresql.service redis.service
 
     [Service]
     Type=notify
-    User=ihspbx
-    Group=ihspbx
-    WorkingDirectory=/opt/ihspbx-django/backend
-    EnvironmentFile=/opt/ihspbx-django/.env
+    User=cloudpbx
+    Group=cloudpbx
+    WorkingDirectory=/opt/cloudpbx/backend
+    EnvironmentFile=/opt/cloudpbx/.env
     Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
-    ExecStart=/opt/ihspbx-django/venv/bin/gunicorn config.asgi:application \\
+    ExecStart=/opt/cloudpbx/venv/bin/gunicorn config.asgi:application \\
         --bind 127.0.0.1:8000 \\
         --workers 4 \\
         --worker-class uvicorn.workers.UvicornWorker \\
@@ -125,8 +125,8 @@ write(os.path.join(DEPLOY, 'ihspbx-django.service'), """
         --max-requests 1000 \\
         --max-requests-jitter 100 \\
         --log-level info \\
-        --access-logfile /var/log/ihspbx/access.log \\
-        --error-logfile /var/log/ihspbx/error.log
+        --access-logfile /var/log/cloudpbx/access.log \\
+        --error-logfile /var/log/cloudpbx/error.log
     ExecReload=/bin/kill -s HUP $MAINPID
     KillMode=mixed
     TimeoutStopSec=5
@@ -138,35 +138,35 @@ write(os.path.join(DEPLOY, 'ihspbx-django.service'), """
     WantedBy=multi-user.target
 """)
 
-write(os.path.join(DEPLOY, 'ihspbx-celery.service'), """
+write(os.path.join(DEPLOY, 'cloudpbx-celery.service'), """
     [Unit]
-    Description=ihspbx Django Celery Worker
+    Description=cloudpbx Django Celery Worker
     After=network.target redis.service postgresql.service
     Requires=redis.service
 
     [Service]
     Type=forking
-    User=ihspbx
-    Group=ihspbx
-    WorkingDirectory=/opt/ihspbx-django/backend
-    EnvironmentFile=/opt/ihspbx-django/.env
+    User=cloudpbx
+    Group=cloudpbx
+    WorkingDirectory=/opt/cloudpbx/backend
+    EnvironmentFile=/opt/cloudpbx/.env
     Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
-    PIDFile=/var/run/ihspbx/celery.pid
-    ExecStart=/opt/ihspbx-django/venv/bin/celery \\
+    PIDFile=/var/run/cloudpbx/celery.pid
+    ExecStart=/opt/cloudpbx/venv/bin/celery \\
         -A config \\
         multi start worker \\
-        --pidfile=/var/run/ihspbx/celery.pid \\
-        --logfile=/var/log/ihspbx/celery.log \\
+        --pidfile=/var/run/cloudpbx/celery.pid \\
+        --logfile=/var/log/cloudpbx/celery.log \\
         --loglevel=INFO \\
         --concurrency=4 \\
         --queues=default,esl,email
-    ExecStop=/opt/ihspbx-django/venv/bin/celery \\
+    ExecStop=/opt/cloudpbx/venv/bin/celery \\
         -A config multi stopwait worker \\
-        --pidfile=/var/run/ihspbx/celery.pid
-    ExecReload=/opt/ihspbx-django/venv/bin/celery \\
+        --pidfile=/var/run/cloudpbx/celery.pid
+    ExecReload=/opt/cloudpbx/venv/bin/celery \\
         -A config multi restart worker \\
-        --pidfile=/var/run/ihspbx/celery.pid \\
-        --logfile=/var/log/ihspbx/celery.log \\
+        --pidfile=/var/run/cloudpbx/celery.pid \\
+        --logfile=/var/log/cloudpbx/celery.log \\
         --loglevel=INFO
     Restart=on-failure
     RestartSec=10
@@ -175,25 +175,25 @@ write(os.path.join(DEPLOY, 'ihspbx-celery.service'), """
     WantedBy=multi-user.target
 """)
 
-write(os.path.join(DEPLOY, 'ihspbx-celerybeat.service'), """
+write(os.path.join(DEPLOY, 'cloudpbx-celerybeat.service'), """
     [Unit]
-    Description=ihspbx Django Celery Beat Scheduler
+    Description=cloudpbx Django Celery Beat Scheduler
     After=network.target redis.service
     Requires=redis.service
 
     [Service]
     Type=simple
-    User=ihspbx
-    Group=ihspbx
-    WorkingDirectory=/opt/ihspbx-django/backend
-    EnvironmentFile=/opt/ihspbx-django/.env
+    User=cloudpbx
+    Group=cloudpbx
+    WorkingDirectory=/opt/cloudpbx/backend
+    EnvironmentFile=/opt/cloudpbx/.env
     Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
-    ExecStart=/opt/ihspbx-django/venv/bin/celery \\
+    ExecStart=/opt/cloudpbx/venv/bin/celery \\
         -A config beat \\
         --loglevel=INFO \\
         --scheduler django_celery_beat.schedulers:DatabaseScheduler \\
-        --logfile=/var/log/ihspbx/celerybeat.log \\
-        --pidfile=/var/run/ihspbx/celerybeat.pid
+        --logfile=/var/log/cloudpbx/celerybeat.log \\
+        --pidfile=/var/run/cloudpbx/celerybeat.pid
     Restart=on-failure
     RestartSec=10
 
@@ -205,13 +205,13 @@ write(os.path.join(DEPLOY, 'ihspbx-celerybeat.service'), """
 write(os.path.join(DEPLOY, 'freeswitch', 'xml_curl.conf.xml'), """
     <configuration name="xml_curl.conf" description="XML cURL">
       <bindings>
-        <binding name="ihspbx_directory">
+        <binding name="cloudpbx_directory">
           <param name="gateway-url" value="http://127.0.0.1:8000/xml-curl/" bindings="directory"/>
         </binding>
-        <binding name="ihspbx_dialplan">
+        <binding name="cloudpbx_dialplan">
           <param name="gateway-url" value="http://127.0.0.1:8000/xml-curl/" bindings="dialplan"/>
         </binding>
-        <binding name="ihspbx_configuration">
+        <binding name="cloudpbx_configuration">
           <param name="gateway-url" value="http://127.0.0.1:8000/xml-curl/" bindings="configuration"/>
         </binding>
       </bindings>
@@ -239,7 +239,7 @@ write(os.path.join(ROOT, '.env.example'), """
     ALLOWED_HOSTS=your-domain.com,localhost
 
     # Database
-    DATABASE_URL=postgresql://ihspbx:password@localhost:5432/ihspbx
+    DATABASE_URL=postgresql://cloudpbx:password@localhost:5432/cloudpbx
 
     # Redis
     REDIS_URL=redis://localhost:6379/0
@@ -259,26 +259,26 @@ write(os.path.join(ROOT, '.env.example'), """
     EMAIL_HOST_USER=noreply@example.com
     EMAIL_HOST_PASSWORD=your-smtp-password
     EMAIL_USE_TLS=True
-    DEFAULT_FROM_EMAIL=ihspbx <noreply@example.com>
+    DEFAULT_FROM_EMAIL=cloudpbx <noreply@example.com>
 
     # Media / Static
-    MEDIA_ROOT=/opt/ihspbx-django/backend/media
-    STATIC_ROOT=/opt/ihspbx-django/backend/staticfiles
+    MEDIA_ROOT=/opt/cloudpbx/backend/media
+    STATIC_ROOT=/opt/cloudpbx/backend/staticfiles
 """)
 
 # ── install.sh ───────────────────────────────────────────────────────────────
 write(os.path.join(DEPLOY, 'install.sh'), r"""
     #!/usr/bin/env bash
     ##############################################################################
-    # ihspbx Django - Ubuntu/Debian Install Script
+    # cloudpbx Django - Ubuntu/Debian Install Script
     # Run as root: bash install.sh
     ##############################################################################
     set -euo pipefail
 
-    INSTALL_DIR=/opt/ihspbx-django
-    APP_USER=ihspbx
-    DB_NAME=ihspbx
-    DB_USER=ihspbx
+    INSTALL_DIR=/opt/cloudpbx
+    APP_USER=cloudpbx
+    DB_NAME=cloudpbx
+    DB_USER=cloudpbx
     DB_PASS=$(openssl rand -hex 16)
     PYTHON_VERSION=3.11
 
@@ -319,7 +319,7 @@ write(os.path.join(DEPLOY, 'install.sh'), r"""
         cp ${INSTALL_DIR}/.env.example ${INSTALL_DIR}/.env
         SECRET_KEY=$(${INSTALL_DIR}/venv/bin/python -c "import secrets; print(secrets.token_hex(32))")
         sed -i "s/change-me-generate-with-python-secrets-token-hex-32/${SECRET_KEY}/" ${INSTALL_DIR}/.env
-        sed -i "s/postgresql:\/\/ihspbx:password/postgresql:\/\/${DB_USER}:${DB_PASS}/" ${INSTALL_DIR}/.env
+        sed -i "s/postgresql:\/\/cloudpbx:password/postgresql:\/\/${DB_USER}:${DB_PASS}/" ${INSTALL_DIR}/.env
         echo ""
         echo ">>> .env created. Edit ${INSTALL_DIR}/.env to set ALLOWED_HOSTS, EMAIL, FreeSWITCH settings."
         echo ">>> DB Password: ${DB_PASS}"
@@ -340,20 +340,20 @@ write(os.path.join(DEPLOY, 'install.sh'), r"""
     sudo -u ${APP_USER} npm run build
 
     echo "==> Creating log/run directories..."
-    mkdir -p /var/log/ihspbx /var/run/ihspbx
-    chown -R ${APP_USER}:${APP_USER} /var/log/ihspbx /var/run/ihspbx
+    mkdir -p /var/log/cloudpbx /var/run/cloudpbx
+    chown -R ${APP_USER}:${APP_USER} /var/log/cloudpbx /var/run/cloudpbx
 
     echo "==> Installing systemd services..."
-    cp ${INSTALL_DIR}/deploy/ihspbx-django.service /etc/systemd/system/
-    cp ${INSTALL_DIR}/deploy/ihspbx-celery.service /etc/systemd/system/
-    cp ${INSTALL_DIR}/deploy/ihspbx-celerybeat.service /etc/systemd/system/
+    cp ${INSTALL_DIR}/deploy/cloudpbx-django.service /etc/systemd/system/
+    cp ${INSTALL_DIR}/deploy/cloudpbx-celery.service /etc/systemd/system/
+    cp ${INSTALL_DIR}/deploy/cloudpbx-celerybeat.service /etc/systemd/system/
     systemctl daemon-reload
-    systemctl enable ihspbx-django ihspbx-celery ihspbx-celerybeat
-    systemctl start ihspbx-django ihspbx-celery ihspbx-celerybeat
+    systemctl enable cloudpbx-django cloudpbx-celery cloudpbx-celerybeat
+    systemctl start cloudpbx-django cloudpbx-celery cloudpbx-celerybeat
 
     echo "==> Configuring Nginx..."
-    cp ${INSTALL_DIR}/deploy/nginx.conf /etc/nginx/sites-available/ihspbx
-    ln -sf /etc/nginx/sites-available/ihspbx /etc/nginx/sites-enabled/ihspbx
+    cp ${INSTALL_DIR}/deploy/nginx.conf /etc/nginx/sites-available/cloudpbx
+    ln -sf /etc/nginx/sites-available/cloudpbx /etc/nginx/sites-enabled/cloudpbx
     rm -f /etc/nginx/sites-enabled/default
     nginx -t && systemctl reload nginx
 
@@ -363,25 +363,25 @@ write(os.path.join(DEPLOY, 'install.sh'), r"""
 
     echo ""
     echo "=========================================="
-    echo "ihspbx Django installed successfully!"
+    echo "cloudpbx Django installed successfully!"
     echo "=========================================="
     echo ""
     echo "Next steps:"
-    echo "  1. Edit /opt/ihspbx-django/.env (set domain, email, FreeSWITCH)"
-    echo "  2. Update /etc/nginx/sites-available/ihspbx with your domain"
+    echo "  1. Edit /opt/cloudpbx/.env (set domain, email, FreeSWITCH)"
+    echo "  2. Update /etc/nginx/sites-available/cloudpbx with your domain"
     echo "  3. Get SSL cert: certbot --nginx -d your-domain.com"
     echo "  4. Create admin user:"
-    echo "       cd /opt/ihspbx-django/backend"
-    echo "       sudo -u ihspbx DJANGO_SETTINGS_MODULE=config.settings.prod \\"
-    echo "         /opt/ihspbx-django/venv/bin/python manage.py createsuperuser"
+    echo "       cd /opt/cloudpbx/backend"
+    echo "       sudo -u cloudpbx DJANGO_SETTINGS_MODULE=config.settings.prod \\"
+    echo "         /opt/cloudpbx/venv/bin/python manage.py createsuperuser"
     echo "  5. Configure FreeSWITCH:"
     echo "       Copy deploy/freeswitch/xml_curl.conf.xml to FreeSWITCH conf/autoload_configs/"
     echo "       Copy deploy/freeswitch/event_socket.conf.xml to FreeSWITCH conf/autoload_configs/"
     echo "       fs_cli -x 'reload mod_xml_curl'"
     echo ""
-    echo "  Services: systemctl status ihspbx-django ihspbx-celery ihspbx-celerybeat"
-    echo "  Logs:     journalctl -u ihspbx-django -f"
-    echo "            tail -f /var/log/ihspbx/error.log"
+    echo "  Services: systemctl status cloudpbx-django cloudpbx-celery cloudpbx-celerybeat"
+    echo "  Logs:     journalctl -u cloudpbx-django -f"
+    echo "            tail -f /var/log/cloudpbx/error.log"
 """)
 
 # ── management command: create_default_domain ────────────────────────────────
@@ -414,9 +414,9 @@ write(os.path.join(mgmt_dir, 'create_default_domain.py'), """
 
 # ── README.md ─────────────────────────────────────────────────────────────────
 write(os.path.join(ROOT, 'README.md'), """
-    # ihspbx Django
+    # cloudpbx Django
 
-    Full Django rewrite of ihspbx 5.5.7 — a multi-tenant PBX management system.
+    Full Django rewrite of cloudpbx 5.5.7 — a multi-tenant PBX management system.
 
     ## Tech Stack
 
@@ -435,7 +435,7 @@ write(os.path.join(ROOT, 'README.md'), """
 
     ```bash
     # 1. Clone and enter project
-    cd /opt/ihspbx-django
+    cd /opt/cloudpbx
 
     # 2. Create and activate virtual environment
     python3 -m venv venv
@@ -486,7 +486,7 @@ write(os.path.join(ROOT, 'README.md'), """
     ## Project Structure
 
     ```
-    ihspbx-django/
+    cloudpbx/
     ├── backend/
     │   ├── config/          # Django settings, URLs, Celery, ASGI
     │   ├── core/            # Auth, Domains, Users, Groups, Permissions
@@ -542,12 +542,13 @@ write(os.path.join(ROOT, 'README.md'), """
 
 print('\nDeploy files done!')
 print('  deploy/nginx.conf')
-print('  deploy/ihspbx-django.service')
-print('  deploy/ihspbx-celery.service')
-print('  deploy/ihspbx-celerybeat.service')
+print('  deploy/cloudpbx-django.service')
+print('  deploy/cloudpbx-celery.service')
+print('  deploy/cloudpbx-celerybeat.service')
 print('  deploy/freeswitch/xml_curl.conf.xml')
 print('  deploy/freeswitch/event_socket.conf.xml')
 print('  deploy/install.sh')
 print('  .env.example')
 print('  README.md')
 print('  backend/core/management/commands/create_default_domain.py')
+

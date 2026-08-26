@@ -4,7 +4,7 @@ from celery.signals import setup_logging
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')
 
-app = Celery('ihspbx')
+app = Celery('cloudpbx')
 app.config_from_object('django.conf:settings', namespace='CELERY')
 app.autodiscover_tasks()
 
@@ -15,7 +15,7 @@ def configure_logging(**kwargs):
 
     By default Celery hijacks the root logger and routes task logs to its own
     --logfile, which bypasses the per-logger handlers in Django's LOGGING dict
-    (e.g. apps.fax / apps.voicemails -> /var/log/ihspbx/app.log). Wiring this
+    (e.g. apps.fax / apps.voicemails -> /var/log/cloudpbx/app.log). Wiring this
     signal makes worker logging identical to the web process, so task DEBUG/INFO
     lines land in app.log as configured.
     """

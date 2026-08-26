@@ -1,7 +1,7 @@
-"""Generate all ihspbx Django app files."""
+"""Generate all cloudpbx Django app files."""
 import os
 
-BASE = "D:/ihspbx-django/backend"
+BASE = "D:/cloudpbx-django/backend"
 
 
 def write(path, content):

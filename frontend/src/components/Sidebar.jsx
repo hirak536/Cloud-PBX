@@ -334,12 +334,12 @@ export default function Sidebar({ collapsed }) {
         collapsed ? 'justify-center px-0' : 'justify-start'
       )}>
         {collapsed ? (
-          <img src={favicon} alt="IHS" className="h-8 w-8 object-contain animate-in fade-in zoom-in duration-300" />
+          <img src={favicon} alt="Cloud PBX" className="h-8 w-8 object-contain animate-in fade-in zoom-in duration-300" />
         ) : (
           <div className="flex flex-row items-center gap-2.5 animate-in fade-in slide-in-from-left-4 duration-300">
-            <img src={favicon} alt="IHS" className="h-8 w-8 object-contain shrink-0" />
+            <img src={favicon} alt="Cloud PBX" className="h-8 w-8 object-contain shrink-0" />
             <div className="flex flex-col leading-tight">
-              <span className="text-sm font-bold tracking-wide text-foreground">IHS PBX</span>
+              <span className="text-sm font-bold tracking-wide text-foreground">Cloud PBX</span>
               <span className="text-[10px] font-medium tracking-wider text-[hsl(var(--sidebar-muted))] whitespace-nowrap">Unified Communication</span>
             </div>
           </div>
@@ -367,7 +367,7 @@ export default function Sidebar({ collapsed }) {
         collapsed ? 'px-0 py-2.5' : 'px-4 py-2.5'
       )}>
         {collapsed ? (
-          <Tooltip label="IHS PBX v2.0 · Online">
+          <Tooltip label="Cloud PBX v2.0 · Online">
             <div className="flex justify-center">
               <div className="h-2 w-2 rounded-full bg-emerald-400 animate-live-pulse" />
             </div>
@@ -375,7 +375,7 @@ export default function Sidebar({ collapsed }) {
         ) : (
           <div className="flex items-center gap-2 overflow-hidden">
             <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400 animate-live-pulse" />
-            <p className="whitespace-nowrap text-[10px] text-[hsl(var(--sidebar-muted))]">IHS PBX v2.0 · Online</p>
+            <p className="whitespace-nowrap text-[10px] text-[hsl(var(--sidebar-muted))]">Cloud PBX v2.0 · Online</p>
           </div>
         )}
       </div>

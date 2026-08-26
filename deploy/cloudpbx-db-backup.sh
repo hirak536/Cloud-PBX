@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# cloudpbx-db-backup.sh — Daily PostgreSQL backup for Cloud PBX
+# cloudpbx-db-backup.sh — Daily PostgreSQL backup for Cloud PBX (Linux port of the
+# Windows GitHub Actions "Daily PostgreSQL Backup" workflow).
 #
 # Dumps both databases with pg_dump -F c --create --clean, timestamped
 # MM-DD-YYYY_HH-MM-SS.dump, to the Windows SMB share, and prunes dumps older

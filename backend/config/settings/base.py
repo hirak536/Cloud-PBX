@@ -1,5 +1,5 @@
 """
-Base Django settings for IHS PBX - shared across all environments.
+Base Django settings for Cloud PBX - shared across all environments.
 """
 import os
 from pathlib import Path
@@ -16,8 +16,8 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv())
 CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv())
 
 # Public-facing base URL used to build absolute URLs (e.g. in webhook payloads)
-# e.g. https://fs.ihsclients.com
-PUBLIC_BASE_URL = config('PUBLIC_BASE_URL', default='https://fs.ihsclients.com')
+# e.g. https://fs.pbxservice.com
+PUBLIC_BASE_URL = config('PUBLIC_BASE_URL', default='https://fs.pbxservice.com')
 
 # Application definition
 DJANGO_APPS = [
@@ -157,7 +157,7 @@ DATABASES = {
     # main DB's host/user/password; override CDR_DB_* in .env to relocate it.
     'cdr': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': config('CDR_DB_NAME', default='ihspbx_cdr'),
+        'NAME': config('CDR_DB_NAME', default='cloudpbx_cdr'),
         'USER': config('CDR_DB_USER', default=config('DB_USER')),
         'PASSWORD': config('CDR_DB_PASSWORD', default=config('DB_PASSWORD')),
         'HOST': config('CDR_DB_HOST', default=config('DB_HOST')),
@@ -173,7 +173,7 @@ DATABASES = {
     # host/user/password; override METRICS_DB_* in .env to relocate it.
     'metrics': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': config('METRICS_DB_NAME', default='ihspbx_metrics'),
+        'NAME': config('METRICS_DB_NAME', default='cloudpbx_metrics'),
         'USER': config('METRICS_DB_USER', default=config('DB_USER')),
         'PASSWORD': config('METRICS_DB_PASSWORD', default=config('DB_PASSWORD')),
         'HOST': config('METRICS_DB_HOST', default=config('DB_HOST')),
@@ -349,7 +349,7 @@ CORS_ALLOW_CREDENTIALS = True
 
 # API Documentation (drf-spectacular)
 SPECTACULAR_SETTINGS = {
-    'TITLE': 'IHS PBX API',
+    'TITLE': 'Cloud PBX API',
     'DESCRIPTION': 'Full-featured PBX management API backed by FreeSWITCH',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,

@@ -36,7 +36,7 @@ const routeMeta = {
 export default function TopBar({ collapsed, onToggle, onMobileToggle }) {
   const { pathname } = useLocation()
   const navigate = useNavigate()
-  const meta = routeMeta[pathname] || { title: 'IHS PBX', group: null }
+  const meta = routeMeta[pathname] || { title: 'Cloud PBX', group: null }
   const dispatch = useDispatch()
   const { user } = useSelector(selectAuth)
   const theme = useSelector(selectTheme)
